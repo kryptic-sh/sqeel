@@ -24,7 +24,9 @@ use ratatui::{
 };
 use sqeel_core::{
     AppState, UiProvider,
+    config::load_main_config,
     highlight::Highlighter,
+    lsp::{LspClient, LspEvent},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsPane, VimMode},
 };
 
@@ -71,22 +73,69 @@ async fn run_loop(
     let mut editor = Editor::new(keybinding_mode);
     let mut highlighter = Highlighter::new()?;
 
+    // Start LSP client if binary is configured and reachable
+    let scratch_uri: lsp_types::Uri = "file:///tmp/sqeel-scratch.sql".parse().unwrap();
+    let lsp_binary = load_main_config()
+        .ok()
+        .map(|c| c.editor.lsp_binary)
+        .unwrap_or_else(|| "sqls".into());
+    let mut lsp: Option<LspClient> = LspClient::start(&lsp_binary, None).await.ok();
+    if let Some(ref mut client) = lsp {
+        let _ = client.open_document(scratch_uri.clone(), "").await;
+    }
+
     let mut last_saved_content = String::new();
+    let mut last_lsp_content = String::new();
+    let mut doc_version: i32 = 0;
+    let mut last_completion_id: Option<i64> = None;
     let mut debug_tick: u32 = 0;
 
     loop {
         // Sync editor content + re-highlight
+        let content = editor.content();
         {
-            let content = editor.content();
             let spans = highlighter.highlight(&content);
             let mut s = state.lock().unwrap();
             s.editor_content = content.clone();
             s.vim_mode = editor.vim_mode;
             s.set_highlights(spans);
-            // Auto-save on change
             if content != last_saved_content {
                 s.autosave();
-                last_saved_content = content;
+                last_saved_content = content.clone();
+            }
+        }
+
+        // Auto-complete: on every content change, notify LSP and request fresh completions
+        if content != last_lsp_content {
+            last_lsp_content = content.clone();
+            doc_version += 1;
+            if let Some(ref mut client) = lsp {
+                let (row, col) = editor.textarea.cursor();
+                let _ = client
+                    .change_document(scratch_uri.clone(), doc_version, &content)
+                    .await;
+                if let Ok(id) = client
+                    .request_completion(scratch_uri.clone(), row as u32, col as u32)
+                    .await
+                {
+                    last_completion_id = Some(id);
+                }
+            }
+        }
+
+        // Drain LSP events
+        if let Some(ref mut client) = lsp {
+            while let Ok(event) = client.events.try_recv() {
+                match event {
+                    LspEvent::Diagnostics(diags) => {
+                        state.lock().unwrap().set_diagnostics(diags);
+                    }
+                    LspEvent::Completion(id, items) => {
+                        if Some(id) == last_completion_id {
+                            state.lock().unwrap().set_completions(items);
+                        }
+                    }
+                }
             }
         }
 
@@ -305,16 +354,6 @@ async fn run_loop(
                             editor.set_content("");
                         }
                     }
-                    // Trigger completions: Ctrl+Space (both modes)
-                    (KeyModifiers::CONTROL, KeyCode::Char(' ')) => {
-                        state.lock().unwrap().set_completions(vec![
-                            "SELECT".into(),
-                            "FROM".into(),
-                            "WHERE".into(),
-                            "JOIN".into(),
-                            "GROUP BY".into(),
-                        ]);
-                    }
                     // Pane focus
                     (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
                         state.lock().unwrap().focus = Focus::Schema;
@@ -330,10 +369,6 @@ async fn run_loop(
                     }
                     _ if focus == Focus::Editor => {
                         editor.handle_key(key);
-                        // Dismiss completions on any text input
-                        if show_completions {
-                            state.lock().unwrap().dismiss_completions();
-                        }
                     }
                     _ => {}
                 }
@@ -774,7 +809,6 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect) {
                 ("?  /  .", "Open this help (normal mode)"),
                 ("Ctrl+Enter", "Execute query"),
                 ("Ctrl+W", "Connection switcher"),
-                ("Ctrl+Space", "Trigger completions"),
                 ("q", "Quit (normal mode / schema / results)"),
             ],
         ),

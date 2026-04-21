@@ -25,7 +25,8 @@ pub struct Diagnostic {
 #[derive(Debug)]
 pub enum LspEvent {
     Diagnostics(Vec<Diagnostic>),
-    Completion(Vec<String>),
+    /// (request_id, items) — caller drops if id doesn't match the latest request
+    Completion(i64, Vec<String>),
 }
 
 #[derive(Serialize)]
@@ -147,12 +148,14 @@ impl LspClient {
         .await
     }
 
+    /// Send a completion request and return the request ID.
+    /// Callers should discard responses whose ID doesn't match the most recently returned ID.
     pub async fn request_completion(
         &mut self,
         uri: Uri,
         line: u32,
         col: u32,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i64> {
         self.request(
             "textDocument/completion",
             json!({
@@ -160,8 +163,7 @@ impl LspClient {
                 "position": { "line": line, "character": col }
             }),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn request(&mut self, method: &'static str, params: Value) -> anyhow::Result<i64> {
@@ -244,17 +246,19 @@ async fn read_loop(mut reader: BufReader<ChildStdout>, tx: mpsc::Sender<LspEvent
             let _ = tx.send(LspEvent::Diagnostics(diags)).await;
         }
 
-        if msg.id.is_some()
+        if let Some(id_val) = msg.id
             && let Some(result) = msg.result
             && let Ok(list) = serde_json::from_value::<CompletionResponse>(result)
         {
+            let id = match &id_val {
+                Value::Number(n) => n.as_i64().unwrap_or(0),
+                _ => 0,
+            };
             let items: Vec<String> = match list {
                 CompletionResponse::Array(items) => items.into_iter().map(|i| i.label).collect(),
                 CompletionResponse::List(l) => l.items.into_iter().map(|i| i.label).collect(),
             };
-            if !items.is_empty() {
-                let _ = tx.send(LspEvent::Completion(items)).await;
-            }
+            let _ = tx.send(LspEvent::Completion(id, items)).await;
         }
     }
 }
