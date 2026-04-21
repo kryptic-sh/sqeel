@@ -34,6 +34,15 @@ pub struct ConnectionConfig {
 #[derive(Debug, Deserialize, Serialize)]
 struct Session {
     connection: String,
+    #[serde(default)]
+    schema_cursor: usize,
+}
+
+/// Data restored from session.toml.
+#[derive(Debug, Default)]
+pub struct SessionData {
+    pub connection: Option<String>,
+    pub schema_cursor: usize,
 }
 
 impl serde::Serialize for KeybindingMode {
@@ -109,28 +118,48 @@ pub fn load_connections() -> anyhow::Result<Vec<ConnectionConfig>> {
     Ok(conns)
 }
 
-/// Save the last-used named connection to ~/.config/sqeel/session.toml.
-pub fn save_session(name: &str) -> anyhow::Result<()> {
+/// Save the last-used connection name and schema cursor to session.toml.
+pub fn save_session(name: &str, schema_cursor: usize) -> anyhow::Result<()> {
     let dir = config_dir().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
     std::fs::create_dir_all(&dir)?;
     let content = toml::to_string(&Session {
         connection: name.to_string(),
+        schema_cursor,
     })?;
     std::fs::write(dir.join("session.toml"), content)?;
     Ok(())
 }
 
-/// Load the last-used connection name from ~/.config/sqeel/session.toml.
-/// Returns the name string, not the URL.
-pub fn load_session() -> Option<String> {
+fn load_session_inner() -> Option<Session> {
     let path = config_dir()?.join("session.toml");
     let content = std::fs::read_to_string(path).ok()?;
-    let s: Session = toml::from_str(&content).ok()?;
-    if s.connection.is_empty() {
-        None
-    } else {
-        Some(s.connection)
+    toml::from_str(&content).ok()
+}
+
+/// Load full session data (connection name + schema cursor).
+pub fn load_session_data() -> SessionData {
+    let Some(s) = load_session_inner() else {
+        return SessionData::default();
+    };
+    SessionData {
+        connection: if s.connection.is_empty() {
+            None
+        } else {
+            Some(s.connection)
+        },
+        schema_cursor: s.schema_cursor,
     }
+}
+
+/// Load only the last-used connection name from session.toml.
+pub fn load_session() -> Option<String> {
+    load_session_inner().and_then(|s| {
+        if s.connection.is_empty() {
+            None
+        } else {
+            Some(s.connection)
+        }
+    })
 }
 
 pub fn save_connection(name: &str, url: &str) -> anyhow::Result<()> {

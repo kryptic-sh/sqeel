@@ -3,7 +3,7 @@ use std::sync::Arc;
 use clap::Parser;
 use sqeel_core::{
     AppState, UiProvider,
-    config::{load_connections, load_session, save_session},
+    config::{load_connections, load_session_data, save_session},
     db::DbConnection,
     persistence::{load_schema_cache, save_schema_cache},
 };
@@ -36,19 +36,21 @@ fn main() -> anyhow::Result<()> {
         .unwrap()
         .set_available_connections(conns.clone());
 
+    let session = load_session_data();
     let url = if let Some(url) = args.url {
         Some(url)
     } else {
-        let name = args.connection.or_else(load_session);
+        let name = args.connection.or(session.connection);
         name.and_then(|n| conns.iter().find(|c| c.name == n).map(|c| c.url.clone()))
     };
+    let session_schema_cursor = session.schema_cursor;
 
     // Runtime for async setup (initial connect + reconnection watcher).
     // TuiProvider::run creates its own runtime; must not be called from inside one.
     let rt = tokio::runtime::Runtime::new()?;
 
     if let Some(url) = url {
-        rt.block_on(connect_and_spawn(&state, &url));
+        rt.block_on(connect_and_spawn(&state, &url, session_schema_cursor));
     }
 
     let watcher_state = state.clone();
@@ -57,7 +59,7 @@ fn main() -> anyhow::Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let pending = watcher_state.lock().unwrap().pending_reconnect.take();
             if let Some(url) = pending {
-                connect_and_spawn(&watcher_state, &url).await;
+                connect_and_spawn(&watcher_state, &url, 0).await;
             }
         }
     });
@@ -66,24 +68,33 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn connect_and_spawn(state: &Arc<std::sync::Mutex<AppState>>, url: &str) {
+async fn connect_and_spawn(
+    state: &Arc<std::sync::Mutex<AppState>>,
+    url: &str,
+    session_schema_cursor: usize,
+) {
     match DbConnection::connect(url).await {
         Ok(conn) => {
             {
                 let mut s = state.lock().unwrap();
-                s.active_connection = Some(conn.url.clone());
-                s.set_status(format!("Connected: {}", conn.url));
-                // Save session by name if this URL matches a named connection
+                let conn_name = s
+                    .available_connections
+                    .iter()
+                    .find(|c| c.url == url)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| conn.url.clone());
+                s.active_connection = Some(conn_name.clone());
+                s.set_status(format!("Connected: {conn_name}"));
                 if let Some(name) = s
                     .available_connections
                     .iter()
                     .find(|c| c.url == url)
                     .map(|c| c.name.clone())
                 {
-                    let _ = save_session(&name);
+                    let _ = save_session(&name, s.schema_cursor);
                 }
             }
-            spawn_executor(state.clone(), conn);
+            spawn_executor(state.clone(), conn, session_schema_cursor);
         }
         Err(e) => {
             state
@@ -94,14 +105,21 @@ async fn connect_and_spawn(state: &Arc<std::sync::Mutex<AppState>>, url: &str) {
     }
 }
 
-fn spawn_executor(state: Arc<std::sync::Mutex<AppState>>, conn: DbConnection) {
+fn spawn_executor(
+    state: Arc<std::sync::Mutex<AppState>>,
+    conn: DbConnection,
+    session_schema_cursor: usize,
+) {
     let conn = Arc::new(conn);
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
     state.lock().unwrap().query_tx = Some(tx);
 
-    // Show cached schema immediately, then refresh in background
+    // Show cached schema immediately with restored cursor, then refresh in background
     if let Some(cached) = load_schema_cache(&conn.url) {
-        state.lock().unwrap().set_schema_nodes(cached);
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(cached);
+        let max = s.visible_schema_items().len().saturating_sub(1);
+        s.schema_cursor = session_schema_cursor.min(max);
     }
 
     let schema_conn = conn.clone();
@@ -111,7 +129,14 @@ fn spawn_executor(state: Arc<std::sync::Mutex<AppState>>, conn: DbConnection) {
         match schema_conn.load_schema().await {
             Ok(nodes) => {
                 let _ = save_schema_cache(&schema_url, &nodes);
-                schema_state.lock().unwrap().set_schema_nodes(nodes);
+                let mut s = schema_state.lock().unwrap();
+                // Preserve expansion state + cursor across the refresh
+                let cursor = s.schema_cursor;
+                s.refresh_schema_nodes(nodes);
+                // Save cursor to session so it persists across restarts
+                if let Some(ref name) = s.active_connection.clone() {
+                    let _ = save_session(name, cursor);
+                }
             }
             Err(e) => schema_state
                 .lock()

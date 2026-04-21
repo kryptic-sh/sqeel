@@ -127,7 +127,19 @@ async fn run_loop(
                 let _ = client
                     .change_document(scratch_uri.clone(), doc_version, &content)
                     .await;
-                if let Ok(id) = client
+
+                // Suppress completions when the character immediately left of the
+                // cursor is whitespace, a newline, or `;`.
+                let char_left = editor.textarea.lines().get(row).and_then(|line| {
+                    let before = &line[..col.min(line.len())];
+                    before.chars().next_back()
+                });
+                let suppress = matches!(char_left, Some(c) if c.is_whitespace() || c == ';')
+                    || char_left.is_none(); // cursor at start of line (after newline)
+
+                if suppress {
+                    state.lock().unwrap().dismiss_completions();
+                } else if let Ok(id) = client
                     .request_completion(scratch_uri.clone(), row as u32, col as u32)
                     .await
                 {
@@ -291,15 +303,17 @@ async fn run_loop(
                             state.lock().unwrap().dismiss_completions();
                             continue;
                         }
-                        (KeyModifiers::NONE, KeyCode::Up) => {
+                        (KeyModifiers::NONE, KeyCode::Up)
+                        | (KeyModifiers::SHIFT, KeyCode::BackTab) => {
                             state.lock().unwrap().completion_cursor_up();
                             continue;
                         }
-                        (KeyModifiers::NONE, KeyCode::Down) => {
+                        (KeyModifiers::NONE, KeyCode::Down)
+                        | (KeyModifiers::NONE, KeyCode::Tab) => {
                             state.lock().unwrap().completion_cursor_down();
                             continue;
                         }
-                        (KeyModifiers::NONE, KeyCode::Tab | KeyCode::Enter) => {
+                        (KeyModifiers::NONE, KeyCode::Enter) => {
                             let chosen = state
                                 .lock()
                                 .unwrap()
@@ -308,6 +322,9 @@ async fn run_loop(
                             if let Some(text) = chosen {
                                 editor.accept_completion(&text);
                                 state.lock().unwrap().dismiss_completions();
+                                // Prevent immediate re-trigger: content changed but we don't
+                                // want completions to pop up again until the user types more.
+                                last_lsp_content = editor.content();
                             }
                             continue;
                         }
@@ -367,9 +384,10 @@ async fn run_loop(
                     // Execute query: Ctrl+Enter
                     (KeyModifiers::CONTROL, KeyCode::Enter) => {
                         let content = editor.content();
-                        let sent = state.lock().unwrap().send_query(content.clone());
+                        let mut s = state.lock().unwrap();
+                        s.dismiss_completions();
+                        let sent = s.send_query(content.clone());
                         if !sent {
-                            let mut s = state.lock().unwrap();
                             s.push_history(&content);
                             s.set_error(
                                 "No DB connected. Use --url / --connection or Ctrl+W to switch."
@@ -565,23 +583,43 @@ fn draw_debug_bar(
         state.show_completions as u8,
     );
 
-    let line = format!(
-        " DEBUG  focus={focus}  vim={vim}  cursor={cursor}  conn={conn}  schema={schema_n}db  results={results}  {flags}    "
+    const LABEL: &str = " DEBUG ";
+    let label_width = LABEL.len() as u16;
+
+    let info = format!(
+        " focus={focus}  vim={vim}  cursor={cursor}  conn={conn}  schema={schema_n}db  results={results}  {flags}  "
     );
 
-    // Wrap the marquee offset so it never scrolls past the text length
-    let max_offset = (line.len() as u32).saturating_sub(area.width as u32);
+    // Fixed label on the left
+    let label_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: label_width.min(area.width),
+        height: area.height,
+    };
+    // Scrolling info fills the rest
+    let info_area = Rect {
+        x: area.x + label_width.min(area.width),
+        y: area.y,
+        width: area.width.saturating_sub(label_width),
+        height: area.height,
+    };
+
+    let dbg_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    f.render_widget(
+        Paragraph::new(LABEL).style(dbg_style),
+        label_area,
+    );
+
+    let max_offset = (info.len() as u32).saturating_sub(info_area.width as u32);
     let col = if max_offset == 0 {
         0
     } else {
         (scroll % (max_offset + 1)) as u16
     };
-
     f.render_widget(
-        Paragraph::new(line)
-            .style(Style::default().fg(Color::Black).bg(Color::Yellow))
-            .scroll((0, col)),
-        area,
+        Paragraph::new(info).style(dbg_style).scroll((0, col)),
+        info_area,
     );
 }
 
@@ -671,6 +709,15 @@ fn draw_editor(
     let mut textarea = editor.textarea.clone();
     textarea.set_block(editor_block);
     textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    // Basic keyword highlighting via search pattern
+    let _ = textarea.set_search_pattern(
+        r"(?i)\b(select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|column|join|inner|outer|left|right|full|cross|on|and|or|not|null|is|in|like|between|order|by|group|having|limit|offset|union|all|distinct|as|case|when|then|else|end|if|exists|primary|foreign|key|references|unique|default|constraint|check|with|view|begin|commit|rollback|transaction|use|show|describe|explain|database|schema|index|procedure|function|returns|return|trigger|true|false)\b",
+    );
+    textarea.set_search_style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
     f.render_widget(&textarea, editor_chunks[0]);
 
     if let Some(msg) = diag_line {

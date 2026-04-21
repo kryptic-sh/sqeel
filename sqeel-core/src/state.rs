@@ -2,7 +2,7 @@ use crate::config::ConnectionConfig;
 use crate::highlight::HighlightSpan;
 use crate::lsp::Diagnostic;
 use crate::persistence;
-use crate::schema::{SchemaNode, SchemaTreeItem, flatten_tree, toggle_node};
+use crate::schema::{SchemaNode, SchemaTreeItem, flatten_tree, merge_expansion, toggle_node};
 use lsp_types::DiagnosticSeverity;
 use std::sync::{Arc, Mutex};
 
@@ -226,6 +226,15 @@ impl AppState {
     pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
         self.schema_nodes = nodes;
         self.schema_cursor = 0;
+    }
+
+    /// Like `set_schema_nodes` but preserves the cursor position and the
+    /// expanded/collapsed state of nodes that exist in both old and new trees.
+    pub fn refresh_schema_nodes(&mut self, mut nodes: Vec<SchemaNode>) {
+        merge_expansion(&self.schema_nodes.clone(), &mut nodes);
+        self.schema_nodes = nodes;
+        let max = self.visible_schema_items().len().saturating_sub(1);
+        self.schema_cursor = self.schema_cursor.min(max);
     }
 
     pub fn set_available_connections(&mut self, conns: Vec<ConnectionConfig>) {

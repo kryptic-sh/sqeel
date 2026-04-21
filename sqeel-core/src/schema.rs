@@ -114,6 +114,50 @@ fn flatten_nodes(
     }
 }
 
+/// Copy `expanded` flags from `old` into `new` by matching node names at each level.
+/// Called before replacing schema nodes on a background refresh so the user's
+/// open/closed state is preserved.
+pub fn merge_expansion(old: &[SchemaNode], new: &mut [SchemaNode]) {
+    for new_node in new.iter_mut() {
+        let Some(old_node) = old.iter().find(|o| o.name() == new_node.name()) else {
+            continue;
+        };
+        match (old_node, new_node) {
+            (
+                SchemaNode::Database {
+                    expanded: old_exp,
+                    tables: old_tables,
+                    ..
+                },
+                SchemaNode::Database {
+                    expanded: new_exp,
+                    tables: new_tables,
+                    ..
+                },
+            ) => {
+                *new_exp = *old_exp;
+                merge_expansion(old_tables, new_tables);
+            }
+            (
+                SchemaNode::Table {
+                    expanded: old_exp,
+                    columns: old_cols,
+                    ..
+                },
+                SchemaNode::Table {
+                    expanded: new_exp,
+                    columns: new_cols,
+                    ..
+                },
+            ) => {
+                *new_exp = *old_exp;
+                merge_expansion(old_cols, new_cols);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn toggle_node(nodes: &mut [SchemaNode], path: &[usize]) {
     if path.is_empty() {
         return;
