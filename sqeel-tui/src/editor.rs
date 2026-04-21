@@ -61,9 +61,7 @@ impl<'a> Editor<'a> {
 
     pub fn content(&self) -> String {
         let mut s = self.textarea.lines().join("\n");
-        if !s.ends_with('\n') {
-            s.push('\n');
-        }
+        s.push('\n');
         s
     }
 
