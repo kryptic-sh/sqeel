@@ -60,6 +60,8 @@ pub struct AppState {
     pub results_scroll: usize,
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
+    pub query_history: Vec<String>,
+    pub history_cursor: Option<usize>,
 }
 
 impl AppState {
@@ -180,6 +182,47 @@ impl AppState {
     pub fn persist_result(&self, query: &str, result: &QueryResult) {
         let _ = persistence::save_result(query, result);
     }
+
+    /// Record a query in history (dedup consecutive identical entries, max 100).
+    pub fn push_history(&mut self, query: &str) {
+        let trimmed = query.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.query_history.last().map(|s| s.as_str()) != Some(&trimmed) {
+            self.query_history.push(trimmed);
+        }
+        if self.query_history.len() > 100 {
+            self.query_history.remove(0);
+        }
+        self.history_cursor = None;
+    }
+
+    /// Move cursor back in history and return that query, if available.
+    pub fn history_prev(&mut self) -> Option<&str> {
+        if self.query_history.is_empty() {
+            return None;
+        }
+        let max = self.query_history.len() - 1;
+        let idx = match self.history_cursor {
+            None => max,
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.history_cursor = Some(idx);
+        self.query_history.get(idx).map(|s| s.as_str())
+    }
+
+    /// Move cursor forward in history; returns None when past the end.
+    pub fn history_next(&mut self) -> Option<&str> {
+        let idx = self.history_cursor? + 1;
+        if idx >= self.query_history.len() {
+            self.history_cursor = None;
+            return None;
+        }
+        self.history_cursor = Some(idx);
+        self.query_history.get(idx).map(|s| s.as_str())
+    }
 }
 
 #[cfg(test)]
@@ -246,5 +289,45 @@ mod tests {
         s.dismiss_results();
         assert_eq!(s.editor_ratio, 1.0);
         assert!(matches!(s.results, ResultsPane::Empty));
+    }
+
+    #[test]
+    fn history_push_and_recall() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.push_history("SELECT 1");
+        s.push_history("SELECT 2");
+        s.push_history("SELECT 3");
+        assert_eq!(s.query_history.len(), 3);
+        assert_eq!(s.history_prev(), Some("SELECT 3"));
+        assert_eq!(s.history_prev(), Some("SELECT 2"));
+        assert_eq!(s.history_prev(), Some("SELECT 1"));
+        // At start — stays at first
+        assert_eq!(s.history_prev(), Some("SELECT 1"));
+        assert_eq!(s.history_next(), Some("SELECT 2"));
+        assert_eq!(s.history_next(), Some("SELECT 3"));
+        // Past end
+        assert_eq!(s.history_next(), None);
+        assert_eq!(s.history_cursor, None);
+    }
+
+    #[test]
+    fn history_deduplicates_consecutive() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.push_history("SELECT 1");
+        s.push_history("SELECT 1");
+        s.push_history("SELECT 1");
+        assert_eq!(s.query_history.len(), 1);
+    }
+
+    #[test]
+    fn history_max_100() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        for i in 0..110 {
+            s.push_history(&format!("SELECT {i}"));
+        }
+        assert_eq!(s.query_history.len(), 100);
     }
 }

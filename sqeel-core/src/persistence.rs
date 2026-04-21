@@ -161,6 +161,33 @@ pub fn load_result(name: &str) -> anyhow::Result<QueryResult> {
     Ok(serde_json::from_str(&content)?)
 }
 
+/// Export a QueryResult to CSV string.
+pub fn export_csv(result: &QueryResult) -> String {
+    let mut out = String::new();
+    out.push_str(&csv_row(&result.columns));
+    for row in &result.rows {
+        out.push_str(&csv_row(row));
+    }
+    out
+}
+
+fn csv_row(fields: &[String]) -> String {
+    let mut parts = Vec::with_capacity(fields.len());
+    for f in fields {
+        if f.contains(',') || f.contains('"') || f.contains('\n') {
+            parts.push(format!("\"{}\"", f.replace('"', "\"\"")));
+        } else {
+            parts.push(f.clone());
+        }
+    }
+    parts.join(",") + "\n"
+}
+
+/// Export a QueryResult to pretty-printed JSON string.
+pub fn export_json(result: &QueryResult) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(result)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +277,41 @@ mod tests {
             .map(|i| format!("scratch_{:03}.sql", i))
             .collect();
         assert_eq!(names.len(), 999);
+    }
+
+    #[test]
+    fn export_csv_basic() {
+        let result = QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec!["1".into(), "Alice".into()],
+                vec!["2".into(), "Bob".into()],
+            ],
+        };
+        let csv = export_csv(&result);
+        assert_eq!(csv, "id,name\n1,Alice\n2,Bob\n");
+    }
+
+    #[test]
+    fn export_csv_escapes_commas_and_quotes() {
+        let result = QueryResult {
+            columns: vec!["val".into()],
+            rows: vec![vec!["hello, world".into()], vec!["say \"hi\"".into()]],
+        };
+        let csv = export_csv(&result);
+        assert!(csv.contains("\"hello, world\""));
+        assert!(csv.contains("\"say \"\"hi\"\"\""));
+    }
+
+    #[test]
+    fn export_json_round_trip() {
+        let result = QueryResult {
+            columns: vec!["x".into()],
+            rows: vec![vec!["42".into()]],
+        };
+        let json = export_json(&result).unwrap();
+        let loaded: QueryResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.columns, result.columns);
+        assert_eq!(loaded.rows, result.rows);
     }
 }

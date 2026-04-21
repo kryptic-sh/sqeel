@@ -131,16 +131,29 @@ async fn run_loop(
                 // Execute query: Ctrl+Enter
                 (KeyModifiers::CONTROL, KeyCode::Enter) => {
                     let content = editor.content();
-                    // M3: actual query execution here
-                    state
-                        .lock()
-                        .unwrap()
-                        .set_error(format!("No DB connected. Query was:\n{content}"));
+                    {
+                        let mut s = state.lock().unwrap();
+                        s.push_history(&content);
+                        s.set_error(format!("No DB connected. Query was:\n{content}"));
+                    }
+                }
+                // History navigation: Ctrl+P (prev) / Ctrl+N (next)
+                (KeyModifiers::CONTROL, KeyCode::Char('p')) if focus == Focus::Editor => {
+                    let recalled = state.lock().unwrap().history_prev().map(|s| s.to_owned());
+                    if let Some(q) = recalled {
+                        editor.set_content(&q);
+                    }
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('n')) if focus == Focus::Editor => {
+                    let recalled = state.lock().unwrap().history_next().map(|s| s.to_owned());
+                    if let Some(q) = recalled {
+                        editor.set_content(&q);
+                    } else {
+                        editor.set_content("");
+                    }
                 }
                 // Trigger completions: Ctrl+Space (both modes)
                 (KeyModifiers::CONTROL, KeyCode::Char(' ')) => {
-                    // M2.5: LSP completion request goes here
-                    // For now show placeholder
                     state.lock().unwrap().set_completions(vec![
                         "SELECT".into(),
                         "FROM".into(),

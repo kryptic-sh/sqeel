@@ -41,6 +41,12 @@ impl<'a> Editor<'a> {
         self.textarea.lines().join("\n")
     }
 
+    /// Replace the entire editor content with `text`.
+    pub fn set_content(&mut self, text: &str) {
+        let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+        self.textarea = TextArea::new(lines);
+    }
+
     /// Returns true if the key was consumed by the editor.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         match self.keybinding_mode {

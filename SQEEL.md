@@ -166,75 +166,75 @@ GitHub Actions runs on every push and PR to `sqeel/sqeel`.
 
 ## Milestones
 
-### M0 — Core Abstraction
-- [ ] Workspace: `sqeel-core`, `sqeel-tui`, `sqeel-gui`, `sqeel` crates
-- [ ] Define `AppState` struct in core
-- [ ] Define `UiProvider` trait in core
-- [ ] `sqeel/src/bin/sqeel.rs` — TUI binary, calls `sqeel-tui`
-- [ ] `sqeel/src/bin/sqeel-gui.rs` — GUI binary, calls `sqeel-gui`
-- [ ] Tests: `AppState` default/init, trait object construction
+### M0 — Core Abstraction ✅
+- [x] Workspace: `sqeel-core`, `sqeel-tui`, `sqeel-gui`, `sqeel` crates
+- [x] Define `AppState` struct in core
+- [x] Define `UiProvider` trait in core
+- [x] `sqeel/src/bin/sqeel.rs` — TUI binary, calls `sqeel-tui`
+- [x] `sqeel/src/bin/sqeel-gui.rs` — GUI binary, calls `sqeel-gui`
+- [x] Tests: `AppState` default/init, trait object construction
 
-### M1 — TUI Skeleton
-- [ ] `sqeel-tui` implements `UiProvider`
-- [ ] ratatui app loop (input + render)
-- [ ] Static layout: schema panel (15%) + editor panel (85%)
-- [ ] Quit on `q` / `:q`
-- [ ] Tests: quit key handling, layout split ratios
+### M1 — TUI Skeleton ✅
+- [x] `sqeel-tui` implements `UiProvider`
+- [x] ratatui app loop (input + render)
+- [x] Static layout: schema panel (15%) + editor panel (85%)
+- [x] Quit on `q` / `:q`
+- [x] Tests: quit key handling, layout split ratios
 
-### M2 — Editor (TUI)
-- [ ] Integrate `tui-textarea`
-- [ ] Vim normal/insert/visual modes
-- [ ] Placeholder highlighting (full tree-sitter highlighting in M2.5)
-- [ ] Execute query on `<leader>r` or `Ctrl+Enter`
-- [ ] Tests: vim mode transitions (normal→insert→visual), emacs bindings, execute keybind fires action in both modes
+### M2 — Editor (TUI) ✅
+- [x] Integrate `tui-textarea`
+- [x] Vim normal/insert/visual modes
+- [x] Placeholder highlighting (full tree-sitter highlighting in M2.5)
+- [x] Execute query on `<leader>r` or `Ctrl+Enter`
+- [x] Tests: vim mode transitions (normal→insert→visual), emacs bindings, execute keybind fires action in both modes
 
-### M2.5 — Editor Intelligence
-- [ ] tree-sitter SQL grammar integrated, highlights keywords/strings/comments
-- [ ] Dialect switches based on active connection type
-- [ ] LSP client spawns `sqls` on startup
-- [ ] Diagnostics render inline in editor (underline + message)
-- [ ] Autocomplete popup on `Ctrl+Space` (emacs) / insert mode (vim)
-- [ ] LSP binary path configurable in `config.toml`
-- [ ] Tests: tree-sitter parses valid + invalid SQL, LSP diagnostic appears for bad query, autocomplete returns suggestions
+### M2.5 — Editor Intelligence ✅
+- [x] tree-sitter SQL grammar integrated, highlights keywords/strings/comments
+- [x] Dialect switches based on active connection type
+- [x] LSP client spawns `sqls` on startup
+- [x] Diagnostics render inline in editor (underline + message)
+- [x] Autocomplete popup on `Ctrl+Space` (emacs) / insert mode (vim)
+- [x] LSP binary path configurable in `config.toml`
+- [x] Tests: tree-sitter parses valid + invalid SQL, LSP diagnostic appears for bad query, autocomplete returns suggestions
 
-### M3 — DB Connection
-- [ ] CLI arg / config file for connection string
-- [ ] `sqlx` mysql connection in core
-- [ ] Run query, get results into `AppState`
-- [ ] Tests: connect to real test DB, run SELECT, assert results in state; bad connection string shows error in results pane
+### M3 — DB Connection ✅
+- [x] CLI arg / config file for connection string
+- [x] `sqlx` mysql connection in core
+- [x] Run query, get results into `AppState`
+- [x] Tests: connect to real test DB, run SELECT, assert results in state; bad connection string shows error in results pane
 
-### M4 — Results Pane
-- [ ] Results table renders below editor (TUI)
-- [ ] Editor shrinks to 50% when results appear
-- [ ] Scroll results with `j/k`
-- [ ] Dismiss results with `Ctrl+c` / `q` in results pane
-- [ ] Tests: layout ratio change on results appear/dismiss, scroll offset bounds, dismiss clears state
+### M4 — Results Pane ✅
+- [x] Results table renders below editor (TUI)
+- [x] Editor shrinks to 50% when results appear
+- [x] Scroll results with `j/k`
+- [x] Dismiss results with `Ctrl+c` / `q` in results pane
+- [x] Tests: layout ratio change on results appear/dismiss, scroll offset bounds, dismiss clears state
 
-### M5 — Schema Browser
-- [ ] List databases/schemas in core
-- [ ] TUI: navigate with `j/k`, expand with `Enter` or `l`
-- [ ] Jump to editor with `Ctrl+l`
-- [ ] Tests: schema tree expand/collapse state, navigation cursor bounds, real DB schema introspection
+### M5 — Schema Browser ✅
+- [x] List databases/schemas in core
+- [x] TUI: navigate with `j/k`, expand with `Enter` or `l`
+- [x] Jump to editor with `Ctrl+l`
+- [x] Tests: schema tree expand/collapse state, navigation cursor bounds, real DB schema introspection
 
-### M6 — GUI Provider (iced)
-- [ ] `sqeel-gui` implements `UiProvider`
-- [ ] iced app loop, same layout as TUI
-- [ ] Vim-mode editor widget in iced
-- [ ] Results table widget
-- [ ] Schema tree widget
-- [ ] Feature parity with TUI provider
-- [ ] Tests: all iced message → state transitions, vim mode in GUI editor, same core test suite runs against GUI state
+### M6 — GUI Provider (iced) ✅
+- [x] `sqeel-gui` implements `UiProvider`
+- [x] iced app loop, same layout as TUI
+- [x] Vim-mode editor widget in iced
+- [x] Results table widget
+- [x] Schema tree widget
+- [x] Feature parity with TUI provider
+- [x] Tests: all iced message → state transitions, vim mode in GUI editor, same core test suite runs against GUI state
 
-### M7 — Polish
-- [ ] Main config via `dirs::config_dir()` (Linux: `~/.config/sqeel/config.toml`, macOS/Windows: platform equivalent)
-- [ ] Per-connection files in `conns/` subdir — each `.toml` is one connection, scanned on startup
-- [ ] Multiple DB connections selectable in UI
-- [ ] SQLite + PostgreSQL support via sqlx
-- [ ] Export results (CSV, JSON)
-- [ ] SQL file persistence: auto-save every buffer to `~/.local/share/sqeel/queries/`; new buffers get generated name (`scratch_001.sql`)
-- [ ] Result history persistence: last 10 successful results saved as JSON in `~/.local/share/sqeel/results/`; errors excluded; oldest deleted when limit exceeded
-- [ ] Query history browsable in UI; recall past query into editor
-- [ ] Tests: config parse/load, multi-connection switching, export output correctness, file auto-save round-trip, result history rotation (11th result evicts oldest, errors not stored)
+### M7 — Polish ✅
+- [x] Main config via `dirs::config_dir()` (Linux: `~/.config/sqeel/config.toml`, macOS/Windows: platform equivalent)
+- [x] Per-connection files in `conns/` subdir — each `.toml` is one connection, scanned on startup
+- [x] SQLite + PostgreSQL support via sqlx (AnyPool dispatch on URL scheme)
+- [x] Export results (CSV, JSON) via `persistence::export_csv` / `export_json`
+- [x] SQL file persistence: auto-save every buffer to `~/.local/share/sqeel/queries/`; new buffers get generated name (`scratch_001.sql`)
+- [x] Result history persistence: last 10 successful results saved as JSON in `~/.local/share/sqeel/results/`; errors excluded; oldest deleted when limit exceeded
+- [x] Query history in `AppState` (max 100, dedup consecutive); TUI: `Ctrl+P`/`Ctrl+N` to recall/navigate
+- [ ] Multiple DB connections selectable in UI (future)
+- [x] Tests: config parse/load, export CSV/JSON correctness, file auto-save round-trip, result history rotation, query history navigation
 
 ## DB Support Priority
 1. MySQL/MariaDB
