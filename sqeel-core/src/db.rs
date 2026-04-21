@@ -1,3 +1,4 @@
+use crate::schema::SchemaNode;
 use crate::state::QueryResult;
 use sqlx::{AnyPool, Column, Row};
 
@@ -56,10 +57,18 @@ impl DbConnection {
     }
 
     pub async fn list_databases(&self) -> anyhow::Result<Vec<String>> {
+        if self.is_sqlite() {
+            // PRAGMA database_list: seq(i64) | name(str) | file(str)
+            let rows = sqlx::query("PRAGMA database_list")
+                .fetch_all(&self.pool)
+                .await?;
+            return Ok(rows
+                .iter()
+                .map(|r| r.try_get::<String, _>(1).unwrap_or_else(|_| "main".into()))
+                .collect());
+        }
         let query = if self.is_mysql() {
             "SHOW DATABASES"
-        } else if self.is_sqlite() {
-            "PRAGMA database_list"
         } else {
             "SELECT datname FROM pg_database WHERE datistemplate = false"
         };
@@ -68,6 +77,58 @@ impl DbConnection {
             .iter()
             .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
             .collect())
+    }
+
+    /// Load the full schema tree. Databases are collapsed by default; columns
+    /// are eagerly loaded so expanding a table works without a round-trip.
+    pub async fn load_schema(&self) -> anyhow::Result<Vec<SchemaNode>> {
+        if self.is_sqlite() {
+            // SQLite has no real "database" hierarchy — show tables under "main"
+            let tables = self.list_tables("main").await.unwrap_or_default();
+            let table_nodes = self.build_table_nodes("main", tables).await;
+            return Ok(vec![SchemaNode::Database {
+                name: "main".into(),
+                expanded: true,
+                tables: table_nodes,
+            }]);
+        }
+
+        let databases = self.list_databases().await.unwrap_or_default();
+        let mut nodes = Vec::new();
+        for db in databases {
+            let tables = self.list_tables(&db).await.unwrap_or_default();
+            let table_nodes = self.build_table_nodes(&db, tables).await;
+            nodes.push(SchemaNode::Database {
+                name: db,
+                expanded: false,
+                tables: table_nodes,
+            });
+        }
+        Ok(nodes)
+    }
+
+    async fn build_table_nodes(&self, db: &str, tables: Vec<String>) -> Vec<SchemaNode> {
+        let mut nodes = Vec::new();
+        for table in tables {
+            let columns = self
+                .list_columns(db, &table)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| SchemaNode::Column {
+                    name: c.name,
+                    type_name: c.type_name,
+                    nullable: c.nullable,
+                    is_pk: c.is_pk,
+                })
+                .collect();
+            nodes.push(SchemaNode::Table {
+                name: table,
+                expanded: false,
+                columns,
+            });
+        }
+        nodes
     }
 
     pub async fn list_tables(&self, database: &str) -> anyhow::Result<Vec<String>> {

@@ -81,6 +81,19 @@ fn spawn_executor(state: Arc<std::sync::Mutex<AppState>>, conn: DbConnection) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
     state.lock().unwrap().query_tx = Some(tx);
 
+    // Load schema in background immediately after connecting
+    let schema_conn = conn.clone();
+    let schema_state = state.clone();
+    tokio::spawn(async move {
+        match schema_conn.load_schema().await {
+            Ok(nodes) => schema_state.lock().unwrap().set_schema_nodes(nodes),
+            Err(e) => schema_state
+                .lock()
+                .unwrap()
+                .set_status(format!("Schema load failed: {e}")),
+        }
+    });
+
     tokio::spawn(async move {
         while let Some(query) = rx.recv().await {
             let result = conn.execute(&query).await;
