@@ -27,12 +27,18 @@ pub struct Editor<'a> {
     content_before_insert: String,
     /// Scroll-top row from the previous render frame, used to compute cursor screen row.
     last_viewport_top: u16,
+    /// Undo history: each entry is (lines, cursor) before the edit.
+    undo_stack: Vec<(Vec<String>, (usize, usize))>,
+    /// Redo history: entries pushed when undoing.
+    redo_stack: Vec<(Vec<String>, (usize, usize))>,
 }
 
 impl<'a> Editor<'a> {
     pub fn new(keybinding_mode: KeybindingMode) -> Self {
+        let mut textarea = TextArea::default();
+        textarea.set_max_histories(0);
         Self {
-            textarea: TextArea::default(),
+            textarea,
             mode: Mode::Normal,
             pending: Input::default(),
             keybinding_mode,
@@ -41,6 +47,8 @@ impl<'a> Editor<'a> {
             insert_count: 1,
             content_before_insert: String::new(),
             last_viewport_top: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -84,6 +92,9 @@ impl<'a> Editor<'a> {
     pub fn set_content(&mut self, text: &str) {
         let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
         self.textarea = TextArea::new(lines);
+        self.textarea.set_max_histories(0);
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
 
     pub fn scroll_down(&mut self, rows: i16) {
@@ -96,6 +107,11 @@ impl<'a> Editor<'a> {
         for _ in 0..rows {
             self.textarea.move_cursor(CursorMove::Up);
         }
+    }
+
+    pub fn goto_line(&mut self, line: u16) {
+        self.textarea
+            .move_cursor(CursorMove::Jump(line.saturating_sub(1), 0));
     }
 
     pub fn insert_str(&mut self, text: &str) {
@@ -115,6 +131,26 @@ impl<'a> Editor<'a> {
             self.textarea.delete_char();
         }
         self.textarea.insert_str(completion);
+    }
+
+    fn snapshot(&self) -> (Vec<String>, (usize, usize)) {
+        (self.textarea.lines().to_vec(), self.textarea.cursor())
+    }
+
+    fn push_undo(&mut self) {
+        let snap = self.snapshot();
+        if self.undo_stack.len() >= 200 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(snap);
+        self.redo_stack.clear();
+    }
+
+    fn restore(&mut self, lines: Vec<String>, cursor: (usize, usize)) {
+        self.textarea = TextArea::new(lines);
+        self.textarea.set_max_histories(0);
+        self.textarea
+            .move_cursor(CursorMove::Jump(cursor.0 as u16, cursor.1 as u16));
     }
 
     /// Returns true if the key was consumed by the editor.
@@ -164,6 +200,7 @@ impl<'a> Editor<'a> {
     fn begin_insert(&mut self, n: usize) {
         self.insert_count = n;
         self.content_before_insert = self.textarea.lines().join("\n");
+        self.push_undo();
     }
 
     fn vim_normal_visual_operator(&mut self, input: Input) -> bool {
@@ -172,6 +209,7 @@ impl<'a> Editor<'a> {
         // r<char>: replace char under cursor
         if pending.key == Key::Char('r') {
             if let Key::Char(c) = input.key {
+                self.push_undo();
                 self.textarea.delete_next_char();
                 self.textarea.insert_char(c);
                 self.textarea.move_cursor(CursorMove::Back);
@@ -428,6 +466,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('x'),
                 ..
             } if self.mode != Mode::Visual => {
+                self.push_undo();
                 self.textarea.delete_next_char();
                 self.mode = Mode::Normal;
                 return true;
@@ -436,6 +475,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('X'),
                 ..
             } => {
+                self.push_undo();
                 self.textarea.delete_char();
                 return true;
             }
@@ -444,6 +484,7 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode != Mode::Visual => {
+                self.push_undo();
                 self.join_line();
                 return true;
             }
@@ -451,6 +492,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('D'),
                 ..
             } => {
+                self.push_undo();
                 self.textarea.delete_line_by_end();
                 self.mode = Mode::Normal;
                 return true;
@@ -459,6 +501,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('C'),
                 ..
             } => {
+                self.push_undo();
                 self.textarea.delete_line_by_end();
                 self.textarea.cancel_selection();
                 self.mode = Mode::Insert;
@@ -468,6 +511,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('p'),
                 ..
             } => {
+                self.push_undo();
                 self.textarea.paste();
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
@@ -480,6 +524,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('P'),
                 ..
             } => {
+                self.push_undo();
                 // paste before: step back, paste, step forward past inserted text
                 self.textarea.move_cursor(CursorMove::Back);
                 self.textarea.paste();
@@ -494,7 +539,11 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } => {
-                self.textarea.undo();
+                if let Some((lines, cursor)) = self.undo_stack.pop() {
+                    let current = self.snapshot();
+                    self.redo_stack.push(current);
+                    self.restore(lines, cursor);
+                }
                 self.mode = Mode::Normal;
                 return true;
             }
@@ -503,7 +552,11 @@ impl<'a> Editor<'a> {
                 ctrl: true,
                 ..
             } => {
-                self.textarea.redo();
+                if let Some((lines, cursor)) = self.redo_stack.pop() {
+                    let current = self.snapshot();
+                    self.undo_stack.push(current);
+                    self.restore(lines, cursor);
+                }
                 self.mode = Mode::Normal;
                 return true;
             }
@@ -511,6 +564,7 @@ impl<'a> Editor<'a> {
                 key: Key::Char('~'),
                 ..
             } => {
+                self.push_undo();
                 self.toggle_case_at_cursor();
                 return true;
             }
@@ -564,6 +618,9 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode == Mode::Normal => {
+                if op != 'y' {
+                    self.push_undo();
+                }
                 self.textarea.start_selection();
                 self.mode = Mode::Operator(op);
                 return true;
@@ -589,6 +646,7 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode == Mode::Visual => {
+                self.push_undo();
                 self.textarea.move_cursor(CursorMove::Forward);
                 self.textarea.cut();
                 let y = self.textarea.yank_text();
@@ -603,6 +661,7 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode == Mode::Visual => {
+                self.push_undo();
                 self.textarea.move_cursor(CursorMove::Forward);
                 self.textarea.cut();
                 let y = self.textarea.yank_text();
@@ -972,13 +1031,47 @@ mod tests {
     }
 
     #[test]
-    fn vim_u_undoes() {
+    fn vim_u_undoes_insert_session_as_chunk() {
         let mut e = Editor::new(KeybindingMode::Vim);
         e.set_content("hello");
-        e.mode = Mode::Insert;
-        e.handle_key(key(KeyCode::Char('x')));
-        e.mode = Mode::Normal;
+        // Enter insert, type two lines, exit
+        e.handle_key(key(KeyCode::Char('i')));
+        e.handle_key(key(KeyCode::Enter));
+        e.handle_key(key(KeyCode::Enter));
+        e.handle_key(key(KeyCode::Esc));
+        assert_eq!(e.textarea.lines().len(), 3);
+        // Single undo should revert all of insert mode
         e.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(e.textarea.lines().len(), 1);
+        assert_eq!(e.textarea.lines()[0], "hello");
+    }
+
+    #[test]
+    fn vim_undo_redo_roundtrip() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("hello");
+        e.handle_key(key(KeyCode::Char('i')));
+        for c in "world".chars() {
+            e.handle_key(key(KeyCode::Char(c)));
+        }
+        e.handle_key(key(KeyCode::Esc));
+        let after = e.textarea.lines()[0].clone();
+        e.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(e.textarea.lines()[0], "hello");
+        e.handle_key(ctrl_key(KeyCode::Char('r')));
+        assert_eq!(e.textarea.lines()[0], after);
+    }
+
+    #[test]
+    fn vim_u_undoes_dd() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("first\nsecond");
+        e.handle_key(key(KeyCode::Char('d')));
+        e.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(e.textarea.lines().len(), 1);
+        e.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(e.textarea.lines().len(), 2);
+        assert_eq!(e.textarea.lines()[0], "first");
     }
 
     #[test]
@@ -986,6 +1079,7 @@ mod tests {
         let mut e = Editor::new(KeybindingMode::Vim);
         e.set_content("hello");
         e.handle_key(ctrl_key(KeyCode::Char('r')));
+        // no-op when nothing to redo — just must not panic
     }
 
     #[test]

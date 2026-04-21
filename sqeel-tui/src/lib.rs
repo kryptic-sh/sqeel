@@ -332,39 +332,49 @@ async fn run_loop(
                     }
                     MouseEventKind::ScrollDown => {
                         let mut s = state.lock().unwrap();
-                        match pane {
-                            Focus::Schema => {
-                                for _ in 0..mouse_scroll_lines {
-                                    s.schema_cursor_down();
+                        if s.show_help {
+                            s.help_scroll = s.help_scroll.saturating_add(mouse_scroll_lines as u16);
+                        } else {
+                            s.focus = pane;
+                            match pane {
+                                Focus::Schema => {
+                                    for _ in 0..mouse_scroll_lines {
+                                        s.schema_cursor_down();
+                                    }
                                 }
-                            }
-                            Focus::Results => {
-                                for _ in 0..mouse_scroll_lines {
-                                    s.scroll_results_down();
+                                Focus::Results => {
+                                    for _ in 0..mouse_scroll_lines {
+                                        s.scroll_results_down();
+                                    }
                                 }
-                            }
-                            Focus::Editor => {
-                                drop(s);
-                                editor.scroll_down(mouse_scroll_lines as i16);
+                                Focus::Editor => {
+                                    drop(s);
+                                    editor.scroll_down(mouse_scroll_lines as i16);
+                                }
                             }
                         }
                     }
                     MouseEventKind::ScrollUp => {
                         let mut s = state.lock().unwrap();
-                        match pane {
-                            Focus::Schema => {
-                                for _ in 0..mouse_scroll_lines {
-                                    s.schema_cursor_up();
+                        if s.show_help {
+                            s.help_scroll = s.help_scroll.saturating_sub(mouse_scroll_lines as u16);
+                        } else {
+                            s.focus = pane;
+                            match pane {
+                                Focus::Schema => {
+                                    for _ in 0..mouse_scroll_lines {
+                                        s.schema_cursor_up();
+                                    }
                                 }
-                            }
-                            Focus::Results => {
-                                for _ in 0..mouse_scroll_lines {
-                                    s.scroll_results_up();
+                                Focus::Results => {
+                                    for _ in 0..mouse_scroll_lines {
+                                        s.scroll_results_up();
+                                    }
                                 }
-                            }
-                            Focus::Editor => {
-                                drop(s);
-                                editor.scroll_up(mouse_scroll_lines as i16);
+                                Focus::Editor => {
+                                    drop(s);
+                                    editor.scroll_up(mouse_scroll_lines as i16);
+                                }
                             }
                         }
                     }
@@ -395,9 +405,15 @@ async fn run_loop(
                         }
                         (KeyModifiers::NONE, KeyCode::Enter) => {
                             let cmd_str = command_input.take().unwrap_or_default();
-                            match cmd_str.trim() {
-                                "q" | "q!" => break,
-                                _ => {}
+                            let trimmed = cmd_str.trim();
+                            if let Ok(line) = trimmed.parse::<u16>() {
+                                state.lock().unwrap().focus = Focus::Editor;
+                                editor.goto_line(line);
+                            } else {
+                                match trimmed {
+                                    "q" | "q!" => break,
+                                    _ => {}
+                                }
                             }
                         }
                         (KeyModifiers::NONE, KeyCode::Char(c)) => {
@@ -463,12 +479,25 @@ async fn run_loop(
 
                 // ── Help overlay ─────────────────────────────────────────────────
                 if show_help {
-                    if let (
-                        KeyModifiers::NONE,
-                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('.'),
-                    ) = (key.modifiers, key.code)
-                    {
-                        state.lock().unwrap().close_help();
+                    match (key.modifiers, key.code) {
+                        (
+                            KeyModifiers::NONE,
+                            KeyCode::Esc
+                            | KeyCode::Char('q')
+                            | KeyCode::Char('?')
+                            | KeyCode::Char('.'),
+                        ) => {
+                            state.lock().unwrap().close_help();
+                        }
+                        (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
+                            let mut s = state.lock().unwrap();
+                            s.help_scroll = s.help_scroll.saturating_add(1);
+                        }
+                        (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up) => {
+                            let mut s = state.lock().unwrap();
+                            s.help_scroll = s.help_scroll.saturating_sub(1);
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -957,7 +986,7 @@ fn draw(
 
     // Help overlay (topmost)
     if state.show_help {
-        draw_help(f, area);
+        draw_help(f, area, state.help_scroll);
     }
 
     // LSP warning bar (above status bar)
@@ -1380,7 +1409,7 @@ fn draw_editor(
         .textarea
         .set_cursor_line_style(Style::default().bg(cursor_line_bg));
     editor.textarea.set_cursor_style(if !focused {
-        Style::default() // invisible when out of focus
+        Style::default().bg(cursor_line_bg) // blend into cursor line, truly invisible
     } else if state.vim_mode == VimMode::Insert {
         Style::default().add_modifier(Modifier::UNDERLINED) // thin bar
     } else {
@@ -1630,7 +1659,7 @@ fn draw_connection_switcher(f: &mut ratatui::Frame<'_>, state: &AppState, area: 
     );
 }
 
-fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect) {
+fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
     const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         (
             "Global",
@@ -1725,6 +1754,7 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
+    let scroll = scroll.min(total_rows.saturating_sub(inner.height));
 
     let mut lines: Vec<ratatui::text::Line<'static>> = vec![];
     for (section, items) in SECTIONS {
@@ -1745,7 +1775,12 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect) {
         lines.push(ratatui::text::Line::raw(""));
     }
 
-    f.render_widget(Paragraph::new(lines).style(Style::default()), inner);
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default())
+            .scroll((scroll, 0)),
+        inner,
+    );
 }
 
 fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) {

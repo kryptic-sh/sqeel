@@ -118,6 +118,7 @@ pub struct AppState {
     pub edit_connection_original_name: Option<String>,
     // Help overlay
     pub show_help: bool,
+    pub help_scroll: u16,
     pub sidebar_visible: bool,
     // Debug mode — enabled via --debug CLI flag
     pub debug_mode: bool,
@@ -409,10 +410,12 @@ impl AppState {
 
     pub fn open_help(&mut self) {
         self.show_help = true;
+        self.help_scroll = 0;
     }
 
     pub fn close_help(&mut self) {
         self.show_help = false;
+        self.help_scroll = 0;
     }
 
     pub fn add_connection_tab(&mut self) {
