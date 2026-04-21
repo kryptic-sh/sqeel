@@ -59,6 +59,48 @@ pub fn flatten_tree(nodes: &[SchemaNode]) -> Vec<SchemaTreeItem> {
     items
 }
 
+/// Flatten ALL nodes regardless of expanded state, using simple depth indentation.
+/// Used for search so collapsed subtrees are still searchable.
+pub fn flatten_all(nodes: &[SchemaNode]) -> Vec<SchemaTreeItem> {
+    let mut items = Vec::new();
+    flatten_nodes_all(nodes, 0, &[], &mut items);
+    items
+}
+
+fn flatten_nodes_all(
+    nodes: &[SchemaNode],
+    depth: usize,
+    path: &[usize],
+    items: &mut Vec<SchemaTreeItem>,
+) {
+    for (i, node) in nodes.iter().enumerate() {
+        let mut node_path = path.to_vec();
+        node_path.push(i);
+        let indent = " ".repeat(1 + depth * 2);
+        let icon = node_icon(node);
+        let name = node.name();
+        let extra = match node {
+            SchemaNode::Column { type_name, .. } => format!(": {type_name}"),
+            _ => String::new(),
+        };
+        let label = format!("{indent}{icon}{name}{extra}");
+        items.push(SchemaTreeItem {
+            label,
+            depth,
+            node_path: node_path.clone(),
+        });
+        match node {
+            SchemaNode::Database { tables, .. } => {
+                flatten_nodes_all(tables, depth + 1, &node_path, items);
+            }
+            SchemaNode::Table { columns, .. } => {
+                flatten_nodes_all(columns, depth + 1, &node_path, items);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn node_icon(node: &SchemaNode) -> &'static str {
     match node {
         SchemaNode::Database { .. } => "󰆼 ",

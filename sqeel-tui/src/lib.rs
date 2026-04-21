@@ -1353,16 +1353,38 @@ fn draw_schema(
         height: chunks[1].height,
     };
 
-    let all_items = state.visible_schema_items();
+    let all_items = if query.is_empty() {
+        state.visible_schema_items()
+    } else {
+        state.all_schema_items()
+    };
     let items: Vec<&SchemaTreeItem> = if !query.is_empty() {
         let q = query.to_lowercase();
+        // Collect indices of items whose name matches the query.
+        let matched: std::collections::HashSet<usize> = all_items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                let name = item.label.trim().to_lowercase();
+                let mut chars = name.chars();
+                if q.chars().all(|qc| chars.any(|lc| lc == qc)) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Build the set of paths that must be shown: matched + all their ancestors.
+        let mut needed: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
+        for &idx in &matched {
+            let path = &all_items[idx].node_path;
+            for len in 1..=path.len() {
+                needed.insert(path[..len].to_vec());
+            }
+        }
         all_items
             .iter()
-            .filter(|item| {
-                let label = item.label.to_lowercase();
-                let mut chars = label.chars();
-                q.chars().all(|qc| chars.any(|lc| lc == qc))
-            })
+            .filter(|item| needed.contains(&item.node_path))
             .collect()
     } else {
         all_items.iter().collect()

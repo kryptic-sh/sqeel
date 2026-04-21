@@ -4,7 +4,8 @@ use crate::lsp::Diagnostic;
 use crate::persistence;
 use crate::schema::{
     SchemaNode, SchemaTreeItem, collect_expanded_paths, expand_path, find_cursor_by_path,
-    flatten_tree, merge_expansion, path_to_string, restore_expanded_paths, toggle_node,
+    flatten_all, flatten_tree, merge_expansion, path_to_string, restore_expanded_paths,
+    toggle_node,
 };
 use lsp_types::DiagnosticSeverity;
 use std::sync::{Arc, Mutex};
@@ -125,6 +126,7 @@ pub struct AppState {
     pub schema_cursor: usize,
     pub schema_loading: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
+    all_schema_items_cache: Vec<SchemaTreeItem>,
     pub query_history: Vec<String>,
     pub history_cursor: Option<usize>,
     // Connection switcher
@@ -162,6 +164,7 @@ impl AppState {
 
     fn rebuild_schema_cache(&mut self) {
         self.schema_items_cache = flatten_tree(&self.schema_nodes);
+        self.all_schema_items_cache = flatten_all(&self.schema_nodes);
     }
 
     pub fn set_results(&mut self, mut result: QueryResult) {
@@ -307,6 +310,10 @@ impl AppState {
 
     pub fn visible_schema_items(&self) -> &[SchemaTreeItem] {
         &self.schema_items_cache
+    }
+
+    pub fn all_schema_items(&self) -> &[SchemaTreeItem] {
+        &self.all_schema_items_cache
     }
 
     /// Returns path strings for every expanded node, e.g. `["mydb", "mydb/users"]`.
