@@ -21,8 +21,29 @@ impl DbConnection {
         self.url.starts_with("mysql://") || self.url.starts_with("mariadb://")
     }
 
-    fn is_sqlite(&self) -> bool {
+    pub fn is_sqlite(&self) -> bool {
         self.url.starts_with("sqlite://") || self.url.starts_with("sqlite:")
+    }
+
+    /// Load just the database/schema names as collapsed nodes with no tables.
+    /// This is fast and lets the UI show the structure before tables are loaded.
+    pub async fn load_schema_databases(&self) -> anyhow::Result<Vec<SchemaNode>> {
+        if self.is_sqlite() {
+            return Ok(vec![SchemaNode::Database {
+                name: "main".into(),
+                expanded: true,
+                tables: vec![],
+            }]);
+        }
+        let databases = self.list_databases().await?;
+        Ok(databases
+            .into_iter()
+            .map(|name| SchemaNode::Database {
+                name,
+                expanded: false,
+                tables: vec![],
+            })
+            .collect())
     }
 
     pub async fn execute(&self, query: &str) -> anyhow::Result<QueryResult> {

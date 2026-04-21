@@ -230,6 +230,43 @@ impl AppState {
         self.schema_cursor = 0;
     }
 
+    /// Append a batch of table nodes (no columns yet) to the named database.
+    /// Does not touch other databases or reset the cursor.
+    pub fn append_db_tables(&mut self, db_name: &str, tables: Vec<SchemaNode>) {
+        for node in self.schema_nodes.iter_mut() {
+            if let SchemaNode::Database { name, tables: t, .. } = node {
+                if name == db_name {
+                    t.extend(tables);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Set the columns for one specific table without touching anything else.
+    pub fn set_table_columns(
+        &mut self,
+        db_name: &str,
+        table_name: &str,
+        columns: Vec<SchemaNode>,
+    ) {
+        for node in self.schema_nodes.iter_mut() {
+            if let SchemaNode::Database { name, tables, .. } = node {
+                if name == db_name {
+                    for table in tables.iter_mut() {
+                        if let SchemaNode::Table { name, columns: c, .. } = table {
+                            if name == table_name {
+                                *c = columns;
+                                return;
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     /// Like `set_schema_nodes` but preserves the cursor position and the
     /// expanded/collapsed state of nodes that exist in both old and new trees.
     pub fn refresh_schema_nodes(&mut self, mut nodes: Vec<SchemaNode>) {

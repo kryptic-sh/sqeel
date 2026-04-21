@@ -188,7 +188,7 @@ async fn run_loop(
         match event::read()? {
             Event::Mouse(mouse) => {
                 let area = terminal.size()?;
-                let schema_width = (area.width * 15 / 100).max(1);
+                let schema_width = (area.width * 15 / 100).max(20);
                 let show_results = !matches!(
                     state.lock().unwrap().results,
                     sqeel_core::state::ResultsPane::Empty
@@ -544,7 +544,7 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
 
     let outer = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(15), Constraint::Percentage(85)])
+        .constraints([Constraint::Min(20), Constraint::Percentage(85)])
         .split(main_area);
 
     let schema_focused = state.focus == Focus::Schema;

@@ -6,6 +6,7 @@ use sqeel_core::{
     config::{load_connections, load_session_data, save_session},
     db::DbConnection,
     persistence::{load_schema_cache, save_schema_cache},
+    schema::SchemaNode,
 };
 use sqeel_tui::TuiProvider;
 
@@ -122,27 +123,110 @@ fn spawn_executor(
         s.schema_cursor = session_schema_cursor.min(max);
     }
 
-    let schema_conn = conn.clone();
-    let schema_state = state.clone();
-    let schema_url = conn.url.clone();
+    // Channel: table loader sends (db, table) pairs; column loader consumes them.
+    let (col_tx, mut col_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+
+    // ── Column loader task (separate thread) ─────────────────────────────────
+    let col_conn = conn.clone();
+    let col_state = state.clone();
+    let col_schema_url = conn.url.clone();
     tokio::spawn(async move {
-        match schema_conn.load_schema().await {
-            Ok(nodes) => {
-                let _ = save_schema_cache(&schema_url, &nodes);
-                let mut s = schema_state.lock().unwrap();
-                // Preserve expansion state + cursor across the refresh
-                let cursor = s.schema_cursor;
-                s.refresh_schema_nodes(nodes);
-                // Save cursor to session so it persists across restarts
-                if let Some(ref name) = s.active_connection.clone() {
-                    let _ = save_session(name, cursor);
-                }
-            }
-            Err(e) => schema_state
+        while let Some((db_name, table_name)) = col_rx.recv().await {
+            let col_nodes = match col_conn.list_columns(&db_name, &table_name).await {
+                Ok(cols) => cols
+                    .into_iter()
+                    .map(|c| SchemaNode::Column {
+                        name: c.name,
+                        type_name: c.type_name,
+                        nullable: c.nullable,
+                        is_pk: c.is_pk,
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            };
+            col_state
                 .lock()
                 .unwrap()
-                .set_status(format!("Schema load failed: {e}")),
+                .set_table_columns(&db_name, &table_name, col_nodes);
         }
+        // Channel drained — all columns loaded. Save final cache + session.
+        let s = col_state.lock().unwrap();
+        let nodes = s.schema_nodes.clone();
+        let cursor = s.schema_cursor;
+        let _ = save_schema_cache(&col_schema_url, &nodes);
+        if let Some(ref name) = s.active_connection.clone() {
+            let _ = save_session(name, cursor);
+        }
+    });
+
+    // ── Table loader task ────────────────────────────────────────────────────
+    let schema_conn = conn.clone();
+    let schema_state = state.clone();
+    tokio::spawn(async move {
+        // Step 1: database shells.
+        let db_shells = match schema_conn.load_schema_databases().await {
+            Ok(n) => n,
+            Err(e) => {
+                schema_state
+                    .lock()
+                    .unwrap()
+                    .set_status(format!("Schema load failed: {e}"));
+                return;
+            }
+        };
+
+        let db_names: Vec<String> = db_shells
+            .iter()
+            .filter_map(|n| {
+                if let SchemaNode::Database { name, .. } = n {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        schema_state
+            .lock()
+            .unwrap()
+            .refresh_schema_nodes(db_shells);
+
+        // Phase 1: first 100 tables for every database.
+        let mut overflow: Vec<(String, Vec<String>)> = Vec::new();
+
+        for db_name in &db_names {
+            let table_names = match schema_conn.list_tables(db_name).await {
+                Ok(t) => t,
+                Err(e) => {
+                    schema_state
+                        .lock()
+                        .unwrap()
+                        .set_status(format!("Tables load failed ({db_name}): {e}"));
+                    continue;
+                }
+            };
+
+            let first = &table_names[..table_names.len().min(100)];
+            let rest = &table_names[first.len()..];
+
+            add_table_shells(&schema_state, &col_tx, db_name, first);
+
+            if !rest.is_empty() {
+                overflow.push((db_name.clone(), rest.to_vec()));
+            }
+        }
+
+        // Phase 2: remaining tables for databases with >100 tables.
+        for (db_name, remaining) in &overflow {
+            for batch in remaining.chunks(100) {
+                add_table_shells(&schema_state, &col_tx, db_name, batch);
+            }
+        }
+
+        // Dropping col_tx closes the channel → column loader task finishes and
+        // saves the cache once all columns are loaded.
+        drop(col_tx);
     });
 
     tokio::spawn(async move {
@@ -159,4 +243,26 @@ fn spawn_executor(
             }
         }
     });
+}
+
+/// Add table shells to the state and enqueue each for column loading.
+fn add_table_shells(
+    state: &Arc<std::sync::Mutex<AppState>>,
+    col_tx: &tokio::sync::mpsc::UnboundedSender<(String, String)>,
+    db_name: &str,
+    tables: &[String],
+) {
+    let shells: Vec<SchemaNode> = tables
+        .iter()
+        .map(|t| SchemaNode::Table {
+            name: t.clone(),
+            expanded: false,
+            columns: vec![],
+        })
+        .collect();
+    state.lock().unwrap().append_db_tables(db_name, shells);
+
+    for table_name in tables {
+        let _ = col_tx.send((db_name.to_string(), table_name.clone()));
+    }
 }
