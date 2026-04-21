@@ -14,11 +14,16 @@ struct Args {
     /// Named connection from config (e.g. local)
     #[arg(short = 'c', long)]
     connection: Option<String>,
+
+    /// Show debug panel at the bottom
+    #[arg(long)]
+    debug: bool,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let state = AppState::new();
+    state.lock().unwrap().debug_mode = args.debug;
 
     let conns = load_connections().unwrap_or_default();
     state

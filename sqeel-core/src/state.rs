@@ -82,6 +82,8 @@ pub struct AppState {
     pub add_connection_field: AddConnectionField,
     // Help overlay
     pub show_help: bool,
+    // Debug mode — enabled via --debug CLI flag
+    pub debug_mode: bool,
     // Live query channel — set by the binary when connected
     pub query_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }

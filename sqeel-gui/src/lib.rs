@@ -208,6 +208,24 @@ impl SqeelApp {
         let add_name = s.add_connection_name.clone();
         let add_url = s.add_connection_url.clone();
         let show_help = s.show_help;
+        let debug_mode = s.debug_mode;
+        let debug_info = if debug_mode {
+            let focus = format!("{:?}", s.focus);
+            let vim = format!("{:?}", s.vim_mode);
+            let conn = s.active_connection.clone().unwrap_or_else(|| "none".into());
+            let schema_n = s.schema_nodes.len();
+            let results_str = match &s.results {
+                ResultsPane::Empty => "empty".into(),
+                ResultsPane::Results(r) => format!("{}r×{}c", r.rows.len(), r.columns.len()),
+                ResultsPane::Error(_) => "error".into(),
+            };
+            Some(format!(
+                "focus={focus}  vim={vim}  conn={conn}  schema={schema_n}db  results={results_str}  sw={}  add={}  hlp={}",
+                s.show_connection_switcher as u8, s.show_add_connection as u8, s.show_help as u8,
+            ))
+        } else {
+            None
+        };
         drop(s);
 
         // Schema panel
@@ -505,10 +523,26 @@ impl SqeelApp {
             base
         };
 
-        if show_help {
+        let after_help = if show_help {
             build_help_overlay(under)
         } else {
             under
+        };
+
+        if let Some(info) = debug_info {
+            column![
+                after_help,
+                container(text(info).size(11).color(Color::BLACK))
+                    .width(Length::Fill)
+                    .padding([2, 8])
+                    .style(|_theme: &Theme| iced::widget::container::Style {
+                        background: Some(iced::Background::Color(Color::from_rgb(1.0, 0.85, 0.0))),
+                        ..Default::default()
+                    }),
+            ]
+            .into()
+        } else {
+            after_help
         }
     }
 

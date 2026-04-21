@@ -347,10 +347,21 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
 fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor) {
     let area = f.area();
 
+    // Reserve one row at the bottom for the debug bar when enabled
+    let (main_area, debug_area) = if state.debug_mode {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
     let outer = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(15), Constraint::Percentage(85)])
-        .split(area);
+        .split(main_area);
 
     let schema_focused = state.focus == Focus::Schema;
     let editor_focused = state.focus == Focus::Editor;
@@ -403,6 +414,49 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor) {
     if state.show_help {
         draw_help(f, area);
     }
+
+    // Debug bar (always below everything else)
+    if let Some(dbg) = debug_area {
+        draw_debug_bar(f, state, editor, dbg);
+    }
+}
+
+fn draw_debug_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, area: Rect) {
+    let focus = format!("{:?}", state.focus);
+    let vim = format!("{:?}", state.vim_mode);
+    let conn = state
+        .active_connection
+        .as_deref()
+        .unwrap_or("none")
+        .to_string();
+    let schema_n = state.schema_nodes.len();
+    let results = match &state.results {
+        sqeel_core::state::ResultsPane::Empty => "empty".into(),
+        sqeel_core::state::ResultsPane::Results(r) => {
+            format!("{}r×{}c", r.rows.len(), r.columns.len())
+        }
+        sqeel_core::state::ResultsPane::Error(_) => "error".into(),
+    };
+    let cursor = {
+        let (row, col) = editor.textarea.cursor();
+        format!("{}:{}", row + 1, col + 1)
+    };
+    let flags = format!(
+        "sw={} add={} hlp={} cmp={}",
+        state.show_connection_switcher as u8,
+        state.show_add_connection as u8,
+        state.show_help as u8,
+        state.show_completions as u8,
+    );
+
+    let line = format!(
+        " DEBUG  focus={focus}  vim={vim}  cursor={cursor}  conn={conn}  schema={schema_n}db  results={results}  {flags}"
+    );
+
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().fg(Color::Black).bg(Color::Yellow)),
+        area,
+    );
 }
 
 fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool) {
