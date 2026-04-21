@@ -91,6 +91,7 @@ pub struct AppState {
     pub results_col_scroll: usize,
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
+    pub schema_loading: bool,
     pub query_history: Vec<String>,
     pub history_cursor: Option<usize>,
     // Connection switcher

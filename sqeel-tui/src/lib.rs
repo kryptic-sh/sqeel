@@ -397,6 +397,9 @@ async fn run_loop(
                     match (key.modifiers, key.code) {
                         (KeyModifiers::NONE, KeyCode::Esc) => {
                             state.lock().unwrap().dismiss_completions();
+                            if keybinding_mode == KeybindingMode::Vim {
+                                editor.vim_mode = VimMode::Normal;
+                            }
                             continue;
                         }
                         (KeyModifiers::NONE, KeyCode::Up)
@@ -642,7 +645,7 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
     let results_focused = state.focus == Focus::Results;
 
     // Schema panel
-    draw_schema(f, state, outer[0], schema_focused);
+    draw_schema(f, state, outer[0], schema_focused, debug_scroll);
 
     let show_results = !matches!(state.results, ResultsPane::Empty);
     let editor_pct = (state.editor_ratio * 100.0) as u16;
@@ -685,7 +688,8 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
 
     // Completion popup (overlay)
     if state.show_completions && !state.completions.is_empty() {
-        draw_completions(f, state, right_chunks[0]);
+        let (cur_row, cur_col) = editor.textarea.cursor();
+        draw_completions(f, state, right_chunks[0], cur_row, cur_col);
     }
 
     // Connection switcher modal (top-level overlay)
@@ -884,9 +888,22 @@ fn draw_debug_bar(
     );
 }
 
-fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool) {
+fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool, tick: u32) {
+    const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+    let status = if state.schema_loading {
+        SPINNER[(tick as usize) % SPINNER.len()]
+    } else if !state.schema_nodes.is_empty() {
+        "✓"
+    } else {
+        ""
+    };
+    let title = if status.is_empty() {
+        "Schema".to_string()
+    } else {
+        format!("Schema {status}")
+    };
     let block = Block::default()
-        .title("Schema")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(if focused {
             Style::default().fg(Color::Yellow)
@@ -1099,7 +1116,13 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
     }
 }
 
-fn draw_completions(f: &mut ratatui::Frame<'_>, state: &AppState, editor_area: Rect) {
+fn draw_completions(
+    f: &mut ratatui::Frame<'_>,
+    state: &AppState,
+    editor_area: Rect,
+    cur_row: usize,
+    cur_col: usize,
+) {
     let cursor = state.completion_cursor;
     let items: Vec<ListItem> = state
         .completions
@@ -1115,19 +1138,39 @@ fn draw_completions(f: &mut ratatui::Frame<'_>, state: &AppState, editor_area: R
         })
         .collect();
 
-    let height = (items.len() as u16 + 2).min(10);
+    let popup_w = 30u16.min(editor_area.width.saturating_sub(2));
+    let popup_h = (items.len() as u16 + 2).min(10);
+
+    // inner editor area starts 1 cell in from the block border
+    let inner_x = editor_area.x + 1;
+    let inner_y = editor_area.y + 1;
+    let inner_w = editor_area.width.saturating_sub(2);
+    let inner_h = editor_area.height.saturating_sub(2);
+
+    // cursor position in screen coords (row 0 = first visible line)
+    let cx = inner_x.saturating_add(cur_col as u16);
+    let cy = inner_y.saturating_add(cur_row as u16);
+
+    // place popup one row below cursor; flip up if it would overflow bottom
+    let popup_y = if cy + 2 + popup_h <= inner_y + inner_h {
+        cy + 2
+    } else {
+        cy.saturating_sub(popup_h)
+    };
+    // clamp x so popup stays inside the editor
+    let popup_x = cx.min((inner_x + inner_w).saturating_sub(popup_w));
+
     let popup = Rect {
-        x: editor_area.x + 2,
-        y: editor_area.y + 2,
-        width: 30.min(editor_area.width.saturating_sub(4)),
-        height: height.min(editor_area.height.saturating_sub(4)),
+        x: popup_x,
+        y: popup_y,
+        width: popup_w,
+        height: popup_h.min(inner_h),
     };
 
     f.render_widget(Clear, popup);
     f.render_widget(
         List::new(items).block(
             Block::default()
-                .title("Completions")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         ),

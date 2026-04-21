@@ -130,6 +130,7 @@ fn spawn_executor(
         tokio::sync::mpsc::unbounded_channel::<(String, String)>();
 
     // ── Column loader task (separate thread) ─────────────────────────────────
+    state.lock().unwrap().schema_loading = true;
     let col_conn = conn.clone();
     let col_state = state.clone();
     let col_schema_url = conn.url.clone();
@@ -153,7 +154,8 @@ fn spawn_executor(
                 .set_table_columns(&db_name, &table_name, col_nodes);
         }
         // Channel drained — all columns loaded. Save final cache + session.
-        let s = col_state.lock().unwrap();
+        let mut s = col_state.lock().unwrap();
+        s.schema_loading = false;
         let nodes = s.schema_nodes.clone();
         let cursor = s.schema_cursor;
         let _ = save_schema_cache(&col_schema_url, &nodes);
