@@ -511,7 +511,7 @@ async fn run_loop(
                             // keep filter active, dismiss input box
                             schema_search = None;
                         }
-                        (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
                             if let Some(ref mut q) = schema_search {
                                 q.push(c);
                             }
