@@ -88,11 +88,11 @@ impl<'a> Editor<'a> {
     }
 
     pub fn scroll_down(&mut self, rows: i16) {
-        self.textarea.scroll(Scrolling::Delta { rows, cols: 0 });
+        for _ in 0..rows { self.textarea.move_cursor(CursorMove::Down); }
     }
 
     pub fn scroll_up(&mut self, rows: i16) {
-        self.textarea.scroll(Scrolling::Delta { rows: -rows, cols: 0 });
+        for _ in 0..rows { self.textarea.move_cursor(CursorMove::Up); }
     }
 
     pub fn insert_str(&mut self, text: &str) {
