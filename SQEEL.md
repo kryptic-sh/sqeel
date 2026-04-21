@@ -89,6 +89,14 @@ Query errors and connection failures display in the results pane, styled distinc
 - Focus (which pane is active)
 - Split ratios
 
+## Persistence
+
+### SQL Files
+Every buffer is backed by a file on disk. New buffers get a generated name (e.g. `scratch_001.sql`). Saving is automatic on every edit — no explicit save command needed. Files live in `~/.local/share/sqeel/queries/` (platform-resolved via `dirs::data_dir()`). Named tabs allow switching between open files.
+
+### Result History
+The last 10 successful query results are persisted to disk as JSON in `~/.local/share/sqeel/results/`. Errors are never stored. Each file is named by timestamp + query hash (e.g. `2026-04-21T14:05:00Z_a3f9c2.json`). When there are more than 10, the oldest is deleted. Results can be browsed from a history panel or recalled by query history.
+
 Events flow: user input → provider translates → `Core` action → state update → provider re-renders.
 
 ## Testing
@@ -223,8 +231,10 @@ GitHub Actions runs on every push and PR to `sqeel/sqeel`.
 - [ ] Multiple DB connections selectable in UI
 - [ ] SQLite + PostgreSQL support via sqlx
 - [ ] Export results (CSV, JSON)
-- [ ] Query history
-- [ ] Tests: config parse/load, multi-connection switching, export output correctness, history append/recall
+- [ ] SQL file persistence: auto-save every buffer to `~/.local/share/sqeel/queries/`; new buffers get generated name (`scratch_001.sql`)
+- [ ] Result history persistence: last 10 successful results saved as JSON in `~/.local/share/sqeel/results/`; errors excluded; oldest deleted when limit exceeded
+- [ ] Query history browsable in UI; recall past query into editor
+- [ ] Tests: config parse/load, multi-connection switching, export output correctness, file auto-save round-trip, result history rotation (11th result evicts oldest, errors not stored)
 
 ## DB Support Priority
 1. MySQL/MariaDB
@@ -261,6 +271,14 @@ ca_cert = "/path/to/ca.pem"
 ```
 
 sqeel scans `conns/` on startup and loads all `.toml` files found.
+
+### Data directory — `~/.local/share/sqeel/` (platform-resolved via `dirs::data_dir()`)
+
+```
+~/.local/share/sqeel/
+  queries/          ← auto-saved SQL buffers (*.sql)
+  results/          ← last 10 successful query results (*.json, errors excluded)
+```
 
 ## Name
 SQEEL — because it makes other SQL clients cry.
