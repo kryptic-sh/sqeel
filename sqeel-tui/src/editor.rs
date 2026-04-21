@@ -31,6 +31,14 @@ pub struct Editor<'a> {
     pub keybinding_mode: KeybindingMode,
     /// Set when the user yanks/cuts; caller drains this to write to OS clipboard.
     pub last_yank: Option<String>,
+    /// Accumulated numeric prefix (0 = not set, treated as 1)
+    count: usize,
+    /// Count captured when entering insert mode; drives replay on Esc
+    insert_count: usize,
+    /// Content snapshot taken just before entering insert mode
+    content_before_insert: String,
+    /// Scroll-top row from the previous render frame, used to compute cursor screen row.
+    last_viewport_top: u16,
 }
 
 impl<'a> Editor<'a> {
@@ -41,7 +49,27 @@ impl<'a> Editor<'a> {
             pending: Input::default(),
             keybinding_mode,
             last_yank: None,
+            count: 0,
+            insert_count: 1,
+            content_before_insert: String::new(),
+            last_viewport_top: 0,
         }
+    }
+
+    /// Returns the cursor's row within the visible textarea (0-based), updating
+    /// the stored viewport top so subsequent calls remain accurate.
+    pub fn cursor_screen_row(&mut self, height: u16) -> u16 {
+        let cursor = self.textarea.cursor().0 as u16;
+        let top = self.last_viewport_top;
+        let new_top = if cursor < top {
+            cursor
+        } else if top + height <= cursor {
+            cursor + 1 - height
+        } else {
+            top
+        };
+        self.last_viewport_top = new_top;
+        cursor.saturating_sub(new_top)
     }
 
     pub fn vim_mode(&self) -> VimMode {
@@ -68,6 +96,14 @@ impl<'a> Editor<'a> {
     pub fn set_content(&mut self, text: &str) {
         let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
         self.textarea = TextArea::new(lines);
+    }
+
+    pub fn scroll_down(&mut self, rows: i16) {
+        self.textarea.scroll(Scrolling::Delta { rows, cols: 0 });
+    }
+
+    pub fn scroll_up(&mut self, rows: i16) {
+        self.textarea.scroll(Scrolling::Delta { rows: -rows, cols: 0 });
     }
 
     pub fn insert_str(&mut self, text: &str) {
@@ -112,6 +148,10 @@ impl<'a> Editor<'a> {
         match input {
             Input { key: Key::Esc, .. } => {
                 self.mode = Mode::Normal;
+                if self.insert_count > 1 {
+                    self.replay_insert();
+                }
+                self.insert_count = 1;
                 true
             }
             input => {
@@ -119,6 +159,20 @@ impl<'a> Editor<'a> {
                 true
             }
         }
+    }
+
+    fn replay_insert(&mut self) {
+        let after = self.textarea.lines().join("\n");
+        let inserted = extract_inserted(&self.content_before_insert, &after);
+        if inserted.is_empty() { return; }
+        for _ in 0..self.insert_count - 1 {
+            self.textarea.insert_str(&inserted);
+        }
+    }
+
+    fn begin_insert(&mut self, n: usize) {
+        self.insert_count = n;
+        self.content_before_insert = self.textarea.lines().join("\n");
     }
 
     fn vim_normal_visual_operator(&mut self, input: Input) -> bool {
@@ -132,36 +186,50 @@ impl<'a> Editor<'a> {
                 self.textarea.move_cursor(CursorMove::Back);
                 return true;
             }
-            // Not a char key — drop the replace
             return false;
         }
 
+        // Digit prefix accumulation — 0 is Head unless count already started
+        if let Key::Char(d @ '0'..='9') = input.key {
+            if !input.ctrl && !input.alt && (d != '0' || self.count > 0) {
+                self.count = self.count.saturating_mul(10)
+                    .saturating_add(d as usize - '0' as usize);
+                return true;
+            }
+        }
+
+        // Consume count (default 1) and reset
+        let n = if self.count > 0 { self.count } else { 1 };
+        self.count = 0;
+
         match input {
-            // ── Movement ────────────────────────────────────────────────────
+            // ── Movement (repeat n times) ────────────────────────────────────
             Input { key: Key::Char('h'), .. } | Input { key: Key::Left, .. } => {
-                self.textarea.move_cursor(CursorMove::Back)
+                for _ in 0..n { self.textarea.move_cursor(CursorMove::Back); }
             }
             Input { key: Key::Char('j'), .. } | Input { key: Key::Down, .. } => {
-                self.textarea.move_cursor(CursorMove::Down)
+                for _ in 0..n { self.textarea.move_cursor(CursorMove::Down); }
             }
             Input { key: Key::Char('k'), .. } | Input { key: Key::Up, .. } => {
-                self.textarea.move_cursor(CursorMove::Up)
+                for _ in 0..n { self.textarea.move_cursor(CursorMove::Up); }
             }
             Input { key: Key::Char('l'), .. } | Input { key: Key::Right, .. } => {
-                self.textarea.move_cursor(CursorMove::Forward)
+                for _ in 0..n { self.textarea.move_cursor(CursorMove::Forward); }
             }
             Input { key: Key::Char('w'), .. } | Input { key: Key::Char('W'), .. } => {
-                self.textarea.move_cursor(CursorMove::WordForward)
+                for _ in 0..n { self.textarea.move_cursor(CursorMove::WordForward); }
             }
             Input { key: Key::Char('b'), ctrl: false, .. }
             | Input { key: Key::Char('B'), .. } => {
-                self.textarea.move_cursor(CursorMove::WordBack)
+                for _ in 0..n { self.textarea.move_cursor(CursorMove::WordBack); }
             }
             Input { key: Key::Char('e'), ctrl: false, .. }
             | Input { key: Key::Char('E'), .. } => {
-                self.textarea.move_cursor(CursorMove::WordEnd);
-                if matches!(self.mode, Mode::Operator(_)) {
-                    self.textarea.move_cursor(CursorMove::Forward);
+                for _ in 0..n {
+                    self.textarea.move_cursor(CursorMove::WordEnd);
+                    if matches!(self.mode, Mode::Operator(_)) {
+                        self.textarea.move_cursor(CursorMove::Forward);
+                    }
                 }
             }
             Input { key: Key::Char('0'), .. } | Input { key: Key::Home, .. } => {
@@ -199,35 +267,41 @@ impl<'a> Editor<'a> {
 
             // ── Mode transitions ────────────────────────────────────────────
             Input { key: Key::Char('i'), .. } if self.mode != Mode::Visual => {
+                self.begin_insert(n);
                 self.textarea.cancel_selection();
                 self.mode = Mode::Insert;
                 return true;
             }
             Input { key: Key::Char('I'), .. } if self.mode != Mode::Visual => {
+                self.begin_insert(n);
                 self.textarea.cancel_selection();
                 self.move_first_non_whitespace();
                 self.mode = Mode::Insert;
                 return true;
             }
             Input { key: Key::Char('a'), .. } if self.mode != Mode::Visual => {
+                self.begin_insert(n);
                 self.textarea.cancel_selection();
                 self.textarea.move_cursor(CursorMove::Forward);
                 self.mode = Mode::Insert;
                 return true;
             }
             Input { key: Key::Char('A'), .. } if self.mode != Mode::Visual => {
+                self.begin_insert(n);
                 self.textarea.cancel_selection();
                 self.textarea.move_cursor(CursorMove::End);
                 self.mode = Mode::Insert;
                 return true;
             }
             Input { key: Key::Char('o'), .. } if self.mode != Mode::Visual => {
+                self.begin_insert(n);
                 self.textarea.move_cursor(CursorMove::End);
                 self.textarea.insert_newline();
                 self.mode = Mode::Insert;
                 return true;
             }
             Input { key: Key::Char('O'), .. } if self.mode != Mode::Visual => {
+                self.begin_insert(n);
                 self.textarea.move_cursor(CursorMove::Head);
                 self.textarea.insert_newline();
                 self.textarea.move_cursor(CursorMove::Up);
@@ -491,6 +565,24 @@ impl<'a> Editor<'a> {
     }
 }
 
+/// Return the text inserted between `before` and `after`.
+/// Finds the longest common prefix and suffix; the middle of `after` is the delta.
+fn extract_inserted(before: &str, after: &str) -> String {
+    let before_chars: Vec<char> = before.chars().collect();
+    let after_chars: Vec<char> = after.chars().collect();
+    if after_chars.len() <= before_chars.len() {
+        return String::new();
+    }
+    let prefix = before_chars.iter().zip(after_chars.iter()).take_while(|(a, b)| a == b).count();
+    let max_suffix = before_chars.len() - prefix;
+    let suffix = before_chars.iter().rev()
+        .zip(after_chars.iter().rev())
+        .take(max_suffix)
+        .take_while(|(a, b)| a == b)
+        .count();
+    after_chars[prefix..after_chars.len() - suffix].iter().collect()
+}
+
 fn crossterm_to_input(key: KeyEvent) -> Input {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -575,6 +667,44 @@ mod tests {
         e.handle_key(shift_key(KeyCode::Char('A')));
         assert_eq!(e.vim_mode(), VimMode::Insert);
         assert_eq!(e.textarea.cursor().1, 5);
+    }
+
+    #[test]
+    fn count_10j_moves_down_10() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content((0..20).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n").as_str());
+        for d in "10".chars() { e.handle_key(key(KeyCode::Char(d))); }
+        e.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(e.textarea.cursor().0, 10);
+    }
+
+    #[test]
+    fn count_o_repeats_insert_on_esc() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("hello");
+        // Type: 3o<enter insert mode, type "world", Esc>
+        for d in "3".chars() { e.handle_key(key(KeyCode::Char(d))); }
+        e.handle_key(key(KeyCode::Char('o')));
+        assert_eq!(e.vim_mode(), VimMode::Insert);
+        // Type "world" in insert mode
+        for c in "world".chars() { e.handle_key(key(KeyCode::Char(c))); }
+        e.handle_key(key(KeyCode::Esc));
+        assert_eq!(e.vim_mode(), VimMode::Normal);
+        // Should have 4 lines total: "hello" + 3x "world"
+        assert_eq!(e.textarea.lines().len(), 4);
+        assert!(e.textarea.lines().iter().skip(1).all(|l| l == "world"));
+    }
+
+    #[test]
+    fn count_i_repeats_text_on_esc() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("");
+        for d in "3".chars() { e.handle_key(key(KeyCode::Char(d))); }
+        e.handle_key(key(KeyCode::Char('i')));
+        for c in "ab".chars() { e.handle_key(key(KeyCode::Char(c))); }
+        e.handle_key(key(KeyCode::Esc));
+        assert_eq!(e.vim_mode(), VimMode::Normal);
+        assert_eq!(e.textarea.lines()[0], "ababab");
     }
 
     #[test]

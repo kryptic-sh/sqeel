@@ -108,6 +108,7 @@ async fn run_loop(
     let mut doc_version: i32 = 0;
     let mut last_completion_id: Option<i64> = None;
     let mut debug_tick: u32 = 0;
+    let mut command_input: Option<String> = None;
 
     // Clipboard held alive for the session so the OS clipboard manager sees the content.
     let mut clipboard = Clipboard::new().ok();
@@ -194,9 +195,10 @@ async fn run_loop(
         debug_tick = debug_tick.wrapping_add(1);
         let debug_scroll = debug_tick / 10;
 
+        let cmd_snap = command_input.clone();
         terminal.draw(|f| {
             let s = state.lock().unwrap();
-            last_draw_areas = draw(f, &s, &editor, debug_scroll);
+            last_draw_areas = draw(f, &s, &mut editor, debug_scroll, cmd_snap.as_deref());
         })?;
 
         if !event::poll(Duration::from_millis(50))? {
@@ -304,12 +306,12 @@ async fn run_loop(
                     MouseEventKind::ScrollDown => match pane {
                         Focus::Schema => state.lock().unwrap().schema_cursor_down(),
                         Focus::Results => state.lock().unwrap().scroll_results_down(),
-                        Focus::Editor => {}
+                        Focus::Editor => editor.scroll_down(3),
                     },
                     MouseEventKind::ScrollUp => match pane {
                         Focus::Schema => state.lock().unwrap().schema_cursor_up(),
                         Focus::Results => state.lock().unwrap().scroll_results_up(),
-                        Focus::Editor => {}
+                        Focus::Editor => editor.scroll_up(3),
                     },
                     _ => {}
                 }
@@ -322,7 +324,36 @@ async fn run_loop(
                 let show_switcher = s.show_connection_switcher;
                 let show_add = s.show_add_connection;
                 let show_help = s.show_help;
+                let show_results = !matches!(s.results, sqeel_core::state::ResultsPane::Empty);
                 drop(s);
+
+                // ── Command input mode ───────────────────────────────────────────
+                if command_input.is_some() {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::NONE, KeyCode::Esc) => {
+                            command_input = None;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Backspace) => {
+                            if let Some(ref mut cmd) = command_input {
+                                cmd.pop();
+                            }
+                        }
+                        (KeyModifiers::NONE, KeyCode::Enter) => {
+                            let cmd_str = command_input.take().unwrap_or_default();
+                            match cmd_str.trim() {
+                                "q" | "q!" => break,
+                                _ => {}
+                            }
+                        }
+                        (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                            if let Some(ref mut cmd) = command_input {
+                                cmd.push(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
 
                 // ── Help overlay ─────────────────────────────────────────────────
                 if show_help {
@@ -473,6 +504,12 @@ async fn run_loop(
                             last_lsp_content = c;
                         }
                     }
+                    // Command mode
+                    (KeyModifiers::NONE, KeyCode::Char(':'))
+                        if focus != Focus::Editor || vim_mode == VimMode::Normal =>
+                    {
+                        command_input = Some(String::new());
+                    }
                     // Global quit in vim normal mode or schema/results pane
                     (KeyModifiers::NONE, KeyCode::Char('q'))
                         if focus != Focus::Editor || vim_mode == VimMode::Normal =>
@@ -550,18 +587,34 @@ async fn run_loop(
                             editor.set_content("");
                         }
                     }
-                    // Pane focus
+                    // Pane focus — forward to tmux when already at the edge pane
                     (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
-                        state.lock().unwrap().focus = Focus::Schema;
+                        if focus == Focus::Schema {
+                            tmux_navigate('L');
+                        } else {
+                            state.lock().unwrap().focus = Focus::Schema;
+                        }
                     }
                     (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                        state.lock().unwrap().focus = Focus::Editor;
+                        if focus == Focus::Editor {
+                            tmux_navigate('R');
+                        } else {
+                            state.lock().unwrap().focus = Focus::Editor;
+                        }
                     }
                     (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
-                        state.lock().unwrap().focus = Focus::Results;
+                        if focus == Focus::Results || !show_results {
+                            tmux_navigate('D');
+                        } else {
+                            state.lock().unwrap().focus = Focus::Results;
+                        }
                     }
                     (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-                        state.lock().unwrap().focus = Focus::Editor;
+                        if focus == Focus::Editor {
+                            tmux_navigate('U');
+                        } else {
+                            state.lock().unwrap().focus = Focus::Editor;
+                        }
                     }
                     _ if focus == Focus::Editor => {
                         editor.handle_key(key);
@@ -578,6 +631,14 @@ async fn run_loop(
         } // match event
     }
     Ok(())
+}
+
+fn tmux_navigate(direction: char) {
+    if std::env::var("TMUX").is_ok() {
+        let _ = std::process::Command::new("tmux")
+            .args(["select-pane", &format!("-{direction}")])
+            .spawn();
+    }
 }
 
 fn mode_label(state: &AppState) -> Span<'static> {
@@ -625,7 +686,7 @@ struct DrawAreas {
     results: Option<Rect>,
 }
 
-fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scroll: u32) -> DrawAreas {
+fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &mut Editor, debug_scroll: u32, command_input: Option<&str>) -> DrawAreas {
     let area = f.area();
 
     let lsp_warn = !state.lsp_available;
@@ -742,6 +803,17 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
     // Debug bar (always below everything else)
     if let Some(dbg) = debug_area {
         draw_debug_bar(f, state, editor, dbg, debug_scroll);
+    }
+
+    // Command bar overlays the bottom row when active
+    if let Some(cmd) = command_input {
+        let bar = Rect { x: 0, y: area.height.saturating_sub(1), width: area.width, height: 1 };
+        f.render_widget(Clear, bar);
+        f.render_widget(
+            Paragraph::new(format!(":{cmd}_"))
+                .style(Style::default().fg(Color::White).bg(Color::Black)),
+            bar,
+        );
     }
 
     areas
@@ -936,7 +1008,7 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
     };
     let block = Block::default()
         .title(title)
-        .borders(Borders::ALL)
+        .borders(Borders::TOP | Borders::RIGHT)
         .border_style(if focused {
             Style::default().fg(Color::Yellow)
         } else {
@@ -978,7 +1050,7 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
 fn draw_editor(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
-    editor: &Editor,
+    editor: &mut Editor,
     area: Rect,
     focused: bool,
 ) {
@@ -996,7 +1068,7 @@ fn draw_editor(
 
     let editor_block = Block::default()
         .title(Line::from(title_spans))
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(if focused {
             Style::default().fg(Color::Yellow)
         } else {
@@ -1026,8 +1098,26 @@ fn draw_editor(
 
     draw_tab_bar(f, state, inner_chunks[0]);
 
+    // Pre-render a full-width strip at the cursor line so trailing empty cells
+    // also get the highlight background (tui-textarea only styles character cells).
+    let textarea_area = inner_chunks[1];
+    let cursor_screen_row = editor.cursor_screen_row(textarea_area.height);
+    if cursor_screen_row < textarea_area.height {
+        let strip = Rect {
+            x: textarea_area.x,
+            y: textarea_area.y + cursor_screen_row,
+            width: textarea_area.width,
+            height: 1,
+        };
+        f.render_widget(
+            Block::default().style(Style::default().bg(Color::Rgb(40, 40, 45))),
+            strip,
+        );
+    }
+
     let mut textarea = editor.textarea.clone();
     textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    textarea.set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 45)));
     let _ = textarea.set_search_pattern(
         r"(?i)\b(select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|column|join|inner|outer|left|right|full|cross|on|and|or|not|null|is|in|like|between|order|by|group|having|limit|offset|union|all|distinct|as|case|when|then|else|end|if|exists|primary|foreign|key|references|unique|default|constraint|check|with|view|begin|commit|rollback|transaction|use|show|describe|explain|database|schema|index|procedure|function|returns|return|trigger|true|false)\b",
     );
@@ -1074,7 +1164,7 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
         ResultsPane::Results(r) => {
             let block = Block::default()
                 .title(format!("Results ({} rows)", r.rows.len()))
-                .borders(Borders::ALL)
+                .borders(Borders::TOP)
                 .border_style(if focused {
                     Style::default().fg(Color::Yellow)
                 } else {
@@ -1131,7 +1221,7 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
         ResultsPane::Error(e) => {
             let block = Block::default()
                 .title("Error")
-                .borders(Borders::ALL)
+                .borders(Borders::TOP)
                 .border_style(if focused {
                     Style::default().fg(Color::Yellow)
                 } else {
