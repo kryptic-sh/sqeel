@@ -20,27 +20,6 @@ pub enum SchemaNode {
 }
 
 impl SchemaNode {
-    pub fn label(&self, depth: usize) -> String {
-        let indent = "  ".repeat(depth);
-        match self {
-            SchemaNode::Database { name, expanded, .. } => {
-                format!("{}{}  {name}", indent, if *expanded { "▼" } else { "▶" })
-            }
-            SchemaNode::Table { name, expanded, .. } => {
-                format!("{}{}  {name}", indent, if *expanded { "▼" } else { "▶" })
-            }
-            SchemaNode::Column {
-                name,
-                type_name,
-                is_pk,
-                ..
-            } => {
-                let pk = if *is_pk { " 🔑" } else { "" };
-                format!("{indent}   {name}: {type_name}{pk}")
-            }
-        }
-    }
-
     pub fn name(&self) -> &str {
         match self {
             SchemaNode::Database { name, .. } => name,
@@ -76,38 +55,85 @@ pub struct SchemaTreeItem {
 
 pub fn flatten_tree(nodes: &[SchemaNode]) -> Vec<SchemaTreeItem> {
     let mut items = Vec::new();
-    flatten_nodes(nodes, 0, &[], &mut items);
+    flatten_nodes(nodes, 0, &[], &[], &mut items);
     items
+}
+
+fn node_icon(node: &SchemaNode) -> &'static str {
+    match node {
+        SchemaNode::Database { .. } => "󰆼 ",
+        SchemaNode::Table { .. } => "󰓫 ",
+        SchemaNode::Column { is_pk: true, .. } => "󰌆 ",
+        SchemaNode::Column { .. } => "󱘚 ",
+    }
 }
 
 fn flatten_nodes(
     nodes: &[SchemaNode],
     depth: usize,
     path: &[usize],
+    ancestor_is_last: &[bool],
     items: &mut Vec<SchemaTreeItem>,
 ) {
+    let n = nodes.len();
     for (i, node) in nodes.iter().enumerate() {
+        let is_last = i == n - 1;
         let mut node_path = path.to_vec();
         node_path.push(i);
+
+        let mut prefix = String::new();
+        if depth == 0 {
+            prefix.push(' ');
+        } else {
+            for &anc_last in ancestor_is_last {
+                prefix.push_str(if anc_last { "   " } else { "│  " });
+            }
+            prefix.push_str(if is_last { "└╴" } else { "├╴" });
+        }
+
+        let icon = node_icon(node);
+        let name = node.name();
+        let extra = match node {
+            SchemaNode::Column { type_name, .. } => format!(": {type_name}"),
+            _ => String::new(),
+        };
+        let label = format!("{prefix}{icon}{name}{extra}");
+
         items.push(SchemaTreeItem {
-            label: node.label(depth),
+            label,
             depth,
             node_path: node_path.clone(),
         });
+
+        let mut child_ancestor_is_last = ancestor_is_last.to_vec();
+        child_ancestor_is_last.push(is_last);
+
         match node {
             SchemaNode::Database {
                 expanded: true,
                 tables,
                 ..
             } => {
-                flatten_nodes(tables, depth + 1, &node_path, items);
+                flatten_nodes(
+                    tables,
+                    depth + 1,
+                    &node_path,
+                    &child_ancestor_is_last,
+                    items,
+                );
             }
             SchemaNode::Table {
                 expanded: true,
                 columns,
                 ..
             } => {
-                flatten_nodes(columns, depth + 1, &node_path, items);
+                flatten_nodes(
+                    columns,
+                    depth + 1,
+                    &node_path,
+                    &child_ancestor_is_last,
+                    items,
+                );
             }
             _ => {}
         }
