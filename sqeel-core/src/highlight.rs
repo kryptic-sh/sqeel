@@ -26,85 +26,6 @@ pub struct Highlighter {
     parser: Parser,
 }
 
-const SQL_KEYWORDS: &[&str] = &[
-    "select",
-    "from",
-    "where",
-    "insert",
-    "into",
-    "values",
-    "update",
-    "set",
-    "delete",
-    "create",
-    "table",
-    "drop",
-    "alter",
-    "add",
-    "column",
-    "join",
-    "inner",
-    "outer",
-    "left",
-    "right",
-    "full",
-    "cross",
-    "on",
-    "and",
-    "or",
-    "not",
-    "null",
-    "is",
-    "in",
-    "like",
-    "between",
-    "order",
-    "by",
-    "group",
-    "having",
-    "limit",
-    "offset",
-    "union",
-    "all",
-    "distinct",
-    "as",
-    "case",
-    "when",
-    "then",
-    "else",
-    "end",
-    "if",
-    "exists",
-    "primary",
-    "foreign",
-    "key",
-    "references",
-    "unique",
-    "default",
-    "constraint",
-    "check",
-    "with",
-    "view",
-    "begin",
-    "commit",
-    "rollback",
-    "transaction",
-    "use",
-    "show",
-    "describe",
-    "explain",
-    "database",
-    "schema",
-    "index",
-    "procedure",
-    "function",
-    "returns",
-    "return",
-    "trigger",
-    "true",
-    "false",
-];
-
 impl Highlighter {
     pub fn new() -> anyhow::Result<Self> {
         let mut parser = Parser::new();
@@ -135,6 +56,7 @@ impl Default for Highlighter {
 
 fn named_node_kind(kind: &str) -> TokenKind {
     match kind {
+        k if k.contains("keyword") => TokenKind::Keyword,
         k if k.contains("string") || k.contains("literal") || k == "quoted_identifier" => {
             TokenKind::String
         }
@@ -149,10 +71,6 @@ fn named_node_kind(kind: &str) -> TokenKind {
 }
 
 fn anon_node_kind(text: &str) -> TokenKind {
-    let lower = text.to_ascii_lowercase();
-    if SQL_KEYWORDS.contains(&lower.as_str()) {
-        return TokenKind::Keyword;
-    }
     match text {
         "=" | "!=" | "<>" | "<" | ">" | "<=" | ">=" | "+" | "-" | "*" | "/" | "%" => {
             TokenKind::Operator
@@ -204,38 +122,6 @@ fn collect_spans(node: Node, source: &[u8], spans: &mut Vec<HighlightSpan>) {
             });
         }
         return;
-    }
-
-    // Check if this named node wraps a single-token keyword (no whitespace children)
-    // Some grammars wrap keywords in named nodes with one child
-    if node.is_named() && node.child_count() == 1 {
-        let kind = named_node_kind(node.kind());
-        if kind == TokenKind::Keyword {
-            spans.push(HighlightSpan {
-                start_byte,
-                end_byte,
-                start_row: start.row,
-                start_col: start.column,
-                end_row: end.row,
-                end_col: end.column,
-                kind,
-            });
-            return;
-        }
-        // Also check if the text itself is a keyword
-        let text_kind = anon_node_kind(text);
-        if text_kind == TokenKind::Keyword {
-            spans.push(HighlightSpan {
-                start_byte,
-                end_byte,
-                start_row: start.row,
-                start_col: start.column,
-                end_row: end.row,
-                end_col: end.column,
-                kind: TokenKind::Keyword,
-            });
-            return;
-        }
     }
 
     let mut cursor = node.walk();
