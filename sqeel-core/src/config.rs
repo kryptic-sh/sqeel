@@ -27,8 +27,13 @@ impl Default for EditorConfig {
 pub struct ConnectionConfig {
     pub url: String,
     // Derived from filename at load time; not present in the .toml file itself.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Session {
+    connection: String,
 }
 
 impl serde::Serialize for KeybindingMode {
@@ -108,17 +113,16 @@ pub fn load_connections() -> anyhow::Result<Vec<ConnectionConfig>> {
 pub fn save_session(name: &str) -> anyhow::Result<()> {
     let dir = config_dir().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("session.toml"), format!("connection = {name:?}\n"))?;
+    let content = toml::to_string(&Session {
+        connection: name.to_string(),
+    })?;
+    std::fs::write(dir.join("session.toml"), content)?;
     Ok(())
 }
 
 /// Load the last-used connection name from ~/.config/sqeel/session.toml.
 /// Returns the name string, not the URL.
 pub fn load_session() -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct Session {
-        connection: String,
-    }
     let path = config_dir()?.join("session.toml");
     let content = std::fs::read_to_string(path).ok()?;
     let s: Session = toml::from_str(&content).ok()?;
@@ -140,7 +144,11 @@ pub fn save_connection(name: &str, url: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?
         .join("conns");
     std::fs::create_dir_all(&conns_dir)?;
-    let content = format!("url = {url:?}\n");
+    let conn = ConnectionConfig {
+        url: url.to_string(),
+        name: String::new(),
+    };
+    let content = toml::to_string(&conn)?;
     std::fs::write(conns_dir.join(format!("{name}.toml")), content)?;
     Ok(())
 }
