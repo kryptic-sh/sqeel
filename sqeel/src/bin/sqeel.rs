@@ -275,7 +275,14 @@ fn spawn_executor(
         let sidebar_visible = s.sidebar_visible;
         let _ = save_schema_cache(&col_schema_url, &nodes);
         if let Some(ref name) = s.active_connection.clone() {
-            let _ = save_session(name, cursor, cursor_path, expanded_paths, focus, sidebar_visible);
+            let _ = save_session(
+                name,
+                cursor,
+                cursor_path,
+                expanded_paths,
+                focus,
+                sidebar_visible,
+            );
         }
     });
 
