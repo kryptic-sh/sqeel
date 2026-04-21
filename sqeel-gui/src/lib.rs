@@ -50,6 +50,11 @@ pub enum Message {
     SchemaDown,
     CompletionTrigger,
     DismissCompletions,
+    OpenConnectionSwitcher,
+    CloseConnectionSwitcher,
+    SwitcherUp,
+    SwitcherDown,
+    ConfirmConnectionSwitch,
 }
 
 // ── Application ───────────────────────────────────────────────────────────────
@@ -70,10 +75,14 @@ impl SqeelApp {
                 s.autosave();
             }
             Message::ExecuteQuery => {
-                self.state
-                    .lock()
-                    .unwrap()
-                    .set_error("No DB connected. Use --url or --connection to connect.".into());
+                let content = self.editor_content.text();
+                let sent = self.state.lock().unwrap().send_query(content.clone());
+                if !sent {
+                    self.state.lock().unwrap().set_error(
+                        "No DB connected. Use --url / --connection or the Connections button."
+                            .into(),
+                    );
+                }
             }
             Message::DismissResults => {
                 self.state.lock().unwrap().dismiss_results();
@@ -110,6 +119,21 @@ impl SqeelApp {
             Message::DismissCompletions => {
                 self.state.lock().unwrap().dismiss_completions();
             }
+            Message::OpenConnectionSwitcher => {
+                self.state.lock().unwrap().open_connection_switcher();
+            }
+            Message::CloseConnectionSwitcher => {
+                self.state.lock().unwrap().close_connection_switcher();
+            }
+            Message::SwitcherUp => {
+                self.state.lock().unwrap().switcher_up();
+            }
+            Message::SwitcherDown => {
+                self.state.lock().unwrap().switcher_down();
+            }
+            Message::ConfirmConnectionSwitch => {
+                self.state.lock().unwrap().confirm_connection_switch();
+            }
         }
         Task::none()
     }
@@ -135,6 +159,13 @@ impl SqeelApp {
             vec![]
         };
         let active_connection = s.active_connection.clone();
+        let show_switcher = s.show_connection_switcher;
+        let switcher_cursor = s.connection_switcher_cursor;
+        let conn_list: Vec<(String, String)> = s
+            .available_connections
+            .iter()
+            .map(|c| (c.name.clone(), c.url.clone()))
+            .collect();
         drop(s);
 
         // Schema panel
@@ -192,6 +223,9 @@ impl SqeelApp {
                 button(text("Run ▶").size(12))
                     .on_press(Message::ExecuteQuery)
                     .style(iced::widget::button::primary),
+                button(text("⚡ Connections").size(12))
+                    .on_press(Message::OpenConnectionSwitcher)
+                    .style(iced::widget::button::secondary),
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center),
@@ -252,10 +286,69 @@ impl SqeelApp {
             .height(Length::Fill)
             .padding(8);
 
-        container(row![schema_panel, editor_panel].spacing(0))
+        let base: Element<Message> = container(row![schema_panel, editor_panel].spacing(0))
             .width(Length::Fill)
             .height(Length::Fill)
+            .into();
+
+        if show_switcher {
+            let mut switcher_col = column![
+                text("Switch Connection")
+                    .size(14)
+                    .color(Color::from_rgb(0.6, 0.8, 1.0)),
+            ]
+            .spacing(4);
+
+            for (i, (name, url)) in conn_list.into_iter().enumerate() {
+                let is_selected = i == switcher_cursor;
+                let label = format!("{name}  {url}");
+                let btn = button(text(label).size(13))
+                    .on_press(Message::ConfirmConnectionSwitch)
+                    .style(move |theme, status| {
+                        if is_selected {
+                            iced::widget::button::primary(theme, status)
+                        } else {
+                            iced::widget::button::text(theme, status)
+                        }
+                    })
+                    .width(Length::Fill);
+                switcher_col = switcher_col.push(btn);
+            }
+
+            switcher_col = switcher_col.push(
+                button(text("Close").size(12))
+                    .on_press(Message::CloseConnectionSwitcher)
+                    .style(iced::widget::button::danger),
+            );
+
+            let overlay = container(switcher_col)
+                .width(Length::Fixed(480.0))
+                .padding(16)
+                .style(|theme: &Theme| {
+                    let palette = theme.extended_palette();
+                    iced::widget::container::Style {
+                        background: Some(palette.background.strong.color.into()),
+                        border: iced::Border {
+                            color: palette.primary.strong.color,
+                            width: 1.0,
+                            radius: 6.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                });
+
+            iced::widget::stack![
+                base,
+                container(overlay)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center),
+            ]
             .into()
+        } else {
+            base
+        }
     }
 
     fn theme(&self) -> Theme {

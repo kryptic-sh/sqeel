@@ -1,3 +1,4 @@
+use crate::config::ConnectionConfig;
 use crate::highlight::HighlightSpan;
 use crate::lsp::Diagnostic;
 use crate::persistence;
@@ -42,7 +43,7 @@ pub enum ResultsPane {
     Error(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct AppState {
     pub editor_content: String,
     pub current_file: Option<String>,
@@ -62,6 +63,13 @@ pub struct AppState {
     pub schema_cursor: usize,
     pub query_history: Vec<String>,
     pub history_cursor: Option<usize>,
+    // Connection switcher
+    pub available_connections: Vec<ConnectionConfig>,
+    pub show_connection_switcher: bool,
+    pub connection_switcher_cursor: usize,
+    pub pending_reconnect: Option<String>,
+    // Live query channel — set by the binary when connected
+    pub query_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl AppState {
@@ -161,6 +169,53 @@ impl AppState {
     pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
         self.schema_nodes = nodes;
         self.schema_cursor = 0;
+    }
+
+    pub fn set_available_connections(&mut self, conns: Vec<ConnectionConfig>) {
+        self.available_connections = conns;
+        self.connection_switcher_cursor = 0;
+    }
+
+    pub fn open_connection_switcher(&mut self) {
+        self.show_connection_switcher = true;
+        self.connection_switcher_cursor = 0;
+    }
+
+    pub fn close_connection_switcher(&mut self) {
+        self.show_connection_switcher = false;
+    }
+
+    pub fn switcher_up(&mut self) {
+        self.connection_switcher_cursor = self.connection_switcher_cursor.saturating_sub(1);
+    }
+
+    pub fn switcher_down(&mut self) {
+        let max = self.available_connections.len().saturating_sub(1);
+        if self.connection_switcher_cursor < max {
+            self.connection_switcher_cursor += 1;
+        }
+    }
+
+    /// Confirm the highlighted connection — returns its URL if one exists.
+    pub fn confirm_connection_switch(&mut self) -> Option<String> {
+        let url = self
+            .available_connections
+            .get(self.connection_switcher_cursor)
+            .map(|c| c.url.clone());
+        if let Some(ref u) = url {
+            self.pending_reconnect = Some(u.clone());
+        }
+        self.show_connection_switcher = false;
+        url
+    }
+
+    /// Try to send a query to the active executor. Returns false if not connected.
+    pub fn send_query(&self, query: String) -> bool {
+        if let Some(tx) = &self.query_tx {
+            tx.try_send(query).is_ok()
+        } else {
+            false
+        }
     }
 
     /// Auto-save editor content to disk. Creates a scratch file if none is open.

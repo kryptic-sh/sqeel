@@ -87,7 +87,30 @@ async fn run_loop(
             let focus = s.focus;
             let vim_mode = s.vim_mode;
             let show_completions = s.show_completions;
+            let show_switcher = s.show_connection_switcher;
             drop(s);
+
+            // ── Connection switcher modal ────────────────────────────────────
+            if show_switcher {
+                match (key.modifiers, key.code) {
+                    (KeyModifiers::NONE, KeyCode::Esc) => {
+                        state.lock().unwrap().close_connection_switcher();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('j')) => {
+                        state.lock().unwrap().switcher_down();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('k')) => {
+                        state.lock().unwrap().switcher_up();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Enter) => {
+                        state.lock().unwrap().confirm_connection_switch();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // ── Normal key handling ──────────────────────────────────────────
 
             // Dismiss completions on Esc
             if show_completions && key.code == KeyCode::Esc {
@@ -101,6 +124,10 @@ async fn run_loop(
                     if focus != Focus::Editor || vim_mode == VimMode::Normal =>
                 {
                     break;
+                }
+                // Open connection switcher: Ctrl+W
+                (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+                    state.lock().unwrap().open_connection_switcher();
                 }
                 // Schema pane navigation
                 (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Schema => {
@@ -131,10 +158,13 @@ async fn run_loop(
                 // Execute query: Ctrl+Enter
                 (KeyModifiers::CONTROL, KeyCode::Enter) => {
                     let content = editor.content();
-                    {
+                    let sent = state.lock().unwrap().send_query(content.clone());
+                    if !sent {
                         let mut s = state.lock().unwrap();
                         s.push_history(&content);
-                        s.set_error(format!("No DB connected. Query was:\n{content}"));
+                        s.set_error(
+                            "No DB connected. Use --url / --connection or Ctrl+W to switch.".into(),
+                        );
                     }
                 }
                 // History navigation: Ctrl+P (prev) / Ctrl+N (next)
@@ -269,6 +299,11 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor) {
     // Completion popup (overlay)
     if state.show_completions && !state.completions.is_empty() {
         draw_completions(f, state, right_chunks[0]);
+    }
+
+    // Connection switcher modal (top-level overlay)
+    if state.show_connection_switcher {
+        draw_connection_switcher(f, state, area);
     }
 }
 
@@ -478,6 +513,50 @@ fn draw_completions(f: &mut ratatui::Frame<'_>, state: &AppState, editor_area: R
     );
 }
 
+fn draw_connection_switcher(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) {
+    let conns = &state.available_connections;
+    let cursor = state.connection_switcher_cursor;
+
+    let items: Vec<ListItem> = if conns.is_empty() {
+        vec![ListItem::new("No connections configured")]
+    } else {
+        conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let style = if i == cursor {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("{} — {}", c.name, c.url)).style(style)
+            })
+            .collect()
+    };
+
+    let width = 60.min(area.width.saturating_sub(4));
+    let height = (items.len() as u16 + 2)
+        .min(20)
+        .min(area.height.saturating_sub(4));
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(" Connections (j/k navigate, Enter select, Esc close) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        ),
+        popup,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::editor::Editor;
@@ -546,5 +625,58 @@ mod tests {
             severity: DiagnosticSeverity::ERROR,
         }]);
         assert!(s.has_errors());
+    }
+
+    #[test]
+    fn connection_switcher_open_close() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        assert!(!s.show_connection_switcher);
+        s.open_connection_switcher();
+        assert!(s.show_connection_switcher);
+        s.close_connection_switcher();
+        assert!(!s.show_connection_switcher);
+    }
+
+    #[test]
+    fn connection_switcher_navigation() {
+        use sqeel_core::config::ConnectionConfig;
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_available_connections(vec![
+            ConnectionConfig {
+                name: "local".into(),
+                url: "mysql://localhost/mydb".into(),
+            },
+            ConnectionConfig {
+                name: "staging".into(),
+                url: "mysql://staging/mydb".into(),
+            },
+        ]);
+        s.open_connection_switcher();
+        assert_eq!(s.connection_switcher_cursor, 0);
+        s.switcher_down();
+        assert_eq!(s.connection_switcher_cursor, 1);
+        // Cannot go past last
+        s.switcher_down();
+        assert_eq!(s.connection_switcher_cursor, 1);
+        s.switcher_up();
+        assert_eq!(s.connection_switcher_cursor, 0);
+    }
+
+    #[test]
+    fn connection_switcher_confirm_sets_pending() {
+        use sqeel_core::config::ConnectionConfig;
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_available_connections(vec![ConnectionConfig {
+            name: "local".into(),
+            url: "mysql://localhost/mydb".into(),
+        }]);
+        s.open_connection_switcher();
+        let url = s.confirm_connection_switch();
+        assert_eq!(url, Some("mysql://localhost/mydb".into()));
+        assert_eq!(s.pending_reconnect, Some("mysql://localhost/mydb".into()));
+        assert!(!s.show_connection_switcher);
     }
 }
