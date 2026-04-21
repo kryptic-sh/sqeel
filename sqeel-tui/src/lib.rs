@@ -94,6 +94,18 @@ async fn run_loop(
                     {
                         break;
                     }
+                    // Schema pane navigation
+                    (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Schema => {
+                        state.lock().unwrap().schema_cursor_down();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Schema => {
+                        state.lock().unwrap().schema_cursor_up();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char('l'))
+                        if focus == Focus::Schema =>
+                    {
+                        state.lock().unwrap().schema_toggle_current();
+                    }
                     // Results pane navigation
                     (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Results => {
                         state.lock().unwrap().scroll_results_down();
@@ -239,19 +251,37 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
             Style::default()
         });
 
-    if state.schema_tree.is_empty() {
+    let items = state.visible_schema_items();
+
+    if items.is_empty() {
         f.render_widget(
-            Paragraph::new("No connection").block(block),
+            Paragraph::new(if state.active_connection.is_some() {
+                "Loading..."
+            } else {
+                "No connection"
+            })
+            .block(block),
             area,
         );
-    } else {
-        let items: Vec<ListItem> = state
-            .schema_tree
-            .iter()
-            .map(|s| ListItem::new(s.as_str()))
-            .collect();
-        f.render_widget(List::new(items).block(block), area);
+        return;
     }
+
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let style = if i == state.schema_cursor && focused {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else if i == state.schema_cursor {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(item.label.as_str()).style(style)
+        })
+        .collect();
+
+    f.render_widget(List::new(list_items).block(block), area);
 }
 
 fn draw_editor(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, area: Rect, focused: bool) {

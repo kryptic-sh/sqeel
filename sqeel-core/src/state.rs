@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use crate::lsp::Diagnostic;
 use crate::highlight::HighlightSpan;
+use crate::schema::{SchemaNode, SchemaTreeItem, flatten_tree, toggle_node};
 use lsp_types::DiagnosticSeverity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -47,7 +48,6 @@ pub struct AppState {
     pub vim_mode: VimMode,
     pub focus: Focus,
     pub results: ResultsPane,
-    pub schema_tree: Vec<String>,
     pub editor_ratio: f32,
     pub lsp_diagnostics: Vec<Diagnostic>,
     pub highlight_spans: Vec<HighlightSpan>,
@@ -56,6 +56,8 @@ pub struct AppState {
     pub active_connection: Option<String>,
     pub status_message: Option<String>,
     pub results_scroll: usize,
+    pub schema_nodes: Vec<SchemaNode>,
+    pub schema_cursor: usize,
 }
 
 impl AppState {
@@ -125,6 +127,34 @@ impl AppState {
 
     pub fn clear_status(&mut self) {
         self.status_message = None;
+    }
+
+    pub fn visible_schema_items(&self) -> Vec<SchemaTreeItem> {
+        flatten_tree(&self.schema_nodes)
+    }
+
+    pub fn schema_cursor_down(&mut self) {
+        let max = self.visible_schema_items().len().saturating_sub(1);
+        if self.schema_cursor < max {
+            self.schema_cursor += 1;
+        }
+    }
+
+    pub fn schema_cursor_up(&mut self) {
+        self.schema_cursor = self.schema_cursor.saturating_sub(1);
+    }
+
+    pub fn schema_toggle_current(&mut self) {
+        let items = self.visible_schema_items();
+        if let Some(item) = items.get(self.schema_cursor) {
+            let path = item.node_path.clone();
+            toggle_node(&mut self.schema_nodes, &path);
+        }
+    }
+
+    pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
+        self.schema_nodes = nodes;
+        self.schema_cursor = 0;
     }
 }
 
