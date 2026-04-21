@@ -66,6 +66,7 @@ pub struct AppState {
     pub active_connection: Option<String>,
     pub status_message: Option<String>,
     pub results_scroll: usize,
+    pub results_col_scroll: usize,
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
     pub query_history: Vec<String>,
@@ -100,18 +101,21 @@ impl AppState {
         self.results = ResultsPane::Results(result);
         self.editor_ratio = 0.5;
         self.results_scroll = 0;
+        self.results_col_scroll = 0;
     }
 
     pub fn set_error(&mut self, msg: String) {
         self.results = ResultsPane::Error(msg);
         self.editor_ratio = 0.5;
         self.results_scroll = 0;
+        self.results_col_scroll = 0;
     }
 
     pub fn dismiss_results(&mut self) {
         self.results = ResultsPane::Empty;
         self.editor_ratio = 1.0;
         self.results_scroll = 0;
+        self.results_col_scroll = 0;
     }
 
     pub fn scroll_results_down(&mut self) {
@@ -126,6 +130,20 @@ impl AppState {
 
     pub fn scroll_results_up(&mut self) {
         self.results_scroll = self.results_scroll.saturating_sub(1);
+    }
+
+    pub fn scroll_results_right(&mut self) {
+        let max = match &self.results {
+            ResultsPane::Results(r) => r.columns.len().saturating_sub(1),
+            _ => 0,
+        };
+        if self.results_col_scroll < max {
+            self.results_col_scroll += 1;
+        }
+    }
+
+    pub fn scroll_results_left(&mut self) {
+        self.results_col_scroll = self.results_col_scroll.saturating_sub(1);
     }
 
     pub fn set_diagnostics(&mut self, diags: Vec<Diagnostic>) {

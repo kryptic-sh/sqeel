@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table},
 };
 use sqeel_core::{
     AppState, UiProvider,
@@ -105,29 +105,48 @@ async fn run_loop(
 
         match event::read()? {
             Event::Mouse(mouse) => {
-                if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                    let area = terminal.size()?;
-                    let schema_width = area.width * 15 / 100;
-                    let show_results = !matches!(
-                        state.lock().unwrap().results,
-                        sqeel_core::state::ResultsPane::Empty
-                    );
-                    let editor_ratio = state.lock().unwrap().editor_ratio;
-                    let right_height = area.height;
-                    let editor_height = if show_results {
-                        (right_height as f32 * editor_ratio) as u16
-                    } else {
-                        right_height
-                    };
+                let area = terminal.size()?;
+                let schema_width = (area.width * 15 / 100).max(1);
+                let show_results = !matches!(
+                    state.lock().unwrap().results,
+                    sqeel_core::state::ResultsPane::Empty
+                );
+                let editor_ratio = state.lock().unwrap().editor_ratio;
+                let main_height = if state.lock().unwrap().debug_mode {
+                    area.height.saturating_sub(1)
+                } else {
+                    area.height
+                };
+                let editor_height = if show_results {
+                    (main_height as f32 * editor_ratio) as u16
+                } else {
+                    main_height
+                };
 
-                    let mut s = state.lock().unwrap();
-                    if mouse.column < schema_width {
-                        s.focus = Focus::Schema;
-                    } else if show_results && mouse.row >= editor_height {
-                        s.focus = Focus::Results;
-                    } else {
-                        s.focus = Focus::Editor;
+                // Determine which pane the mouse is over
+                let pane = if mouse.column < schema_width {
+                    Focus::Schema
+                } else if show_results && mouse.row >= editor_height {
+                    Focus::Results
+                } else {
+                    Focus::Editor
+                };
+
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        state.lock().unwrap().focus = pane;
                     }
+                    MouseEventKind::ScrollDown => match pane {
+                        Focus::Schema => state.lock().unwrap().schema_cursor_down(),
+                        Focus::Results => state.lock().unwrap().scroll_results_down(),
+                        Focus::Editor => {}
+                    },
+                    MouseEventKind::ScrollUp => match pane {
+                        Focus::Schema => state.lock().unwrap().schema_cursor_up(),
+                        Focus::Results => state.lock().unwrap().scroll_results_up(),
+                        Focus::Editor => {}
+                    },
+                    _ => {}
                 }
             }
             Event::Key(key) => {
@@ -244,6 +263,12 @@ async fn run_loop(
                     }
                     (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Results => {
                         state.lock().unwrap().scroll_results_up();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('l')) if focus == Focus::Results => {
+                        state.lock().unwrap().scroll_results_right();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('h')) if focus == Focus::Results => {
+                        state.lock().unwrap().scroll_results_left();
                     }
                     // Dismiss results
                     (KeyModifiers::CONTROL, KeyCode::Char('c'))
@@ -514,20 +539,19 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
 
     let list_items: Vec<ListItem> = items
         .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let style = if i == state.schema_cursor && focused {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else if i == state.schema_cursor {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(item.label.as_str()).style(style)
-        })
+        .map(|item| ListItem::new(item.label.as_str()))
         .collect();
 
-    f.render_widget(List::new(list_items).block(block), area);
+    let list = List::new(list_items)
+        .block(block)
+        .highlight_style(if focused {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        });
+
+    let mut list_state = ListState::default().with_selected(Some(state.schema_cursor));
+    f.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn draw_editor(
@@ -573,6 +597,7 @@ fn draw_editor(
 
     let mut textarea = editor.textarea.clone();
     textarea.set_block(editor_block);
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
     f.render_widget(&textarea, editor_chunks[0]);
 
     if let Some(msg) = diag_line {
@@ -595,8 +620,10 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                     Style::default().fg(Color::Green)
                 });
 
-            let header_cells: Vec<Cell> = r
-                .columns
+            let col_start = state.results_col_scroll;
+            let visible_cols: Vec<&String> = r.columns.iter().skip(col_start).collect();
+
+            let header_cells: Vec<Cell> = visible_cols
                 .iter()
                 .map(|c| {
                     Cell::from(c.as_str()).style(Style::default().add_modifier(Modifier::BOLD))
@@ -608,6 +635,7 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                 .columns
                 .iter()
                 .enumerate()
+                .skip(col_start)
                 .map(|(i, col)| {
                     let max_data = r
                         .rows
@@ -626,6 +654,7 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                 .map(|row| {
                     Row::new(
                         row.iter()
+                            .skip(col_start)
                             .map(|c| Cell::from(c.as_str()))
                             .collect::<Vec<_>>(),
                     )
