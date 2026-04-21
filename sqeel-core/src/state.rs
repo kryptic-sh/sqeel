@@ -5,6 +5,24 @@ use crate::persistence;
 use crate::schema::{SchemaNode, SchemaTreeItem, flatten_tree, merge_expansion, toggle_node};
 use lsp_types::DiagnosticSeverity;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// One open editor tab. Content is lazily loaded and evicted after 5 min of inactivity.
+#[derive(Debug, Clone)]
+pub struct TabEntry {
+    pub name: String,
+    pub content: Option<String>,
+    pub last_accessed: Option<Instant>,
+}
+
+impl TabEntry {
+    fn new(name: String) -> Self {
+        Self { name, content: None, last_accessed: None }
+    }
+    fn open(name: String, content: String) -> Self {
+        Self { name, content: Some(content), last_accessed: Some(Instant::now()) }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeybindingMode {
@@ -53,7 +71,10 @@ pub enum ResultsPane {
 #[derive(Default)]
 pub struct AppState {
     pub editor_content: String,
-    pub current_file: Option<String>,
+    pub tabs: Vec<TabEntry>,
+    pub active_tab: usize,
+    /// Set when the active tab changes; TUI drains this to reload the editor.
+    pub tab_content_pending: Option<String>,
     pub keybinding_mode: KeybindingMode,
     pub vim_mode: VimMode,
     pub focus: Focus,
@@ -433,22 +454,135 @@ impl AppState {
         }
     }
 
-    /// Auto-save editor content to disk. Creates a scratch file if none is open.
+    /// Load tabs from disk for the given connection slug.
+    /// Sets `tab_content_pending` so the TUI loads the first tab into the editor.
+    pub fn load_tabs_for_connection(&mut self, conn_slug: &str) {
+        let names = persistence::list_queries_for(conn_slug).unwrap_or_default();
+        if names.is_empty() {
+            match persistence::next_scratch_name(conn_slug) {
+                Ok(name) => {
+                    let _ = persistence::save_query(conn_slug, &name, "");
+                    self.tabs = vec![TabEntry::open(name, String::new())];
+                }
+                Err(_) => {
+                    self.tabs = vec![];
+                    self.tab_content_pending = Some(String::new());
+                    self.active_tab = 0;
+                    return;
+                }
+            }
+        } else {
+            self.tabs = names.into_iter().map(TabEntry::new).collect();
+        }
+        self.active_tab = 0;
+        if let Some(tab) = self.tabs.first_mut() {
+            tab.last_accessed = Some(Instant::now());
+            let content = persistence::load_query(conn_slug, &tab.name).unwrap_or_default();
+            tab.content = Some(content.clone());
+            self.tab_content_pending = Some(content);
+        }
+    }
+
+    /// Switch to the tab at `idx`, saving current content first.
+    /// Sets `tab_content_pending` for the TUI to drain.
+    pub fn switch_to_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        // Persist current tab content in memory before leaving
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.content = Some(self.editor_content.clone());
+        }
+        self.active_tab = idx;
+        let slug = persistence::sanitize_conn_slug(
+            self.active_connection.as_deref().unwrap_or("default"),
+        );
+        let content = if let Some(tab) = self.tabs.get_mut(idx) {
+            tab.last_accessed = Some(Instant::now());
+            if let Some(ref c) = tab.content {
+                c.clone()
+            } else {
+                let c = persistence::load_query(&slug, &tab.name).unwrap_or_default();
+                tab.content = Some(c.clone());
+                c
+            }
+        } else {
+            String::new()
+        };
+        self.tab_content_pending = Some(content);
+    }
+
+    pub fn next_tab(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let next = (self.active_tab + 1) % self.tabs.len();
+        self.switch_to_tab(next);
+    }
+
+    pub fn prev_tab(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let prev = if self.active_tab == 0 {
+            self.tabs.len() - 1
+        } else {
+            self.active_tab - 1
+        };
+        self.switch_to_tab(prev);
+    }
+
+    /// Open a new scratch file and switch to it.
+    pub fn new_tab(&mut self) {
+        // Save current tab content before leaving
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.content = Some(self.editor_content.clone());
+        }
+        let slug = persistence::sanitize_conn_slug(
+            self.active_connection.as_deref().unwrap_or("default"),
+        );
+        if let Ok(name) = persistence::next_scratch_name(&slug) {
+            let _ = persistence::save_query(&slug, &name, "");
+            self.tabs.push(TabEntry::open(name, String::new()));
+            self.active_tab = self.tabs.len() - 1;
+            self.tab_content_pending = Some(String::new());
+        }
+    }
+
+    /// Evict content of cold tabs (not active, not accessed within 5 min) to free RAM.
+    pub fn evict_cold_tabs(&mut self) {
+        let cutoff = std::time::Duration::from_secs(300);
+        let now = Instant::now();
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            if i == self.active_tab {
+                continue;
+            }
+            if let Some(accessed) = tab.last_accessed {
+                if now.duration_since(accessed) > cutoff {
+                    tab.content = None;
+                }
+            }
+        }
+    }
+
+    /// Auto-save editor content to the active tab on disk.
     pub fn autosave(&mut self) {
         let slug = persistence::sanitize_conn_slug(
             self.active_connection.as_deref().unwrap_or("default"),
         );
-        let file = match &self.current_file {
-            Some(f) => f.clone(),
-            None => match persistence::next_scratch_name(&slug) {
-                Ok(name) => {
-                    self.current_file = Some(name.clone());
-                    name
-                }
-                Err(_) => return,
-            },
-        };
-        let _ = persistence::save_query(&slug, &file, &self.editor_content);
+        if self.tabs.is_empty() {
+            if let Ok(name) = persistence::next_scratch_name(&slug) {
+                let _ = persistence::save_query(&slug, &name, &self.editor_content);
+                self.tabs.push(TabEntry::open(name, self.editor_content.clone()));
+                self.active_tab = 0;
+            }
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.content = Some(self.editor_content.clone());
+            tab.last_accessed = Some(Instant::now());
+            let _ = persistence::save_query(&slug, &tab.name, &self.editor_content);
+        }
     }
 
     /// Persist a successful query result to disk (errors are never stored).

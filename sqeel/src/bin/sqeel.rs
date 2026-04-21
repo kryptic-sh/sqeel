@@ -5,7 +5,7 @@ use sqeel_core::{
     AppState, UiProvider,
     config::{load_connections, load_session_data, save_session},
     db::DbConnection,
-    persistence::{load_schema_cache, save_schema_cache},
+    persistence::{load_schema_cache, save_schema_cache, sanitize_conn_slug},
     schema::SchemaNode,
 };
 use sqeel_tui::TuiProvider;
@@ -84,11 +84,10 @@ async fn connect_and_spawn(
                     .find(|c| c.url == url)
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| conn.url.clone());
-                if s.active_connection.as_deref() != Some(&conn_name) {
-                    s.current_file = None;
-                }
                 s.active_connection = Some(conn_name.clone());
                 s.set_status(format!("Connected: {conn_name}"));
+                let slug = sanitize_conn_slug(&conn_name);
+                s.load_tabs_for_connection(&slug);
                 if let Some(name) = s
                     .available_connections
                     .iter()

@@ -99,6 +99,30 @@ pub fn load_query(conn_slug: &str, name: &str) -> anyhow::Result<String> {
     Ok(std::fs::read_to_string(dir.join(name))?)
 }
 
+/// List saved SQL files for a specific connection, sorted by name.
+pub fn list_queries_for(conn_slug: &str) -> anyhow::Result<Vec<String>> {
+    let dir = queries_dir_for(conn_slug)
+        .ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("sql") {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 /// List all saved SQL files, sorted by name.
 pub fn list_queries() -> anyhow::Result<Vec<String>> {
     let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;

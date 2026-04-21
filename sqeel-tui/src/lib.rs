@@ -112,6 +112,19 @@ async fn run_loop(
     let mut mouse_did_drag = false;
 
     loop {
+        // Drain pending tab content (set when connection loads or tab switches)
+        {
+            let pending = state.lock().unwrap().tab_content_pending.take();
+            if let Some(content) = pending {
+                editor.set_content(&content);
+                last_saved_content = content.clone();
+                last_lsp_content = content;
+            }
+        }
+
+        // Evict cold tabs (content not accessed for 5 min released from RAM)
+        state.lock().unwrap().evict_cold_tabs();
+
         // Sync editor content + re-highlight
         let content = editor.content();
         {
@@ -188,7 +201,7 @@ async fn run_loop(
         match event::read()? {
             Event::Mouse(mouse) => {
                 let area = terminal.size()?;
-                let schema_width = (area.width * 15 / 100).max(20);
+                let schema_width = (area.width * 15 / 100).max(30);
                 let show_results = !matches!(
                     state.lock().unwrap().results,
                     sqeel_core::state::ResultsPane::Empty
@@ -216,9 +229,48 @@ async fn run_loop(
 
                 match mouse.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
-                        state.lock().unwrap().focus = pane;
-                        mouse_select_start = Some((mouse.column, mouse.row));
-                        mouse_did_drag = false;
+                        use ratatui::layout::Position;
+                        let pos = Position { x: mouse.column, y: mouse.row };
+                        if last_draw_areas.tab_bar.contains(pos) {
+                            // Click on tab bar — determine which tab
+                            let rel_x = mouse.column.saturating_sub(last_draw_areas.tab_bar.x) as usize;
+                            let clicked = {
+                                let s = state.lock().unwrap();
+                                let mut offset = 0usize;
+                                let mut found = None;
+                                for (i, tab) in s.tabs.iter().enumerate() {
+                                    let w = tab.name.len() + 2
+                                        + if i + 1 < s.tabs.len() { 1 } else { 0 };
+                                    if rel_x < offset + w {
+                                        found = Some(i);
+                                        break;
+                                    }
+                                    offset += w;
+                                }
+                                found
+                            };
+                            if let Some(idx) = clicked {
+                                let content = {
+                                    let mut s = state.lock().unwrap();
+                                    s.focus = Focus::Editor;
+                                    s.switch_to_tab(idx);
+                                    s.tab_content_pending.take()
+                                };
+                                if let Some(c) = content {
+                                    editor.set_content(&c);
+                                    last_saved_content = c.clone();
+                                    last_lsp_content = c;
+                                }
+                            } else {
+                                state.lock().unwrap().focus = Focus::Editor;
+                            }
+                            mouse_select_start = None;
+                            mouse_did_drag = false;
+                        } else {
+                            state.lock().unwrap().focus = pane;
+                            mouse_select_start = Some((mouse.column, mouse.row));
+                            mouse_did_drag = false;
+                        }
                     }
                     MouseEventKind::Drag(MouseButton::Left) => {
                         mouse_did_drag = true;
@@ -377,6 +429,43 @@ async fn run_loop(
                 }
 
                 match (key.modifiers, key.code) {
+                    // Tab navigation (global, any mode)
+                    (KeyModifiers::CONTROL, KeyCode::Right) => {
+                        let content = {
+                            let mut s = state.lock().unwrap();
+                            s.next_tab();
+                            s.tab_content_pending.take()
+                        };
+                        if let Some(c) = content {
+                            editor.set_content(&c);
+                            last_saved_content = c.clone();
+                            last_lsp_content = c;
+                        }
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Left) => {
+                        let content = {
+                            let mut s = state.lock().unwrap();
+                            s.prev_tab();
+                            s.tab_content_pending.take()
+                        };
+                        if let Some(c) = content {
+                            editor.set_content(&c);
+                            last_saved_content = c.clone();
+                            last_lsp_content = c;
+                        }
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
+                        let content = {
+                            let mut s = state.lock().unwrap();
+                            s.new_tab();
+                            s.tab_content_pending.take()
+                        };
+                        if let Some(c) = content {
+                            editor.set_content(&c);
+                            last_saved_content = c.clone();
+                            last_lsp_content = c;
+                        }
+                    }
                     // Global quit in vim normal mode or schema/results pane
                     (KeyModifiers::NONE, KeyCode::Char('q'))
                         if focus != Focus::Editor || vim_mode == VimMode::Normal =>
@@ -525,6 +614,7 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
 struct DrawAreas {
     schema: Rect,
     editor: Rect,
+    tab_bar: Rect,
     results: Option<Rect>,
 }
 
@@ -544,7 +634,7 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
 
     let outer = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(20), Constraint::Percentage(85)])
+        .constraints([Constraint::Min(30), Constraint::Percentage(85)])
         .split(main_area);
 
     let schema_focused = state.focus == Focus::Schema;
@@ -573,9 +663,17 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
             .split(outer[1])
     };
 
+    // Tab bar is the first content row inside the editor block (border=1 on each side)
+    let tab_bar = Rect {
+        x: right_chunks[0].x + 1,
+        y: right_chunks[0].y + 1,
+        width: right_chunks[0].width.saturating_sub(2),
+        height: 1,
+    };
     let areas = DrawAreas {
         schema: outer[0],
         editor: right_chunks[0],
+        tab_bar,
         results: if show_results { Some(right_chunks[1]) } else { None },
     };
 
@@ -856,23 +954,31 @@ fn draw_editor(
             Style::default()
         });
 
-    // Split editor area to leave room for diagnostic line
-    let editor_chunks = if diag_line.is_some() {
+    // Render block manually so we can split the inner area ourselves
+    let inner = editor_block.inner(area);
+    f.render_widget(editor_block, area);
+
+    // Split inner: tab_bar (1) + textarea + optional diag (1)
+    let inner_chunks = if diag_line.is_some() {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(area)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(inner)
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(100)])
-            .split(area)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner)
     };
 
+    draw_tab_bar(f, state, inner_chunks[0]);
+
     let mut textarea = editor.textarea.clone();
-    textarea.set_block(editor_block);
     textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
-    // Basic keyword highlighting via search pattern
     let _ = textarea.set_search_pattern(
         r"(?i)\b(select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|column|join|inner|outer|left|right|full|cross|on|and|or|not|null|is|in|like|between|order|by|group|having|limit|offset|union|all|distinct|as|case|when|then|else|end|if|exists|primary|foreign|key|references|unique|default|constraint|check|with|view|begin|commit|rollback|transaction|use|show|describe|explain|database|schema|index|procedure|function|returns|return|trigger|true|false)\b",
     );
@@ -881,14 +987,37 @@ fn draw_editor(
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     );
-    f.render_widget(&textarea, editor_chunks[0]);
+    f.render_widget(&textarea, inner_chunks[1]);
 
     if let Some(msg) = diag_line {
         f.render_widget(
             Paragraph::new(msg).style(Style::default().fg(Color::Red)),
-            editor_chunks[1],
+            inner_chunks[2],
         );
     }
+}
+
+fn draw_tab_bar(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) {
+    if state.tabs.is_empty() {
+        return;
+    }
+    let mut spans: Vec<Span> = vec![];
+    for (i, tab) in state.tabs.iter().enumerate() {
+        let active = i == state.active_tab;
+        let style = if active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(format!(" {} ", tab.name), style));
+        if i + 1 < state.tabs.len() {
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool) {
@@ -1082,6 +1211,15 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect) {
             &[
                 ("j / k", "Scroll down / up"),
                 ("q / Ctrl+C", "Dismiss results"),
+            ],
+        ),
+        (
+            "Tabs",
+            &[
+                ("Ctrl+T", "New scratch tab"),
+                ("Ctrl+Right", "Next tab"),
+                ("Ctrl+Left", "Prev tab"),
+                ("Click tab name", "Switch to tab"),
             ],
         ),
         (
