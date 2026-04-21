@@ -852,7 +852,10 @@ async fn run_loop(
                     _ => {}
                 }
             } // Event::Key
-            _ => {} // FocusGained, FocusLost, Paste, Resize — ignore
+            Event::Resize(_, _) => {
+                terminal.autoresize()?;
+            }
+            _ => {} // FocusGained, FocusLost, Paste — ignore
         } // match event
         event_triggered_redraw = true;
     }
