@@ -26,6 +26,8 @@ impl Default for EditorConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ConnectionConfig {
     pub url: String,
+    // Derived from filename at load time; not present in the .toml file itself.
+    #[serde(default)]
     pub name: String,
 }
 
