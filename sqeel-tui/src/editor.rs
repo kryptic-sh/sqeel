@@ -348,6 +348,12 @@ impl<'a> Editor<'a> {
                 self.textarea.delete_char();
                 return true;
             }
+            Input { key: Key::Char('J'), ctrl: false, .. }
+                if self.mode != Mode::Visual =>
+            {
+                self.join_line();
+                return true;
+            }
             Input { key: Key::Char('D'), .. } => {
                 self.textarea.delete_line_by_end();
                 self.mode = Mode::Normal;
@@ -508,6 +514,32 @@ impl<'a> Editor<'a> {
             .count();
         for _ in 0..indent {
             self.textarea.move_cursor(CursorMove::Forward);
+        }
+    }
+
+    fn join_line(&mut self) {
+        let (row, _) = self.textarea.cursor();
+        if row + 1 >= self.textarea.lines().len() {
+            return;
+        }
+        self.textarea.move_cursor(CursorMove::End);
+        let end_col = self.textarea.cursor().1;
+        self.textarea.delete_next_char(); // delete newline
+        // strip leading whitespace from the (formerly next) line
+        loop {
+            let (r, c) = self.textarea.cursor();
+            let line = self.textarea.lines()[r].clone();
+            match line[c..].chars().next() {
+                Some(ch) if ch.is_whitespace() => { self.textarea.delete_next_char(); }
+                _ => break,
+            }
+        }
+        // insert one space if both sides are non-empty
+        let (r, c) = self.textarea.cursor();
+        let has_right = c < self.textarea.lines()[r].len();
+        if end_col > 0 && has_right {
+            self.textarea.insert_char(' ');
+            self.textarea.move_cursor(CursorMove::Back);
         }
     }
 

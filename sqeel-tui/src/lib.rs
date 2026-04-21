@@ -1115,18 +1115,17 @@ fn draw_editor(
         );
     }
 
-    let mut textarea = editor.textarea.clone();
-    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
-    textarea.set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 45)));
-    let _ = textarea.set_search_pattern(
+    editor.textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    editor.textarea.set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 45)));
+    let _ = editor.textarea.set_search_pattern(
         r"(?i)\b(select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|column|join|inner|outer|left|right|full|cross|on|and|or|not|null|is|in|like|between|order|by|group|having|limit|offset|union|all|distinct|as|case|when|then|else|end|if|exists|primary|foreign|key|references|unique|default|constraint|check|with|view|begin|commit|rollback|transaction|use|show|describe|explain|database|schema|index|procedure|function|returns|return|trigger|true|false)\b",
     );
-    textarea.set_search_style(
+    editor.textarea.set_search_style(
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     );
-    f.render_widget(&textarea, inner_chunks[1]);
+    f.render_widget(&editor.textarea, inner_chunks[1]);
 
     if let Some(msg) = diag_line {
         f.render_widget(
