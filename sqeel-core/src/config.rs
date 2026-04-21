@@ -104,19 +104,29 @@ pub fn load_connections() -> anyhow::Result<Vec<ConnectionConfig>> {
     Ok(conns)
 }
 
-pub fn save_last_connection(url: &str) -> anyhow::Result<()> {
+/// Save the last-used named connection to ~/.config/sqeel/session.toml.
+pub fn save_session(name: &str) -> anyhow::Result<()> {
     let dir = config_dir().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("last_connection"), url)?;
+    std::fs::write(dir.join("session.toml"), format!("connection = {name:?}\n"))?;
     Ok(())
 }
 
-pub fn load_last_connection() -> Option<String> {
-    let path = config_dir()?.join("last_connection");
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// Load the last-used connection name from ~/.config/sqeel/session.toml.
+/// Returns the name string, not the URL.
+pub fn load_session() -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Session {
+        connection: String,
+    }
+    let path = config_dir()?.join("session.toml");
+    let content = std::fs::read_to_string(path).ok()?;
+    let s: Session = toml::from_str(&content).ok()?;
+    if s.connection.is_empty() {
+        None
+    } else {
+        Some(s.connection)
+    }
 }
 
 pub fn save_connection(name: &str, url: &str) -> anyhow::Result<()> {

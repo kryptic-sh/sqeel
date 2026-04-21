@@ -3,7 +3,7 @@ use std::sync::Arc;
 use clap::Parser;
 use sqeel_core::{
     AppState, UiProvider,
-    config::{load_connections, load_last_connection, save_last_connection},
+    config::{load_connections, load_session, save_session},
     db::DbConnection,
     persistence::{load_schema_cache, save_schema_cache},
 };
@@ -38,10 +38,9 @@ fn main() -> anyhow::Result<()> {
 
     let url = if let Some(url) = args.url {
         Some(url)
-    } else if let Some(name) = args.connection {
-        conns.into_iter().find(|c| c.name == name).map(|c| c.url)
     } else {
-        load_last_connection()
+        let name = args.connection.or_else(load_session);
+        name.and_then(|n| conns.iter().find(|c| c.name == n).map(|c| c.url.clone()))
     };
 
     // Build a tokio runtime for async work; iced owns the main thread and its own executor.
@@ -75,8 +74,15 @@ async fn connect_and_spawn(state: &Arc<std::sync::Mutex<AppState>>, url: &str) {
                 let mut s = state.lock().unwrap();
                 s.active_connection = Some(conn.url.clone());
                 s.set_status(format!("Connected: {}", conn.url));
+                if let Some(name) = s
+                    .available_connections
+                    .iter()
+                    .find(|c| c.url == url)
+                    .map(|c| c.name.clone())
+                {
+                    let _ = save_session(&name);
+                }
             }
-            let _ = save_last_connection(url);
             spawn_executor(state.clone(), conn);
         }
         Err(e) => {
