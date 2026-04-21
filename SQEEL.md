@@ -218,8 +218,9 @@ GitHub Actions runs on every push and PR to `sqeel/sqeel`.
 - [ ] Tests: all iced message → state transitions, vim mode in GUI editor, same core test suite runs against GUI state
 
 ### M7 — Polish
-- [ ] Config file via `dirs::config_dir()` (Linux: `~/.config/sqeel/`, macOS: `~/Library/Application Support/sqeel/`, Windows: `%APPDATA%\sqeel\`)
-- [ ] Multiple DB connections
+- [ ] Main config via `dirs::config_dir()` (Linux: `~/.config/sqeel/config.toml`, macOS/Windows: platform equivalent)
+- [ ] Per-connection files in `conns/` subdir — each `.toml` is one connection, scanned on startup
+- [ ] Multiple DB connections selectable in UI
 - [ ] SQLite + PostgreSQL support via sqlx
 - [ ] Export results (CSV, JSON)
 - [ ] Query history
@@ -232,18 +233,34 @@ GitHub Actions runs on every push and PR to `sqeel/sqeel`.
 
 ## Config (future)
 
-Path resolved via `dirs::config_dir()` — platform-appropriate on Linux, macOS, and Windows.
+All paths resolved via `dirs::config_dir()` — platform-appropriate on Linux, macOS, and Windows.
+
+### Main config — `~/.config/sqeel/config.toml`
+
 ```toml
 [editor]
 keybindings = "vim"  # or "emacs"
 lsp_binary = "sqls"  # path to LSP binary
-
-[connections.local]
-url = "mysql://localhost/mydb"
-
-[connections.staging]
-url = "mysql://staging-host/mydb"
 ```
+
+### Per-connection config — `~/.config/sqeel/conns/<name>.toml`
+
+Each connection is its own file. Filename becomes the connection name shown in UI.
+
+```toml
+# ~/.config/sqeel/conns/local.toml
+url = "mysql://localhost/mydb"
+```
+
+```toml
+# ~/.config/sqeel/conns/staging.toml
+url = "mysql://user:pass@staging-host/mydb"
+
+[tls]
+ca_cert = "/path/to/ca.pem"
+```
+
+sqeel scans `conns/` on startup and loads all `.toml` files found.
 
 ## Name
 SQEEL — because it makes other SQL clients cry.
