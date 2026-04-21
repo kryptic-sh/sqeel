@@ -104,6 +104,21 @@ pub fn load_connections() -> anyhow::Result<Vec<ConnectionConfig>> {
     Ok(conns)
 }
 
+pub fn save_last_connection(url: &str) -> anyhow::Result<()> {
+    let dir = config_dir().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("last_connection"), url)?;
+    Ok(())
+}
+
+pub fn load_last_connection() -> Option<String> {
+    let path = config_dir()?.join("last_connection");
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn save_connection(name: &str, url: &str) -> anyhow::Result<()> {
     if !name
         .chars()

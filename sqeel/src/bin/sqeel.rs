@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use sqeel_core::{AppState, UiProvider, config::load_connections, db::DbConnection};
+use sqeel_core::{
+    AppState, UiProvider,
+    config::{load_connections, load_last_connection, save_last_connection},
+    db::DbConnection,
+};
 use sqeel_tui::TuiProvider;
 
 #[derive(Parser)]
@@ -36,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     } else if let Some(name) = args.connection {
         conns.into_iter().find(|c| c.name == name).map(|c| c.url)
     } else {
-        None
+        load_last_connection()
     };
 
     // Runtime for async setup (initial connect + reconnection watcher).
@@ -70,6 +74,7 @@ async fn connect_and_spawn(state: &Arc<std::sync::Mutex<AppState>>, url: &str) {
                 s.active_connection = Some(conn.url.clone());
                 s.set_status(format!("Connected: {}", conn.url));
             }
+            let _ = save_last_connection(url);
             spawn_executor(state.clone(), conn);
         }
         Err(e) => {

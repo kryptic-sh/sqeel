@@ -532,13 +532,19 @@ impl SqeelApp {
         if let Some(info) = debug_info {
             column![
                 after_help,
-                container(text(info).size(11).color(Color::BLACK))
-                    .width(Length::Fill)
-                    .padding([2, 8])
-                    .style(|_theme: &Theme| iced::widget::container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(1.0, 0.85, 0.0))),
-                        ..Default::default()
-                    }),
+                container(
+                    scrollable(text(info).size(11).color(Color::BLACK)).direction(
+                        scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new().width(3).scroller_width(3),
+                        )
+                    )
+                )
+                .width(Length::Fill)
+                .padding([2, 8])
+                .style(|_theme: &Theme| iced::widget::container::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(1.0, 0.85, 0.0))),
+                    ..Default::default()
+                }),
             ]
             .into()
         } else {

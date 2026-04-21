@@ -65,6 +65,7 @@ async fn run_loop(
     let mut highlighter = Highlighter::new()?;
 
     let mut last_saved_content = String::new();
+    let mut debug_tick: u32 = 0;
 
     loop {
         // Sync editor content + re-highlight
@@ -82,9 +83,13 @@ async fn run_loop(
             }
         }
 
+        // Advance marquee: one character every ~10 frames (500 ms at 50 ms poll)
+        debug_tick = debug_tick.wrapping_add(1);
+        let debug_scroll = debug_tick / 10;
+
         terminal.draw(|f| {
             let s = state.lock().unwrap();
-            draw(f, &s, &editor);
+            draw(f, &s, &editor, debug_scroll);
         })?;
 
         if !event::poll(Duration::from_millis(50))? {
@@ -344,7 +349,7 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
     }
 }
 
-fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor) {
+fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scroll: u32) {
     let area = f.area();
 
     // Reserve one row at the bottom for the debug bar when enabled
@@ -417,11 +422,17 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor) {
 
     // Debug bar (always below everything else)
     if let Some(dbg) = debug_area {
-        draw_debug_bar(f, state, editor, dbg);
+        draw_debug_bar(f, state, editor, dbg, debug_scroll);
     }
 }
 
-fn draw_debug_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, area: Rect) {
+fn draw_debug_bar(
+    f: &mut ratatui::Frame<'_>,
+    state: &AppState,
+    editor: &Editor,
+    area: Rect,
+    scroll: u32,
+) {
     let focus = format!("{:?}", state.focus);
     let vim = format!("{:?}", state.vim_mode);
     let conn = state
@@ -450,11 +461,21 @@ fn draw_debug_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor,
     );
 
     let line = format!(
-        " DEBUG  focus={focus}  vim={vim}  cursor={cursor}  conn={conn}  schema={schema_n}db  results={results}  {flags}"
+        " DEBUG  focus={focus}  vim={vim}  cursor={cursor}  conn={conn}  schema={schema_n}db  results={results}  {flags}    "
     );
 
+    // Wrap the marquee offset so it never scrolls past the text length
+    let max_offset = (line.len() as u32).saturating_sub(area.width as u32);
+    let col = if max_offset == 0 {
+        0
+    } else {
+        (scroll % (max_offset + 1)) as u16
+    };
+
     f.render_widget(
-        Paragraph::new(line).style(Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Paragraph::new(line)
+            .style(Style::default().fg(Color::Black).bg(Color::Yellow))
+            .scroll((0, col)),
         area,
     );
 }

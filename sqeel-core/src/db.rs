@@ -79,13 +79,19 @@ impl DbConnection {
             .collect())
     }
 
-    /// Load the full schema tree. Databases are collapsed by default; columns
-    /// are eagerly loaded so expanding a table works without a round-trip.
+    /// Load the schema tree: databases + tables only (no columns — too slow to
+    /// load eagerly for large schemas). Columns can be loaded on demand later.
     pub async fn load_schema(&self) -> anyhow::Result<Vec<SchemaNode>> {
         if self.is_sqlite() {
-            // SQLite has no real "database" hierarchy — show tables under "main"
             let tables = self.list_tables("main").await.unwrap_or_default();
-            let table_nodes = self.build_table_nodes("main", tables).await;
+            let table_nodes = tables
+                .into_iter()
+                .map(|t| SchemaNode::Table {
+                    name: t,
+                    expanded: false,
+                    columns: vec![],
+                })
+                .collect();
             return Ok(vec![SchemaNode::Database {
                 name: "main".into(),
                 expanded: true,
@@ -93,11 +99,18 @@ impl DbConnection {
             }]);
         }
 
-        let databases = self.list_databases().await.unwrap_or_default();
+        let databases = self.list_databases().await?;
         let mut nodes = Vec::new();
         for db in databases {
             let tables = self.list_tables(&db).await.unwrap_or_default();
-            let table_nodes = self.build_table_nodes(&db, tables).await;
+            let table_nodes = tables
+                .into_iter()
+                .map(|t| SchemaNode::Table {
+                    name: t,
+                    expanded: false,
+                    columns: vec![],
+                })
+                .collect();
             nodes.push(SchemaNode::Database {
                 name: db,
                 expanded: false,
@@ -105,30 +118,6 @@ impl DbConnection {
             });
         }
         Ok(nodes)
-    }
-
-    async fn build_table_nodes(&self, db: &str, tables: Vec<String>) -> Vec<SchemaNode> {
-        let mut nodes = Vec::new();
-        for table in tables {
-            let columns = self
-                .list_columns(db, &table)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|c| SchemaNode::Column {
-                    name: c.name,
-                    type_name: c.type_name,
-                    nullable: c.nullable,
-                    is_pk: c.is_pk,
-                })
-                .collect();
-            nodes.push(SchemaNode::Table {
-                name: table,
-                expanded: false,
-                columns,
-            });
-        }
-        nodes
     }
 
     pub async fn list_tables(&self, database: &str) -> anyhow::Result<Vec<String>> {
