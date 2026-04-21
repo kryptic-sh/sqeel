@@ -9,7 +9,7 @@
       wakes every 50ms and triggers full redraw regardless of changes —
       amplifies every other issue below.
 
-- [ ] **Cache flattened schema tree** (`sqeel-core/src/state.rs:281`)
+- [x] **Cache flattened schema tree** (`sqeel-core/src/state.rs:281`)
       `visible_schema_items()` calls `flatten_tree` on every frame and every key
       event. Cache flattened list on `AppState`, invalidate only on schema
       change (toggle/refresh/append). Mouse wheel should call

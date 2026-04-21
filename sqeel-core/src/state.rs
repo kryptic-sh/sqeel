@@ -103,6 +103,7 @@ pub struct AppState {
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
     pub schema_loading: bool,
+    schema_items_cache: Vec<SchemaTreeItem>,
     pub query_history: Vec<String>,
     pub history_cursor: Option<usize>,
     // Connection switcher
@@ -136,6 +137,10 @@ impl AppState {
             sidebar_visible: true,
             ..Default::default()
         }))
+    }
+
+    fn rebuild_schema_cache(&mut self) {
+        self.schema_items_cache = flatten_tree(&self.schema_nodes);
     }
 
     pub fn set_results(&mut self, result: QueryResult) {
@@ -278,8 +283,8 @@ impl AppState {
         out
     }
 
-    pub fn visible_schema_items(&self) -> Vec<SchemaTreeItem> {
-        flatten_tree(&self.schema_nodes)
+    pub fn visible_schema_items(&self) -> &[SchemaTreeItem] {
+        &self.schema_items_cache
     }
 
     /// Returns path strings for every expanded node, e.g. `["mydb", "mydb/users"]`.
@@ -290,21 +295,24 @@ impl AppState {
     /// Expand nodes from a saved list of path strings.
     pub fn restore_schema_expanded_paths(&mut self, paths: &[String]) {
         restore_expanded_paths(&mut self.schema_nodes, paths);
+        self.rebuild_schema_cache();
     }
 
     /// Returns the path string for the currently selected schema item, e.g. `"mydb/users/id"`.
     pub fn schema_cursor_path_string(&self) -> Option<String> {
-        let items = self.visible_schema_items();
-        let item = items.get(self.schema_cursor)?;
-        Some(path_to_string(&item.node_path, &self.schema_nodes))
+        let item = self.schema_items_cache.get(self.schema_cursor)?;
+        let path = item.node_path.clone();
+        Some(path_to_string(&path, &self.schema_nodes))
     }
 
     /// Expands ancestor nodes then moves the cursor to the item matching `path_str`.
     /// Returns true if found.
     pub fn restore_schema_cursor_by_path(&mut self, path_str: &str) -> bool {
         expand_path(&mut self.schema_nodes, path_str);
-        let items = self.visible_schema_items();
-        if let Some(idx) = find_cursor_by_path(&items, &self.schema_nodes, path_str) {
+        self.rebuild_schema_cache();
+        if let Some(idx) =
+            find_cursor_by_path(&self.schema_items_cache, &self.schema_nodes, path_str)
+        {
             self.schema_cursor = idx;
             true
         } else {
@@ -313,7 +321,7 @@ impl AppState {
     }
 
     pub fn schema_cursor_down(&mut self) {
-        let max = self.visible_schema_items().len().saturating_sub(1);
+        let max = self.schema_items_cache.len().saturating_sub(1);
         if self.schema_cursor < max {
             self.schema_cursor += 1;
         }
@@ -324,21 +332,26 @@ impl AppState {
     }
 
     pub fn schema_toggle_current(&mut self) {
-        let items = self.visible_schema_items();
-        if let Some(item) = items.get(self.schema_cursor) {
-            let path = item.node_path.clone();
+        let path = self
+            .schema_items_cache
+            .get(self.schema_cursor)
+            .map(|item| item.node_path.clone());
+        if let Some(path) = path {
             toggle_node(&mut self.schema_nodes, &path);
+            self.rebuild_schema_cache();
         }
     }
 
     pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
         self.schema_nodes = nodes;
         self.schema_cursor = 0;
+        self.rebuild_schema_cache();
     }
 
     /// Append a batch of table nodes (no columns yet) to the named database.
     /// Does not touch other databases or reset the cursor.
     pub fn append_db_tables(&mut self, db_name: &str, tables: Vec<SchemaNode>) {
+        let mut changed = false;
         for node in self.schema_nodes.iter_mut() {
             if let SchemaNode::Database {
                 name, tables: t, ..
@@ -346,14 +359,19 @@ impl AppState {
                 && name == db_name
             {
                 t.extend(tables);
-                return;
+                changed = true;
+                break;
             }
+        }
+        if changed {
+            self.rebuild_schema_cache();
         }
     }
 
     /// Set the columns for one specific table without touching anything else.
     pub fn set_table_columns(&mut self, db_name: &str, table_name: &str, columns: Vec<SchemaNode>) {
-        for node in self.schema_nodes.iter_mut() {
+        let mut changed = false;
+        'outer: for node in self.schema_nodes.iter_mut() {
             if let SchemaNode::Database { name, tables, .. } = node
                 && name == db_name
             {
@@ -364,11 +382,15 @@ impl AppState {
                         && name == table_name
                     {
                         *c = columns;
-                        return;
+                        changed = true;
+                        break 'outer;
                     }
                 }
-                return;
+                break;
             }
+        }
+        if changed {
+            self.rebuild_schema_cache();
         }
     }
 
@@ -377,7 +399,8 @@ impl AppState {
     pub fn refresh_schema_nodes(&mut self, mut nodes: Vec<SchemaNode>) {
         merge_expansion(&self.schema_nodes.clone(), &mut nodes);
         self.schema_nodes = nodes;
-        let max = self.visible_schema_items().len().saturating_sub(1);
+        self.rebuild_schema_cache();
+        let max = self.schema_items_cache.len().saturating_sub(1);
         self.schema_cursor = self.schema_cursor.min(max);
     }
 

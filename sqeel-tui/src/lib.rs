@@ -31,6 +31,7 @@ use sqeel_core::{
     AppState, UiProvider,
     config::load_main_config,
     lsp::{LspClient, LspEvent},
+    schema::SchemaTreeItem,
     state::{AddConnectionField, Focus, KeybindingMode, ResultsPane, VimMode},
 };
 
@@ -1351,10 +1352,10 @@ fn draw_schema(
     };
 
     let all_items = state.visible_schema_items();
-    let items: Vec<_> = if !query.is_empty() {
+    let items: Vec<&SchemaTreeItem> = if !query.is_empty() {
         let q = query.to_lowercase();
         all_items
-            .into_iter()
+            .iter()
             .filter(|item| {
                 let label = item.label.to_lowercase();
                 let mut chars = label.chars();
@@ -1362,7 +1363,7 @@ fn draw_schema(
             })
             .collect()
     } else {
-        all_items
+        all_items.iter().collect()
     };
 
     let filtered = !query.is_empty();
