@@ -47,6 +47,11 @@ impl<'a> Editor<'a> {
         self.textarea = TextArea::new(lines);
     }
 
+    /// Insert `text` at the current cursor position.
+    pub fn insert_str(&mut self, text: &str) {
+        self.textarea.insert_str(text);
+    }
+
     /// Returns true if the key was consumed by the editor.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         match self.keybinding_mode {

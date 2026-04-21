@@ -74,7 +74,20 @@ async fn run_loop(
     let mut highlighter = Highlighter::new()?;
 
     // Start LSP client if binary is configured and reachable
-    let scratch_uri: lsp_types::Uri = "file:///tmp/sqeel-scratch.sql".parse().unwrap();
+    let scratch_path = std::env::temp_dir().join("sqeel-scratch.sql");
+    // Build a file:// URI from the OS temp path (works on Windows and Unix)
+    let scratch_uri_str = {
+        let p = scratch_path.to_string_lossy();
+        if p.starts_with('/') {
+            format!("file://{p}")
+        } else {
+            // Windows: C:\... → file:///C:/...
+            format!("file:///{}", p.replace('\\', "/"))
+        }
+    };
+    let scratch_uri: lsp_types::Uri = scratch_uri_str
+        .parse()
+        .unwrap_or_else(|_| "file:///tmp/sqeel-scratch.sql".parse().unwrap());
     let lsp_binary = load_main_config()
         .ok()
         .map(|c| c.editor.lsp_binary)
@@ -271,10 +284,35 @@ async fn run_loop(
 
                 // ── Normal key handling ──────────────────────────────────────────
 
-                // Dismiss completions on Esc
-                if show_completions && key.code == KeyCode::Esc {
-                    state.lock().unwrap().dismiss_completions();
-                    continue;
+                // Completion popup navigation
+                if show_completions {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::NONE, KeyCode::Esc) => {
+                            state.lock().unwrap().dismiss_completions();
+                            continue;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Up) => {
+                            state.lock().unwrap().completion_cursor_up();
+                            continue;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Down) => {
+                            state.lock().unwrap().completion_cursor_down();
+                            continue;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Tab | KeyCode::Enter) => {
+                            let chosen = state
+                                .lock()
+                                .unwrap()
+                                .selected_completion()
+                                .map(|s| s.to_owned());
+                            if let Some(text) = chosen {
+                                editor.insert_str(&text);
+                                state.lock().unwrap().dismiss_completions();
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
 
                 match (key.modifiers, key.code) {
@@ -723,12 +761,13 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
 }
 
 fn draw_completions(f: &mut ratatui::Frame<'_>, state: &AppState, editor_area: Rect) {
+    let cursor = state.completion_cursor;
     let items: Vec<ListItem> = state
         .completions
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let style = if i == 0 {
+            let style = if i == cursor {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()

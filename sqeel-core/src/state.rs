@@ -63,6 +63,7 @@ pub struct AppState {
     pub highlight_spans: Vec<HighlightSpan>,
     pub completions: Vec<String>,
     pub show_completions: bool,
+    pub completion_cursor: usize,
     pub active_connection: Option<String>,
     pub status_message: Option<String>,
     pub results_scroll: usize,
@@ -156,11 +157,33 @@ impl AppState {
 
     pub fn set_completions(&mut self, items: Vec<String>) {
         self.show_completions = !items.is_empty();
+        if !items.is_empty() {
+            self.completion_cursor = self.completion_cursor.min(items.len().saturating_sub(1));
+        }
         self.completions = items;
     }
 
     pub fn dismiss_completions(&mut self) {
         self.show_completions = false;
+        self.completion_cursor = 0;
+    }
+
+    pub fn completion_cursor_up(&mut self) {
+        self.completion_cursor = self.completion_cursor.saturating_sub(1);
+    }
+
+    pub fn completion_cursor_down(&mut self) {
+        let max = self.completions.len().saturating_sub(1);
+        if self.completion_cursor < max {
+            self.completion_cursor += 1;
+        }
+    }
+
+    /// Return the currently selected completion label, if any.
+    pub fn selected_completion(&self) -> Option<&str> {
+        self.completions
+            .get(self.completion_cursor)
+            .map(|s| s.as_str())
     }
 
     pub fn has_errors(&self) -> bool {
