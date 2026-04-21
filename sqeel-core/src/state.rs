@@ -102,7 +102,7 @@ pub enum ResultsPane {
 
 #[derive(Default)]
 pub struct AppState {
-    pub editor_content: String,
+    pub editor_content: Arc<String>,
     pub tabs: Vec<TabEntry>,
     pub active_tab: usize,
     /// Set when the active tab changes; TUI drains this to reload the editor.
@@ -622,7 +622,7 @@ impl AppState {
         }
         // Persist current tab content in memory before leaving
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content = Some(self.editor_content.clone());
+            tab.content = Some((*self.editor_content).clone());
         }
         self.active_tab = idx;
         let slug =
@@ -666,7 +666,7 @@ impl AppState {
     pub fn new_tab(&mut self) {
         // Save current tab content before leaving
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content = Some(self.editor_content.clone());
+            tab.content = Some((*self.editor_content).clone());
         }
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
@@ -702,13 +702,13 @@ impl AppState {
             if let Ok(name) = persistence::next_scratch_name(&slug) {
                 let _ = persistence::save_query(&slug, &name, &self.editor_content);
                 self.tabs
-                    .push(TabEntry::open(name, self.editor_content.clone()));
+                    .push(TabEntry::open(name, (*self.editor_content).clone()));
                 self.active_tab = 0;
             }
             return;
         }
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content = Some(self.editor_content.clone());
+            tab.content = Some((*self.editor_content).clone());
             tab.last_accessed = Some(Instant::now());
             let _ = persistence::save_query(&slug, &tab.name, &self.editor_content);
         }

@@ -20,7 +20,7 @@
       Column-width scan is O(rows×cols) on every frame. Compute widths once when
       `QueryResult` is assigned, store on struct.
 
-- [ ] **Arc<String> for editor content** (`sqeel-tui/src/lib.rs:141-152`)
+- [x] **Arc<String> for editor content** (`sqeel-tui/src/lib.rs:141-152`)
       Triple-clone of full editor content under Mutex lock on every keystroke.
       Use `Arc<String>` so store/submit are cheap clones; move
       `highlight_thread.submit` outside the lock.

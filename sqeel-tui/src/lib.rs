@@ -158,8 +158,8 @@ async fn run_loop(
         if content_changed {
             needs_redraw = true;
         }
-        let content = if content_changed {
-            Some(editor.content())
+        let content: Option<Arc<String>> = if content_changed {
+            Some(Arc::new(editor.content()))
         } else {
             None
         };
@@ -168,7 +168,6 @@ async fn run_loop(
             s.vim_mode = editor.vim_mode();
             if let Some(ref c) = content {
                 s.editor_content = c.clone();
-                highlight_thread.submit(c.clone());
                 editor_dirty = true;
             }
             // Apply any completed highlight results from the background thread.
@@ -181,6 +180,9 @@ async fn run_loop(
                 editor_dirty = false;
                 last_save_time = Instant::now();
             }
+        }
+        if let Some(ref c) = content {
+            highlight_thread.submit(c.clone());
         }
 
         // Auto-complete: on every content change, submit a schema completion query to the
@@ -284,6 +286,7 @@ async fn run_loop(
             continue;
         }
 
+        event_triggered_redraw = true;
         match event::read()? {
             Event::Mouse(mouse) => {
                 let area = terminal.size()?;
@@ -869,7 +872,6 @@ async fn run_loop(
             }
             _ => {} // FocusGained, FocusLost, Paste — ignore
         } // match event
-        event_triggered_redraw = true;
     }
     Ok(())
 }

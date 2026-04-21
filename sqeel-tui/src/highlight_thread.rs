@@ -8,13 +8,13 @@ use std::sync::{Arc, Condvar, Mutex};
 /// the *latest* submitted value (older pending values are discarded). Poll for
 /// completed spans with [`HighlightThread::try_recv`].
 pub struct HighlightThread {
-    pending: Arc<(Mutex<Option<String>>, Condvar)>,
+    pending: Arc<(Mutex<Option<Arc<String>>>, Condvar)>,
     result_rx: mpsc::Receiver<Vec<HighlightSpan>>,
 }
 
 impl HighlightThread {
     pub fn spawn() -> anyhow::Result<Self> {
-        let pending: Arc<(Mutex<Option<String>>, Condvar)> =
+        let pending: Arc<(Mutex<Option<Arc<String>>>, Condvar)> =
             Arc::new((Mutex::new(None), Condvar::new()));
         let (result_tx, result_rx) = mpsc::channel::<Vec<HighlightSpan>>();
 
@@ -37,7 +37,7 @@ impl HighlightThread {
                         }
                     };
 
-                    let spans = highlighter.highlight(&content);
+                    let spans = highlighter.highlight(&**content);
 
                     if result_tx.send(spans).is_err() {
                         break; // main thread dropped the receiver
@@ -49,7 +49,7 @@ impl HighlightThread {
     }
 
     /// Submit new content for highlighting. Replaces any not-yet-processed value.
-    pub fn submit(&self, content: String) {
+    pub fn submit(&self, content: Arc<String>) {
         let (lock, cvar) = &*self.pending;
         *lock.lock().unwrap() = Some(content);
         cvar.notify_one();
