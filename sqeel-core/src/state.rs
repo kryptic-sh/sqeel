@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex};
-use crate::lsp::Diagnostic;
 use crate::highlight::HighlightSpan;
+use crate::lsp::Diagnostic;
 use crate::persistence;
 use crate::schema::{SchemaNode, SchemaTreeItem, flatten_tree, toggle_node};
 use lsp_types::DiagnosticSeverity;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeybindingMode {
@@ -120,7 +120,9 @@ impl AppState {
     }
 
     pub fn has_errors(&self) -> bool {
-        self.lsp_diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::ERROR)
+        self.lsp_diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::ERROR)
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {

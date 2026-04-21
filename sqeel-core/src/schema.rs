@@ -1,9 +1,22 @@
 /// Schema tree node for the schema browser panel.
 #[derive(Debug, Clone)]
 pub enum SchemaNode {
-    Database { name: String, expanded: bool, tables: Vec<SchemaNode> },
-    Table { name: String, expanded: bool, columns: Vec<SchemaNode> },
-    Column { name: String, type_name: String, nullable: bool, is_pk: bool },
+    Database {
+        name: String,
+        expanded: bool,
+        tables: Vec<SchemaNode>,
+    },
+    Table {
+        name: String,
+        expanded: bool,
+        columns: Vec<SchemaNode>,
+    },
+    Column {
+        name: String,
+        type_name: String,
+        nullable: bool,
+        is_pk: bool,
+    },
 }
 
 impl SchemaNode {
@@ -16,7 +29,12 @@ impl SchemaNode {
             SchemaNode::Table { name, expanded, .. } => {
                 format!("{}{}  {name}", indent, if *expanded { "▼" } else { "▶" })
             }
-            SchemaNode::Column { name, type_name, is_pk, .. } => {
+            SchemaNode::Column {
+                name,
+                type_name,
+                is_pk,
+                ..
+            } => {
                 let pk = if *is_pk { " 🔑" } else { "" };
                 format!("{indent}   {name}: {type_name}{pk}")
             }
@@ -77,10 +95,18 @@ fn flatten_nodes(
             node_path: node_path.clone(),
         });
         match node {
-            SchemaNode::Database { expanded: true, tables, .. } => {
+            SchemaNode::Database {
+                expanded: true,
+                tables,
+                ..
+            } => {
                 flatten_nodes(tables, depth + 1, &node_path, items);
             }
-            SchemaNode::Table { expanded: true, columns, .. } => {
+            SchemaNode::Table {
+                expanded: true,
+                columns,
+                ..
+            } => {
                 flatten_nodes(columns, depth + 1, &node_path, items);
             }
             _ => {}
@@ -88,7 +114,7 @@ fn flatten_nodes(
     }
 }
 
-pub fn toggle_node(nodes: &mut Vec<SchemaNode>, path: &[usize]) {
+pub fn toggle_node(nodes: &mut [SchemaNode], path: &[usize]) {
     if path.is_empty() {
         return;
     }
@@ -112,26 +138,20 @@ mod tests {
     use super::*;
 
     fn sample_tree() -> Vec<SchemaNode> {
-        vec![
-            SchemaNode::Database {
-                name: "mydb".into(),
+        vec![SchemaNode::Database {
+            name: "mydb".into(),
+            expanded: false,
+            tables: vec![SchemaNode::Table {
+                name: "users".into(),
                 expanded: false,
-                tables: vec![
-                    SchemaNode::Table {
-                        name: "users".into(),
-                        expanded: false,
-                        columns: vec![
-                            SchemaNode::Column {
-                                name: "id".into(),
-                                type_name: "INT".into(),
-                                nullable: false,
-                                is_pk: true,
-                            },
-                        ],
-                    },
-                ],
-            },
-        ]
+                columns: vec![SchemaNode::Column {
+                    name: "id".into(),
+                    type_name: "INT".into(),
+                    nullable: false,
+                    is_pk: true,
+                }],
+            }],
+        }]
     }
 
     #[test]
@@ -154,8 +174,8 @@ mod tests {
     #[test]
     fn expand_table_shows_columns() {
         let mut tree = sample_tree();
-        toggle_node(&mut tree, &[0]);       // expand db
-        toggle_node(&mut tree, &[0, 0]);    // expand table
+        toggle_node(&mut tree, &[0]); // expand db
+        toggle_node(&mut tree, &[0, 0]); // expand table
         let items = flatten_tree(&tree);
         assert_eq!(items.len(), 3);
         assert!(items[2].label.contains("id"));
@@ -164,8 +184,8 @@ mod tests {
     #[test]
     fn collapse_database_hides_children() {
         let mut tree = sample_tree();
-        toggle_node(&mut tree, &[0]);       // expand
-        toggle_node(&mut tree, &[0]);       // collapse
+        toggle_node(&mut tree, &[0]); // expand
+        toggle_node(&mut tree, &[0]); // collapse
         let items = flatten_tree(&tree);
         assert_eq!(items.len(), 1);
     }

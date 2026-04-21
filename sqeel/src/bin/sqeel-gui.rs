@@ -1,5 +1,5 @@
 use clap::Parser;
-use sqeel_core::{AppState, UiProvider, db::DbConnection, config::load_connections};
+use sqeel_core::{AppState, UiProvider, config::load_connections, db::DbConnection};
 use sqeel_gui::GuiProvider;
 
 #[derive(Parser)]
@@ -37,7 +37,10 @@ async fn main() -> anyhow::Result<()> {
                 drop(s);
             }
             Err(e) => {
-                state.lock().unwrap().set_error(format!("Connection failed: {e}"));
+                state
+                    .lock()
+                    .unwrap()
+                    .set_error(format!("Connection failed: {e}"));
             }
         }
     }

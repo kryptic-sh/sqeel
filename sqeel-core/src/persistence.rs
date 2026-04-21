@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use crate::state::QueryResult;
+use std::path::PathBuf;
 
 const RESULT_HISTORY_LIMIT: usize = 10;
 
@@ -15,7 +15,7 @@ pub fn results_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("results"))
 }
 
-fn ensure_dir(path: &PathBuf) -> anyhow::Result<()> {
+fn ensure_dir(path: &std::path::Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(path)?;
     Ok(())
 }
@@ -58,7 +58,9 @@ pub fn list_queries() -> anyhow::Result<Vec<String>> {
         .filter_map(|e| {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) == Some("sql") {
-                p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
             } else {
                 None
             }
@@ -103,7 +105,7 @@ pub fn save_result(query: &str, result: &QueryResult) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn evict_oldest_results(dir: &PathBuf) -> anyhow::Result<()> {
+fn evict_oldest_results(dir: &std::path::Path) -> anyhow::Result<()> {
     let mut files: Vec<(String, std::time::SystemTime)> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -140,7 +142,9 @@ pub fn list_results() -> anyhow::Result<Vec<String>> {
         .filter_map(|e| {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) == Some("json") {
-                p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
             } else {
                 None
             }
@@ -168,20 +172,23 @@ mod tests {
     }
 
     // Helpers that operate on an explicit dir rather than the system data dir
-    fn save_query_to(dir: &PathBuf, name: &str, content: &str) {
+    fn save_query_to(dir: &std::path::Path, name: &str, content: &str) {
         let q = dir.join("queries");
         fs::create_dir_all(&q).unwrap();
         fs::write(q.join(name), content).unwrap();
     }
 
-    fn load_query_from(dir: &PathBuf, name: &str) -> String {
+    fn load_query_from(dir: &std::path::Path, name: &str) -> String {
         fs::read_to_string(dir.join("queries").join(name)).unwrap()
     }
 
-    fn count_results(dir: &PathBuf) -> usize {
+    fn count_results(dir: &std::path::Path) -> usize {
         let r = dir.join("results");
-        if !r.exists() { return 0; }
-        fs::read_dir(&r).unwrap()
+        if !r.exists() {
+            return 0;
+        }
+        fs::read_dir(&r)
+            .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
             .count()

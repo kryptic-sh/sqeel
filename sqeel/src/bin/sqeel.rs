@@ -1,5 +1,5 @@
 use clap::Parser;
-use sqeel_core::{AppState, UiProvider, db::DbConnection, config::load_connections};
+use sqeel_core::{AppState, UiProvider, config::load_connections, db::DbConnection};
 use sqeel_tui::TuiProvider;
 
 #[derive(Parser)]
@@ -33,19 +33,18 @@ async fn main() -> anyhow::Result<()> {
     if let Some(url) = url {
         match DbConnection::connect(&url).await {
             Ok(conn) => {
-                let mut s = state.lock().unwrap();
-                s.active_connection = Some(conn.url.clone());
-                s.set_status(format!("Connected: {}", conn.url));
-                // Store connection in a way TUI can use it
-                // We'll use a separate Arc for the DB connection
-                drop(s);
-                // Run TUI with live DB connection
+                {
+                    let mut s = state.lock().unwrap();
+                    s.active_connection = Some(conn.url.clone());
+                    s.set_status(format!("Connected: {}", conn.url));
+                }
                 run_with_connection(state, conn).await?;
             }
             Err(e) => {
-                let mut s = state.lock().unwrap();
-                s.set_error(format!("Connection failed: {e}"));
-                drop(s);
+                {
+                    let mut s = state.lock().unwrap();
+                    s.set_error(format!("Connection failed: {e}"));
+                }
                 TuiProvider::run(state)?;
             }
         }
@@ -86,7 +85,8 @@ async fn run_with_connection(
     Ok(())
 }
 
-static QUERY_TX: std::sync::OnceLock<tokio::sync::mpsc::Sender<String>> = std::sync::OnceLock::new();
+static QUERY_TX: std::sync::OnceLock<tokio::sync::mpsc::Sender<String>> =
+    std::sync::OnceLock::new();
 
 pub fn send_query(query: String) {
     if let Some(tx) = QUERY_TX.get() {

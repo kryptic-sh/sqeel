@@ -1,13 +1,23 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tui_textarea::{Input, Key, TextArea};
 use sqeel_core::state::{KeybindingMode, VimMode};
+use tui_textarea::{Input, Key, TextArea};
 
 macro_rules! inp {
     ($key:expr) => {
-        Input { key: $key, ctrl: false, alt: false, shift: false }
+        Input {
+            key: $key,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        }
     };
     ($key:expr, ctrl) => {
-        Input { key: $key, ctrl: true, alt: false, shift: false }
+        Input {
+            key: $key,
+            ctrl: true,
+            alt: false,
+            shift: false,
+        }
     };
 }
 
@@ -133,19 +143,39 @@ impl<'a> Editor<'a> {
                 true
             }
             (KeyModifiers::NONE, KeyCode::Char('h')) => {
-                self.textarea.input(Input { key: Key::Left, ctrl: false, alt: false, shift: true });
+                self.textarea.input(Input {
+                    key: Key::Left,
+                    ctrl: false,
+                    alt: false,
+                    shift: true,
+                });
                 true
             }
             (KeyModifiers::NONE, KeyCode::Char('j')) => {
-                self.textarea.input(Input { key: Key::Down, ctrl: false, alt: false, shift: true });
+                self.textarea.input(Input {
+                    key: Key::Down,
+                    ctrl: false,
+                    alt: false,
+                    shift: true,
+                });
                 true
             }
             (KeyModifiers::NONE, KeyCode::Char('k')) => {
-                self.textarea.input(Input { key: Key::Up, ctrl: false, alt: false, shift: true });
+                self.textarea.input(Input {
+                    key: Key::Up,
+                    ctrl: false,
+                    alt: false,
+                    shift: true,
+                });
                 true
             }
             (KeyModifiers::NONE, KeyCode::Char('l')) => {
-                self.textarea.input(Input { key: Key::Right, ctrl: false, alt: false, shift: true });
+                self.textarea.input(Input {
+                    key: Key::Right,
+                    ctrl: false,
+                    alt: false,
+                    shift: true,
+                });
                 true
             }
             _ => false,
@@ -217,7 +247,12 @@ fn crossterm_to_input(key: KeyEvent) -> Input {
         KeyCode::Esc => Key::Esc,
         _ => Key::Null,
     };
-    Input { key: k, ctrl, alt, shift }
+    Input {
+        key: k,
+        ctrl,
+        alt,
+        shift,
+    }
 }
 
 #[cfg(test)]

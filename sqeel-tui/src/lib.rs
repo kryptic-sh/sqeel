@@ -1,28 +1,28 @@
 pub mod editor;
 
-use std::sync::{Arc, Mutex};
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use editor::Editor;
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table},
-    Terminal,
 };
 use sqeel_core::{
     AppState, UiProvider,
     highlight::Highlighter,
     state::{Focus, KeybindingMode, ResultsPane, VimMode},
 };
-use editor::Editor;
 
 pub struct TuiProvider;
 
@@ -80,95 +80,96 @@ async fn run_loop(
             draw(f, &s, &editor);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                let s = state.lock().unwrap();
-                let focus = s.focus;
-                let vim_mode = s.vim_mode;
-                let show_completions = s.show_completions;
-                drop(s);
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            let s = state.lock().unwrap();
+            let focus = s.focus;
+            let vim_mode = s.vim_mode;
+            let show_completions = s.show_completions;
+            drop(s);
 
-                // Dismiss completions on Esc
-                if show_completions && key.code == KeyCode::Esc {
-                    state.lock().unwrap().dismiss_completions();
-                    continue;
-                }
+            // Dismiss completions on Esc
+            if show_completions && key.code == KeyCode::Esc {
+                state.lock().unwrap().dismiss_completions();
+                continue;
+            }
 
-                match (key.modifiers, key.code) {
-                    // Global quit in vim normal mode or schema/results pane
-                    (KeyModifiers::NONE, KeyCode::Char('q'))
-                        if focus != Focus::Editor || vim_mode == VimMode::Normal =>
-                    {
-                        break;
-                    }
-                    // Schema pane navigation
-                    (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Schema => {
-                        state.lock().unwrap().schema_cursor_down();
-                    }
-                    (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Schema => {
-                        state.lock().unwrap().schema_cursor_up();
-                    }
-                    (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char('l'))
-                        if focus == Focus::Schema =>
-                    {
-                        state.lock().unwrap().schema_toggle_current();
-                    }
-                    // Results pane navigation
-                    (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Results => {
-                        state.lock().unwrap().scroll_results_down();
-                    }
-                    (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Results => {
-                        state.lock().unwrap().scroll_results_up();
-                    }
-                    // Dismiss results
-                    (KeyModifiers::CONTROL, KeyCode::Char('c'))
-                    | (KeyModifiers::NONE, KeyCode::Char('q'))
-                        if focus == Focus::Results =>
-                    {
-                        state.lock().unwrap().dismiss_results();
-                    }
-                    // Execute query: Ctrl+Enter
-                    (KeyModifiers::CONTROL, KeyCode::Enter) => {
-                        let content = editor.content();
-                        // M3: actual query execution here
-                        state.lock().unwrap().set_error(
-                            format!("No DB connected. Query was:\n{content}"),
-                        );
-                    }
-                    // Trigger completions: Ctrl+Space (both modes)
-                    (KeyModifiers::CONTROL, KeyCode::Char(' ')) => {
-                        // M2.5: LSP completion request goes here
-                        // For now show placeholder
-                        state.lock().unwrap().set_completions(vec![
-                            "SELECT".into(),
-                            "FROM".into(),
-                            "WHERE".into(),
-                            "JOIN".into(),
-                            "GROUP BY".into(),
-                        ]);
-                    }
-                    // Pane focus
-                    (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
-                        state.lock().unwrap().focus = Focus::Schema;
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                        state.lock().unwrap().focus = Focus::Editor;
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
-                        state.lock().unwrap().focus = Focus::Results;
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-                        state.lock().unwrap().focus = Focus::Editor;
-                    }
-                    _ if focus == Focus::Editor => {
-                        editor.handle_key(key);
-                        // Dismiss completions on any text input
-                        if show_completions {
-                            state.lock().unwrap().dismiss_completions();
-                        }
-                    }
-                    _ => {}
+            match (key.modifiers, key.code) {
+                // Global quit in vim normal mode or schema/results pane
+                (KeyModifiers::NONE, KeyCode::Char('q'))
+                    if focus != Focus::Editor || vim_mode == VimMode::Normal =>
+                {
+                    break;
                 }
+                // Schema pane navigation
+                (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Schema => {
+                    state.lock().unwrap().schema_cursor_down();
+                }
+                (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Schema => {
+                    state.lock().unwrap().schema_cursor_up();
+                }
+                (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char('l'))
+                    if focus == Focus::Schema =>
+                {
+                    state.lock().unwrap().schema_toggle_current();
+                }
+                // Results pane navigation
+                (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Results => {
+                    state.lock().unwrap().scroll_results_down();
+                }
+                (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Results => {
+                    state.lock().unwrap().scroll_results_up();
+                }
+                // Dismiss results
+                (KeyModifiers::CONTROL, KeyCode::Char('c'))
+                | (KeyModifiers::NONE, KeyCode::Char('q'))
+                    if focus == Focus::Results =>
+                {
+                    state.lock().unwrap().dismiss_results();
+                }
+                // Execute query: Ctrl+Enter
+                (KeyModifiers::CONTROL, KeyCode::Enter) => {
+                    let content = editor.content();
+                    // M3: actual query execution here
+                    state
+                        .lock()
+                        .unwrap()
+                        .set_error(format!("No DB connected. Query was:\n{content}"));
+                }
+                // Trigger completions: Ctrl+Space (both modes)
+                (KeyModifiers::CONTROL, KeyCode::Char(' ')) => {
+                    // M2.5: LSP completion request goes here
+                    // For now show placeholder
+                    state.lock().unwrap().set_completions(vec![
+                        "SELECT".into(),
+                        "FROM".into(),
+                        "WHERE".into(),
+                        "JOIN".into(),
+                        "GROUP BY".into(),
+                    ]);
+                }
+                // Pane focus
+                (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
+                    state.lock().unwrap().focus = Focus::Schema;
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
+                    state.lock().unwrap().focus = Focus::Editor;
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
+                    state.lock().unwrap().focus = Focus::Results;
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
+                    state.lock().unwrap().focus = Focus::Editor;
+                }
+                _ if focus == Focus::Editor => {
+                    editor.handle_key(key);
+                    // Dismiss completions on any text input
+                    if show_completions {
+                        state.lock().unwrap().dismiss_completions();
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -187,16 +188,26 @@ fn mode_label(state: &AppState) -> Span<'static> {
 }
 
 fn diag_label(state: &AppState) -> Option<Span<'static>> {
-    let errors = state.lsp_diagnostics.iter().filter(|d| {
-        d.severity == lsp_types::DiagnosticSeverity::ERROR
-    }).count();
-    let warnings = state.lsp_diagnostics.iter().filter(|d| {
-        d.severity == lsp_types::DiagnosticSeverity::WARNING
-    }).count();
+    let errors = state
+        .lsp_diagnostics
+        .iter()
+        .filter(|d| d.severity == lsp_types::DiagnosticSeverity::ERROR)
+        .count();
+    let warnings = state
+        .lsp_diagnostics
+        .iter()
+        .filter(|d| d.severity == lsp_types::DiagnosticSeverity::WARNING)
+        .count();
     if errors > 0 {
-        Some(Span::styled(format!(" ✖ {errors}E "), Style::default().fg(Color::Red)))
+        Some(Span::styled(
+            format!(" ✖ {errors}E "),
+            Style::default().fg(Color::Red),
+        ))
     } else if warnings > 0 {
-        Some(Span::styled(format!(" ⚠ {warnings}W "), Style::default().fg(Color::Yellow)))
+        Some(Span::styled(
+            format!(" ⚠ {warnings}W "),
+            Style::default().fg(Color::Yellow),
+        ))
     } else {
         None
     }
@@ -291,7 +302,13 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
     f.render_widget(List::new(list_items).block(block), area);
 }
 
-fn draw_editor(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, area: Rect, focused: bool) {
+fn draw_editor(
+    f: &mut ratatui::Frame<'_>,
+    state: &AppState,
+    editor: &Editor,
+    area: Rect,
+    focused: bool,
+) {
     let mode = mode_label(state);
     let mut title_spans = vec![Span::raw("Editor "), mode];
     if let Some(d) = diag_label(state) {
@@ -299,9 +316,10 @@ fn draw_editor(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, ar
     }
 
     // Show first diagnostic message if any
-    let diag_line = state.lsp_diagnostics.first().map(|d| {
-        format!(" {}:{} {}", d.line + 1, d.col + 1, d.message)
-    });
+    let diag_line = state
+        .lsp_diagnostics
+        .first()
+        .map(|d| format!(" {}:{} {}", d.line + 1, d.col + 1, d.message));
 
     let editor_block = Block::default()
         .title(Line::from(title_spans))
@@ -352,7 +370,9 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
             let header_cells: Vec<Cell> = r
                 .columns
                 .iter()
-                .map(|c| Cell::from(c.as_str()).style(Style::default().add_modifier(Modifier::BOLD)))
+                .map(|c| {
+                    Cell::from(c.as_str()).style(Style::default().add_modifier(Modifier::BOLD))
+                })
                 .collect();
             let header = Row::new(header_cells).style(Style::default().fg(Color::Cyan));
 
@@ -361,7 +381,9 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                 .iter()
                 .enumerate()
                 .map(|(i, col)| {
-                    let max_data = r.rows.iter()
+                    let max_data = r
+                        .rows
+                        .iter()
                         .map(|row| row.get(i).map(|s| s.len()).unwrap_or(0))
                         .max()
                         .unwrap_or(0);
@@ -373,7 +395,13 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                 .rows
                 .iter()
                 .skip(state.results_scroll)
-                .map(|row| Row::new(row.iter().map(|c| Cell::from(c.as_str())).collect::<Vec<_>>()))
+                .map(|row| {
+                    Row::new(
+                        row.iter()
+                            .map(|c| Cell::from(c.as_str()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
                 .collect();
 
             let table = Table::new(visible_rows, col_widths)
@@ -439,8 +467,11 @@ fn draw_completions(f: &mut ratatui::Frame<'_>, state: &AppState, editor_area: R
 
 #[cfg(test)]
 mod tests {
-    use sqeel_core::{AppState, state::{Focus, KeybindingMode, QueryResult}};
     use crate::editor::Editor;
+    use sqeel_core::{
+        AppState,
+        state::{Focus, KeybindingMode, QueryResult},
+    };
 
     #[test]
     fn layout_ratio_default() {
@@ -453,7 +484,10 @@ mod tests {
     fn layout_ratio_with_results() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
-        s.set_results(QueryResult { columns: vec!["col".into()], rows: vec![vec!["val".into()]] });
+        s.set_results(QueryResult {
+            columns: vec!["col".into()],
+            rows: vec![vec!["val".into()]],
+        });
         assert_eq!(s.editor_ratio, 0.5);
     }
 
@@ -488,12 +522,13 @@ mod tests {
 
     #[test]
     fn diagnostics_stored() {
-        use sqeel_core::lsp::Diagnostic;
         use lsp_types::DiagnosticSeverity;
+        use sqeel_core::lsp::Diagnostic;
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         s.set_diagnostics(vec![Diagnostic {
-            line: 0, col: 5,
+            line: 0,
+            col: 5,
             message: "unexpected token".into(),
             severity: DiagnosticSeverity::ERROR,
         }]);

@@ -27,16 +27,82 @@ pub struct Highlighter {
 }
 
 const SQL_KEYWORDS: &[&str] = &[
-    "select", "from", "where", "insert", "into", "values", "update", "set",
-    "delete", "create", "table", "drop", "alter", "add", "column", "join",
-    "inner", "outer", "left", "right", "full", "cross", "on", "and", "or",
-    "not", "null", "is", "in", "like", "between", "order", "by", "group",
-    "having", "limit", "offset", "union", "all", "distinct", "as", "case",
-    "when", "then", "else", "end", "if", "exists", "primary", "foreign",
-    "key", "references", "unique", "default", "constraint", "check", "with",
-    "view", "begin", "commit", "rollback", "transaction", "use", "show",
-    "describe", "explain", "database", "schema", "index", "procedure",
-    "function", "returns", "return", "trigger", "true", "false",
+    "select",
+    "from",
+    "where",
+    "insert",
+    "into",
+    "values",
+    "update",
+    "set",
+    "delete",
+    "create",
+    "table",
+    "drop",
+    "alter",
+    "add",
+    "column",
+    "join",
+    "inner",
+    "outer",
+    "left",
+    "right",
+    "full",
+    "cross",
+    "on",
+    "and",
+    "or",
+    "not",
+    "null",
+    "is",
+    "in",
+    "like",
+    "between",
+    "order",
+    "by",
+    "group",
+    "having",
+    "limit",
+    "offset",
+    "union",
+    "all",
+    "distinct",
+    "as",
+    "case",
+    "when",
+    "then",
+    "else",
+    "end",
+    "if",
+    "exists",
+    "primary",
+    "foreign",
+    "key",
+    "references",
+    "unique",
+    "default",
+    "constraint",
+    "check",
+    "with",
+    "view",
+    "begin",
+    "commit",
+    "rollback",
+    "transaction",
+    "use",
+    "show",
+    "describe",
+    "explain",
+    "database",
+    "schema",
+    "index",
+    "procedure",
+    "function",
+    "returns",
+    "return",
+    "trigger",
+    "true",
+    "false",
 ];
 
 impl Highlighter {
@@ -111,9 +177,12 @@ fn collect_spans(node: Node, source: &[u8], spans: &mut Vec<HighlightSpan>) {
         let kind = named_node_kind(node.kind());
         if kind != TokenKind::Plain {
             spans.push(HighlightSpan {
-                start_byte, end_byte,
-                start_row: start.row, start_col: start.column,
-                end_row: end.row, end_col: end.column,
+                start_byte,
+                end_byte,
+                start_row: start.row,
+                start_col: start.column,
+                end_row: end.row,
+                end_col: end.column,
                 kind,
             });
             return;
@@ -125,9 +194,12 @@ fn collect_spans(node: Node, source: &[u8], spans: &mut Vec<HighlightSpan>) {
         let kind = anon_node_kind(text);
         if kind != TokenKind::Plain {
             spans.push(HighlightSpan {
-                start_byte, end_byte,
-                start_row: start.row, start_col: start.column,
-                end_row: end.row, end_col: end.column,
+                start_byte,
+                end_byte,
+                start_row: start.row,
+                start_col: start.column,
+                end_row: end.row,
+                end_col: end.column,
                 kind,
             });
         }
@@ -140,9 +212,12 @@ fn collect_spans(node: Node, source: &[u8], spans: &mut Vec<HighlightSpan>) {
         let kind = named_node_kind(node.kind());
         if kind == TokenKind::Keyword {
             spans.push(HighlightSpan {
-                start_byte, end_byte,
-                start_row: start.row, start_col: start.column,
-                end_row: end.row, end_col: end.column,
+                start_byte,
+                end_byte,
+                start_row: start.row,
+                start_col: start.column,
+                end_row: end.row,
+                end_col: end.column,
                 kind,
             });
             return;
@@ -151,9 +226,12 @@ fn collect_spans(node: Node, source: &[u8], spans: &mut Vec<HighlightSpan>) {
         let text_kind = anon_node_kind(text);
         if text_kind == TokenKind::Keyword {
             spans.push(HighlightSpan {
-                start_byte, end_byte,
-                start_row: start.row, start_col: start.column,
-                end_row: end.row, end_col: end.column,
+                start_byte,
+                end_byte,
+                start_row: start.row,
+                start_col: start.column,
+                end_row: end.row,
+                end_col: end.column,
                 kind: TokenKind::Keyword,
             });
             return;
@@ -174,24 +252,42 @@ mod tests {
     fn highlights_select_keyword() {
         let mut h = Highlighter::new().unwrap();
         let spans = h.highlight("SELECT id FROM users");
-        let keywords: Vec<_> = spans.iter().filter(|s| s.kind == TokenKind::Keyword).collect();
-        assert!(!keywords.is_empty(), "expected keyword spans, got: {spans:#?}");
+        let keywords: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == TokenKind::Keyword)
+            .collect();
+        assert!(
+            !keywords.is_empty(),
+            "expected keyword spans, got: {spans:#?}"
+        );
     }
 
     #[test]
     fn highlights_identifier() {
         let mut h = Highlighter::new().unwrap();
         let spans = h.highlight("SELECT id FROM users");
-        let idents: Vec<_> = spans.iter().filter(|s| s.kind == TokenKind::Identifier).collect();
-        assert!(!idents.is_empty(), "expected identifier spans, got: {spans:#?}");
+        let idents: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == TokenKind::Identifier)
+            .collect();
+        assert!(
+            !idents.is_empty(),
+            "expected identifier spans, got: {spans:#?}"
+        );
     }
 
     #[test]
     fn highlights_string_literal() {
         let mut h = Highlighter::new().unwrap();
         let spans = h.highlight("SELECT * FROM users WHERE name = 'alice'");
-        let strings: Vec<_> = spans.iter().filter(|s| s.kind == TokenKind::String).collect();
-        assert!(!strings.is_empty(), "expected string spans, got: {spans:#?}");
+        let strings: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == TokenKind::String)
+            .collect();
+        assert!(
+            !strings.is_empty(),
+            "expected string spans, got: {spans:#?}"
+        );
     }
 
     #[test]

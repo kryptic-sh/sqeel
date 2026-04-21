@@ -1,5 +1,5 @@
-use sqlx::{Column, MySqlPool, Row, TypeInfo};
 use crate::state::QueryResult;
+use sqlx::{Column, MySqlPool, Row, TypeInfo};
 
 pub struct DbConnection {
     pool: MySqlPool,
@@ -9,14 +9,20 @@ pub struct DbConnection {
 impl DbConnection {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         let pool = MySqlPool::connect(url).await?;
-        Ok(Self { pool, url: url.to_string() })
+        Ok(Self {
+            pool,
+            url: url.to_string(),
+        })
     }
 
     pub async fn execute(&self, query: &str) -> anyhow::Result<QueryResult> {
         let rows = sqlx::query(query).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
-            return Ok(QueryResult { columns: vec![], rows: vec![] });
+            return Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+            });
         }
 
         let columns: Vec<String> = rows[0]
@@ -39,22 +45,35 @@ impl DbConnection {
             })
             .collect();
 
-        Ok(QueryResult { columns, rows: result_rows })
+        Ok(QueryResult {
+            columns,
+            rows: result_rows,
+        })
     }
 
     pub async fn list_databases(&self) -> anyhow::Result<Vec<String>> {
         let rows = sqlx::query("SHOW DATABASES").fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(|r| r.try_get::<String, _>(0).unwrap_or_default()).collect())
+        Ok(rows
+            .iter()
+            .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
+            .collect())
     }
 
     pub async fn list_tables(&self, database: &str) -> anyhow::Result<Vec<String>> {
         let rows = sqlx::query(&format!("SHOW TABLES FROM `{database}`"))
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.iter().map(|r| r.try_get::<String, _>(0).unwrap_or_default()).collect())
+        Ok(rows
+            .iter()
+            .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
+            .collect())
     }
 
-    pub async fn list_columns(&self, database: &str, table: &str) -> anyhow::Result<Vec<ColumnInfo>> {
+    pub async fn list_columns(
+        &self,
+        database: &str,
+        table: &str,
+    ) -> anyhow::Result<Vec<ColumnInfo>> {
         let rows = sqlx::query(&format!(
             "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY \
              FROM information_schema.COLUMNS \
@@ -86,28 +105,36 @@ pub struct ColumnInfo {
 
 fn decode_cell(row: &sqlx::mysql::MySqlRow, idx: usize, type_name: &str) -> String {
     match type_name {
-        "BIGINT" | "INT" | "SMALLINT" | "TINYINT" | "MEDIUMINT" => {
-            row.try_get::<i64, _>(idx)
-                .map(|v| v.to_string())
-                .or_else(|_| row.try_get::<Option<i64>, _>(idx).map(|v| v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into())))
-                .unwrap_or_else(|_| "?".into())
-        }
-        "FLOAT" | "DOUBLE" | "DECIMAL" => {
-            row.try_get::<f64, _>(idx)
-                .map(|v| v.to_string())
-                .or_else(|_| row.try_get::<Option<f64>, _>(idx).map(|v| v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into())))
-                .unwrap_or_else(|_| "?".into())
-        }
-        "BOOLEAN" | "BOOL" => {
-            row.try_get::<bool, _>(idx)
-                .map(|v| v.to_string())
-                .or_else(|_| row.try_get::<Option<bool>, _>(idx).map(|v| v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into())))
-                .unwrap_or_else(|_| "?".into())
-        }
-        _ => {
-            row.try_get::<String, _>(idx)
-                .or_else(|_| row.try_get::<Option<String>, _>(idx).map(|v| v.unwrap_or_else(|| "NULL".into())))
-                .unwrap_or_else(|_| "?".into())
-        }
+        "BIGINT" | "INT" | "SMALLINT" | "TINYINT" | "MEDIUMINT" => row
+            .try_get::<i64, _>(idx)
+            .map(|v| v.to_string())
+            .or_else(|_| {
+                row.try_get::<Option<i64>, _>(idx)
+                    .map(|v| v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into()))
+            })
+            .unwrap_or_else(|_| "?".into()),
+        "FLOAT" | "DOUBLE" | "DECIMAL" => row
+            .try_get::<f64, _>(idx)
+            .map(|v| v.to_string())
+            .or_else(|_| {
+                row.try_get::<Option<f64>, _>(idx)
+                    .map(|v| v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into()))
+            })
+            .unwrap_or_else(|_| "?".into()),
+        "BOOLEAN" | "BOOL" => row
+            .try_get::<bool, _>(idx)
+            .map(|v| v.to_string())
+            .or_else(|_| {
+                row.try_get::<Option<bool>, _>(idx)
+                    .map(|v| v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into()))
+            })
+            .unwrap_or_else(|_| "?".into()),
+        _ => row
+            .try_get::<String, _>(idx)
+            .or_else(|_| {
+                row.try_get::<Option<String>, _>(idx)
+                    .map(|v| v.unwrap_or_else(|| "NULL".into()))
+            })
+            .unwrap_or_else(|_| "?".into()),
     }
 }

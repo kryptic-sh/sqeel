@@ -1,10 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use iced::{
-    widget::{
-        button, column, container, row, scrollable, text, text_editor,
-    },
     Color, Element, Length, Task, Theme,
+    widget::{button, column, container, row, scrollable, text, text_editor},
 };
 use sqeel_core::{
     AppState, UiProvider,
@@ -72,9 +70,10 @@ impl SqeelApp {
                 s.autosave();
             }
             Message::ExecuteQuery => {
-                self.state.lock().unwrap().set_error(
-                    "No DB connected. Use --url or --connection to connect.".into(),
-                );
+                self.state
+                    .lock()
+                    .unwrap()
+                    .set_error("No DB connected. Use --url or --connection to connect.".into());
             }
             Message::DismissResults => {
                 self.state.lock().unwrap().dismiss_results();
@@ -101,8 +100,11 @@ impl SqeelApp {
             }
             Message::CompletionTrigger => {
                 self.state.lock().unwrap().set_completions(vec![
-                    "SELECT".into(), "FROM".into(), "WHERE".into(),
-                    "JOIN".into(), "GROUP BY".into(),
+                    "SELECT".into(),
+                    "FROM".into(),
+                    "WHERE".into(),
+                    "JOIN".into(),
+                    "GROUP BY".into(),
                 ]);
             }
             Message::DismissCompletions => {
@@ -116,22 +118,33 @@ impl SqeelApp {
         let s = self.state.lock().unwrap();
         let keybinding_mode = s.keybinding_mode;
         let show_results = !matches!(s.results, ResultsPane::Empty);
-        let schema_labels: Vec<String> = s.visible_schema_items()
+        let schema_labels: Vec<String> = s
+            .visible_schema_items()
             .into_iter()
             .map(|item| item.label)
             .collect();
         let schema_cursor = s.schema_cursor;
         let results = s.results.clone();
-        let diag_msg: Option<String> = s.lsp_diagnostics.first().map(|d| {
-            format!("{}:{} {}", d.line + 1, d.col + 1, d.message)
-        });
-        let completions: Vec<String> = if s.show_completions { s.completions.clone() } else { vec![] };
+        let diag_msg: Option<String> = s
+            .lsp_diagnostics
+            .first()
+            .map(|d| format!("{}:{} {}", d.line + 1, d.col + 1, d.message));
+        let completions: Vec<String> = if s.show_completions {
+            s.completions.clone()
+        } else {
+            vec![]
+        };
         let active_connection = s.active_connection.clone();
         drop(s);
 
         // Schema panel
         let schema_content: Element<Message> = if schema_labels.is_empty() {
-            text(if active_connection.is_some() { "Loading..." } else { "No connection" }).into()
+            text(if active_connection.is_some() {
+                "Loading..."
+            } else {
+                "No connection"
+            })
+            .into()
         } else {
             let mut col = column![].spacing(2);
             for (i, label) in schema_labels.into_iter().enumerate() {
@@ -153,7 +166,9 @@ impl SqeelApp {
 
         let schema_panel = container(
             column![
-                text("Schema").size(14).color(Color::from_rgb(0.6, 0.8, 1.0)),
+                text("Schema")
+                    .size(14)
+                    .color(Color::from_rgb(0.6, 0.8, 1.0)),
                 schema_content,
             ]
             .spacing(4),
@@ -188,11 +203,7 @@ impl SqeelApp {
 
         // Diagnostic line
         if let Some(msg) = diag_msg {
-            editor_col = editor_col.push(
-                text(msg)
-                    .size(12)
-                    .color(Color::from_rgb(1.0, 0.3, 0.3)),
-            );
+            editor_col = editor_col.push(text(msg).size(12).color(Color::from_rgb(1.0, 0.3, 0.3)));
         }
 
         // Completions
@@ -264,12 +275,10 @@ fn build_results_widget(results: &ResultsPane) -> Element<'static, Message> {
             }
             scrollable(col).into()
         }
-        ResultsPane::Error(e) => {
-            text(e.clone())
-                .size(13)
-                .color(Color::from_rgb(1.0, 0.3, 0.3))
-                .into()
-        }
+        ResultsPane::Error(e) => text(e.clone())
+            .size(13)
+            .color(Color::from_rgb(1.0, 0.3, 0.3))
+            .into(),
         ResultsPane::Empty => text("").into(),
     }
 }
@@ -278,7 +287,10 @@ fn build_results_widget(results: &ResultsPane) -> Element<'static, Message> {
 
 #[cfg(test)]
 mod tests {
-    use sqeel_core::{AppState, state::{Focus, QueryResult, ResultsPane}};
+    use sqeel_core::{
+        AppState,
+        state::{Focus, QueryResult, ResultsPane},
+    };
 
     #[test]
     fn execute_with_no_db_sets_error() {
@@ -293,7 +305,10 @@ mod tests {
     fn dismiss_results_clears_pane() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
-        s.set_results(QueryResult { columns: vec!["id".into()], rows: vec![] });
+        s.set_results(QueryResult {
+            columns: vec!["id".into()],
+            rows: vec![],
+        });
         s.dismiss_results();
         assert!(matches!(s.results, ResultsPane::Empty));
         assert_eq!(s.editor_ratio, 1.0);
@@ -316,19 +331,15 @@ mod tests {
         use sqeel_core::schema::SchemaNode;
         let state = AppState::new();
         let mut s = state.lock().unwrap();
-        s.set_schema_nodes(vec![
-            SchemaNode::Database {
-                name: "mydb".into(),
+        s.set_schema_nodes(vec![SchemaNode::Database {
+            name: "mydb".into(),
+            expanded: false,
+            tables: vec![SchemaNode::Table {
+                name: "users".into(),
                 expanded: false,
-                tables: vec![
-                    SchemaNode::Table {
-                        name: "users".into(),
-                        expanded: false,
-                        columns: vec![],
-                    }
-                ],
-            },
-        ]);
+                columns: vec![],
+            }],
+        }]);
         assert_eq!(s.visible_schema_items().len(), 1);
         s.schema_toggle_current();
         assert_eq!(s.visible_schema_items().len(), 2);

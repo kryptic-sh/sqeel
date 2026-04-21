@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 use crate::state::KeybindingMode;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct MainConfig {
@@ -111,30 +111,39 @@ mod tests {
 
     #[test]
     fn keybinding_mode_deserialize_vim() {
-        let config: MainConfig = toml::from_str(r#"
+        let config: MainConfig = toml::from_str(
+            r#"
 [editor]
 keybindings = "vim"
 lsp_binary = "sqls"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert_eq!(config.editor.keybindings, KeybindingMode::Vim);
     }
 
     #[test]
     fn keybinding_mode_deserialize_emacs() {
-        let config: MainConfig = toml::from_str(r#"
+        let config: MainConfig = toml::from_str(
+            r#"
 [editor]
 keybindings = "emacs"
 lsp_binary = "sqls"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert_eq!(config.editor.keybindings, KeybindingMode::Emacs);
     }
 
     #[test]
     fn connection_config_parse() {
-        let conn: ConnectionConfig = toml::from_str(r#"
+        let conn: ConnectionConfig = toml::from_str(
+            r#"
 url = "mysql://user:pass@localhost/mydb"
 name = "local"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert_eq!(conn.url, "mysql://user:pass@localhost/mydb");
     }
 }

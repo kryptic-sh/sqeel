@@ -1,12 +1,12 @@
 use anyhow::Context;
 use lsp_types::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
-use std::process::Stdio;
 
 static ID: AtomicI64 = AtomicI64::new(1);
 
@@ -110,7 +110,8 @@ impl LspClient {
             ..Default::default()
         };
 
-        self.request("initialize", serde_json::to_value(params)?).await?;
+        self.request("initialize", serde_json::to_value(params)?)
+            .await?;
         self.notify("initialized", json!({})).await?;
         Ok(())
     }
@@ -130,7 +131,12 @@ impl LspClient {
         .await
     }
 
-    pub async fn change_document(&mut self, uri: Uri, version: i32, text: &str) -> anyhow::Result<()> {
+    pub async fn change_document(
+        &mut self,
+        uri: Uri,
+        version: i32,
+        text: &str,
+    ) -> anyhow::Result<()> {
         self.notify(
             "textDocument/didChange",
             json!({
@@ -141,7 +147,12 @@ impl LspClient {
         .await
     }
 
-    pub async fn request_completion(&mut self, uri: Uri, line: u32, col: u32) -> anyhow::Result<()> {
+    pub async fn request_completion(
+        &mut self,
+        uri: Uri,
+        line: u32,
+        col: u32,
+    ) -> anyhow::Result<()> {
         self.request(
             "textDocument/completion",
             json!({
@@ -155,13 +166,22 @@ impl LspClient {
 
     async fn request(&mut self, method: &'static str, params: Value) -> anyhow::Result<i64> {
         let id = next_id();
-        let msg = RpcRequest { jsonrpc: "2.0", id, method, params };
+        let msg = RpcRequest {
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+        };
         self.send(&serde_json::to_string(&msg)?).await?;
         Ok(id)
     }
 
     async fn notify(&mut self, method: &'static str, params: Value) -> anyhow::Result<()> {
-        let msg = RpcNotification { jsonrpc: "2.0", method, params };
+        let msg = RpcNotification {
+            jsonrpc: "2.0",
+            method,
+            params,
+        };
         self.send(&serde_json::to_string(&msg)?).await
     }
 
@@ -206,44 +226,34 @@ async fn read_loop(mut reader: BufReader<ChildStdout>, tx: mpsc::Sender<LspEvent
             continue;
         };
 
-        if let Some(method) = &msg.method {
-            match method.as_str() {
-                "textDocument/publishDiagnostics" => {
-                    if let Some(params) = msg.params {
-                        if let Ok(p) = serde_json::from_value::<PublishDiagnosticsParams>(params) {
-                            let diags = p
-                                .diagnostics
-                                .into_iter()
-                                .map(|d| Diagnostic {
-                                    line: d.range.start.line,
-                                    col: d.range.start.character,
-                                    message: d.message,
-                                    severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
-                                })
-                                .collect();
-                            let _ = tx.send(LspEvent::Diagnostics(diags)).await;
-                        }
-                    }
-                }
-                _ => {}
-            }
+        if let Some(method) = &msg.method
+            && method.as_str() == "textDocument/publishDiagnostics"
+            && let Some(params) = msg.params
+            && let Ok(p) = serde_json::from_value::<PublishDiagnosticsParams>(params)
+        {
+            let diags = p
+                .diagnostics
+                .into_iter()
+                .map(|d| Diagnostic {
+                    line: d.range.start.line,
+                    col: d.range.start.character,
+                    message: d.message,
+                    severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
+                })
+                .collect();
+            let _ = tx.send(LspEvent::Diagnostics(diags)).await;
         }
 
-        if msg.id.is_some() {
-            if let Some(result) = msg.result {
-                if let Ok(list) = serde_json::from_value::<CompletionResponse>(result) {
-                    let items: Vec<String> = match list {
-                        CompletionResponse::Array(items) => {
-                            items.into_iter().map(|i| i.label).collect()
-                        }
-                        CompletionResponse::List(l) => {
-                            l.items.into_iter().map(|i| i.label).collect()
-                        }
-                    };
-                    if !items.is_empty() {
-                        let _ = tx.send(LspEvent::Completion(items)).await;
-                    }
-                }
+        if msg.id.is_some()
+            && let Some(result) = msg.result
+            && let Ok(list) = serde_json::from_value::<CompletionResponse>(result)
+        {
+            let items: Vec<String> = match list {
+                CompletionResponse::Array(items) => items.into_iter().map(|i| i.label).collect(),
+                CompletionResponse::List(l) => l.items.into_iter().map(|i| i.label).collect(),
+            };
+            if !items.is_empty() {
+                let _ = tx.send(LspEvent::Completion(items)).await;
             }
         }
     }
