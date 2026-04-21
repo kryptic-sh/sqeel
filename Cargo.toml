@@ -2,7 +2,6 @@
 members = [
     "sqeel-core",
     "sqeel-tui",
-    "sqeel-gui",
     "sqeel",
 ]
 resolver = "2"
