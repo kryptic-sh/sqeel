@@ -110,6 +110,8 @@ pub struct AppState {
     pub show_help: bool,
     // Debug mode — enabled via --debug CLI flag
     pub debug_mode: bool,
+    pub lsp_available: bool,
+    pub lsp_binary: String,
     // Live query channel — set by the binary when connected
     pub query_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }

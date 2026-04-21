@@ -97,6 +97,11 @@ async fn run_loop(
     if let Some(ref mut client) = lsp {
         let _ = client.open_document(scratch_uri.clone(), "").await;
     }
+    {
+        let mut s = state.lock().unwrap();
+        s.lsp_available = lsp.is_some();
+        s.lsp_binary = lsp_binary.clone();
+    }
 
     let mut last_saved_content = String::new();
     let mut last_lsp_content = String::new();
@@ -207,11 +212,10 @@ async fn run_loop(
                     sqeel_core::state::ResultsPane::Empty
                 );
                 let editor_ratio = state.lock().unwrap().editor_ratio;
-                let main_height = if state.lock().unwrap().debug_mode {
-                    area.height.saturating_sub(1)
-                } else {
-                    area.height
-                };
+                let s = state.lock().unwrap();
+                let bottom_rows = s.debug_mode as u16 + (!s.lsp_available) as u16;
+                drop(s);
+                let main_height = area.height.saturating_sub(bottom_rows);
                 let editor_height = if show_results {
                     (main_height as f32 * editor_ratio) as u16
                 } else {
@@ -624,15 +628,32 @@ struct DrawAreas {
 fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scroll: u32) -> DrawAreas {
     let area = f.area();
 
-    // Reserve one row at the bottom for the debug bar when enabled
-    let (main_area, debug_area) = if state.debug_mode {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (area, None)
+    let lsp_warn = !state.lsp_available;
+
+    // Reserve rows at the bottom: LSP warning (if needed) then debug bar (if enabled)
+    let (main_area, lsp_warn_area, debug_area) = match (lsp_warn, state.debug_mode) {
+        (true, true) => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
+                .split(area);
+            (chunks[0], Some(chunks[1]), Some(chunks[2]))
+        }
+        (true, false) => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(area);
+            (chunks[0], Some(chunks[1]), None)
+        }
+        (false, true) => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(area);
+            (chunks[0], None, Some(chunks[1]))
+        }
+        (false, false) => (area, None, None),
     };
 
     let outer = Layout::default()
@@ -705,6 +726,17 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, debug_scr
     // Help overlay (topmost)
     if state.show_help {
         draw_help(f, area);
+    }
+
+    // LSP warning bar (above debug bar)
+    if let Some(warn_area) = lsp_warn_area {
+        let msg = Paragraph::new(Span::styled(
+            format!(" ⚠ LSP not available ({})", state.lsp_binary),
+            Style::default()
+                .fg(ratatui::style::Color::Yellow)
+                .bg(ratatui::style::Color::DarkGray),
+        ));
+        f.render_widget(msg, warn_area);
     }
 
     // Debug bar (always below everything else)
