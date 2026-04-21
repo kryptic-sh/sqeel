@@ -1,9 +1,10 @@
 pub mod editor;
+mod highlight_thread;
 
 use arboard::Clipboard;
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
@@ -15,6 +16,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use editor::Editor;
+use highlight_thread::HighlightThread;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -26,7 +28,6 @@ use ratatui::{
 use sqeel_core::{
     AppState, UiProvider,
     config::load_main_config,
-    highlight::Highlighter,
     lsp::{LspClient, LspEvent},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsPane, VimMode},
 };
@@ -72,7 +73,7 @@ async fn run_loop(
     keybinding_mode: KeybindingMode,
 ) -> anyhow::Result<()> {
     let mut editor = Editor::new(keybinding_mode);
-    let mut highlighter = Highlighter::new()?;
+    let highlight_thread = HighlightThread::spawn()?;
 
     // Start LSP client if binary is configured and reachable
     let scratch_path = std::env::temp_dir().join("sqeel-scratch.sql");
@@ -102,8 +103,8 @@ async fn run_loop(
         s.lsp_binary = lsp_binary.clone();
     }
 
-    let mut last_saved_content = String::new();
-    let mut last_lsp_content = String::new();
+    let mut editor_dirty = false;
+    let mut last_save_time = Instant::now();
     let mut doc_version: i32 = 0;
     let mut last_completion_id: Option<i64> = None;
     let mut tick: u32 = 0;
@@ -124,54 +125,74 @@ async fn run_loop(
             let pending = state.lock().unwrap().tab_content_pending.take();
             if let Some(content) = pending {
                 editor.set_content(&content);
-                last_saved_content = content.clone();
-                last_lsp_content = content;
+                editor_dirty = false;
             }
         }
 
         // Evict cold tabs (content not accessed for 5 min released from RAM)
         state.lock().unwrap().evict_cold_tabs();
 
-        // Sync editor content + re-highlight
-        let content = editor.content();
+        // Sync editor content + submit to highlight thread when changed.
+        let content_changed = editor.take_dirty();
+        let content = if content_changed {
+            Some(editor.content())
+        } else {
+            None
+        };
         {
-            let spans = highlighter.highlight(&content);
             let mut s = state.lock().unwrap();
-            s.editor_content = content.clone();
             s.vim_mode = editor.vim_mode();
-            s.set_highlights(spans);
-            if content != last_saved_content {
+            if let Some(ref c) = content {
+                s.editor_content = c.clone();
+                highlight_thread.submit(c.clone());
+                editor_dirty = true;
+            }
+            // Apply any completed highlight results from the background thread.
+            if let Some(spans) = highlight_thread.try_recv() {
+                s.set_highlights(spans);
+            }
+            if editor_dirty && last_save_time.elapsed() >= Duration::from_millis(1000) {
                 s.autosave();
-                last_saved_content = content.clone();
+                editor_dirty = false;
+                last_save_time = Instant::now();
             }
         }
 
-        // Auto-complete: on every content change, notify LSP and request fresh completions
-        if content != last_lsp_content {
-            last_lsp_content = content.clone();
+        // Auto-complete: on every content change, update schema completions immediately
+        // and (if LSP is available) request supplemental completions from it.
+        if let Some(ref content) = content {
             doc_version += 1;
-            if let Some(ref mut client) = lsp {
-                let (row, col) = editor.textarea.cursor();
-                let _ = client
-                    .change_document(scratch_uri.clone(), doc_version, &content)
-                    .await;
 
-                // Suppress completions when the character immediately left of the
-                // cursor is whitespace, a newline, or `;`.
-                let char_left = editor.textarea.lines().get(row).and_then(|line| {
-                    let before = &line[..col.min(line.len())];
-                    before.chars().next_back()
-                });
-                let suppress = matches!(char_left, Some(c) if c.is_whitespace() || c == ';')
-                    || char_left.is_none(); // cursor at start of line (after newline)
+            let (row, col) = editor.textarea.cursor();
 
-                if suppress {
-                    state.lock().unwrap().dismiss_completions();
-                } else if let Ok(id) = client
-                    .request_completion(scratch_uri.clone(), row as u32, col as u32)
-                    .await
-                {
-                    last_completion_id = Some(id);
+            // Suppress completions when the character immediately left of the
+            // cursor is whitespace, a newline, or `;`.
+            let char_left = editor.textarea.lines().get(row).and_then(|line| {
+                let before = &line[..col.min(line.len())];
+                before.chars().next_back()
+            });
+            let suppress = matches!(char_left, Some(c) if c.is_whitespace() || c == ';')
+                || char_left.is_none();
+
+            if suppress {
+                state.lock().unwrap().dismiss_completions();
+                last_completion_id = None;
+            } else {
+                // Schema completions are available instantly, before the LSP responds.
+                let prefix = word_prefix_at(editor.textarea.lines(), row, col);
+                let schema_items = state.lock().unwrap().schema_identifier_completions(&prefix);
+                state.lock().unwrap().set_completions(schema_items);
+
+                if let Some(ref mut client) = lsp {
+                    let _ = client
+                        .change_document(scratch_uri.clone(), doc_version, &content)
+                        .await;
+                    if let Ok(id) = client
+                        .request_completion(scratch_uri.clone(), row as u32, col as u32)
+                        .await
+                    {
+                        last_completion_id = Some(id);
+                    }
                 }
             }
         }
@@ -183,9 +204,20 @@ async fn run_loop(
                     LspEvent::Diagnostics(diags) => {
                         state.lock().unwrap().set_diagnostics(diags);
                     }
-                    LspEvent::Completion(id, items) => {
+                    LspEvent::Completion(id, lsp_items) => {
                         if Some(id) == last_completion_id {
-                            state.lock().unwrap().set_completions(items);
+                            let (row, col) = editor.textarea.cursor();
+                            let prefix = word_prefix_at(editor.textarea.lines(), row, col);
+                            let schema_items =
+                                state.lock().unwrap().schema_identifier_completions(&prefix);
+                            // LSP results lead; schema identifiers fill in any gaps.
+                            let mut merged = lsp_items;
+                            for item in schema_items {
+                                if !merged.contains(&item) {
+                                    merged.push(item);
+                                }
+                            }
+                            state.lock().unwrap().set_completions(merged);
                         }
                     }
                 }
@@ -280,8 +312,7 @@ async fn run_loop(
                                 };
                                 if let Some(c) = content {
                                     editor.set_content(&c);
-                                    last_saved_content = c.clone();
-                                    last_lsp_content = c;
+                                    editor_dirty = false;
                                 }
                             } else {
                                 state.lock().unwrap().focus = Focus::Editor;
@@ -406,7 +437,7 @@ async fn run_loop(
                         (KeyModifiers::NONE, KeyCode::Enter) => {
                             let cmd_str = command_input.take().unwrap_or_default();
                             let trimmed = cmd_str.trim();
-                            if let Ok(line) = trimmed.parse::<u16>() {
+                            if let Ok(line) = trimmed.parse::<usize>() {
                                 state.lock().unwrap().focus = Focus::Editor;
                                 editor.goto_line(line);
                             } else {
@@ -594,9 +625,8 @@ async fn run_loop(
                             if let Some(text) = chosen {
                                 editor.accept_completion(&text);
                                 state.lock().unwrap().dismiss_completions();
-                                // Prevent immediate re-trigger: content changed but we don't
-                                // want completions to pop up again until the user types more.
-                                last_lsp_content = editor.content();
+                                // Consume dirty flag so completions don't re-trigger immediately.
+                                editor.take_dirty();
                             }
                             continue;
                         }
@@ -614,8 +644,7 @@ async fn run_loop(
                         };
                         if let Some(c) = content {
                             editor.set_content(&c);
-                            last_saved_content = c.clone();
-                            last_lsp_content = c;
+                            editor_dirty = false;
                         }
                     }
                     (KeyModifiers::CONTROL, KeyCode::Left) => {
@@ -626,8 +655,7 @@ async fn run_loop(
                         };
                         if let Some(c) = content {
                             editor.set_content(&c);
-                            last_saved_content = c.clone();
-                            last_lsp_content = c;
+                            editor_dirty = false;
                         }
                     }
                     (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
@@ -638,8 +666,7 @@ async fn run_loop(
                         };
                         if let Some(c) = content {
                             editor.set_content(&c);
-                            last_saved_content = c.clone();
-                            last_lsp_content = c;
+                            editor_dirty = false;
                         }
                     }
                     // Command mode
@@ -820,6 +847,7 @@ fn mode_label(state: &AppState) -> Span<'static> {
         VimMode::Normal => Span::styled(" NORMAL ", Style::default().fg(Color::Blue)),
         VimMode::Insert => Span::styled(" INSERT ", Style::default().fg(Color::Green)),
         VimMode::Visual => Span::styled(" VISUAL ", Style::default().fg(Color::Magenta)),
+        VimMode::VisualLine => Span::styled(" V-LINE ", Style::default().fg(Color::Magenta)),
     }
 }
 
@@ -1417,7 +1445,7 @@ fn draw_editor(
     });
     // In Visual mode tui-textarea's Search boundary (rank 2) overrides Select (rank 1),
     // so syntax highlights would erase the selection color. Clear the pattern instead.
-    if state.vim_mode == VimMode::Visual {
+    if state.vim_mode == VimMode::Visual || state.vim_mode == VimMode::VisualLine {
         let _ = editor.textarea.set_search_pattern("");
     } else if let Some(query) = editor_search.or(last_editor_search) {
         let pattern = if query.is_empty() { "" } else { query };
@@ -1551,6 +1579,22 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
         }
         ResultsPane::Empty => unreachable!(),
     }
+}
+
+/// Returns the word (alphanumeric + `_`) ending at `col` on `line`.
+fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String {
+    let Some(line) = lines.get(row) else {
+        return String::new();
+    };
+    let before = &line[..col.min(line.len())];
+    before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
 }
 
 fn draw_completions(

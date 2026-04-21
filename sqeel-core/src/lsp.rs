@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 
@@ -57,7 +57,7 @@ struct RpcMessage {
 }
 
 pub struct LspClient {
-    stdin: ChildStdin,
+    write_tx: mpsc::Sender<String>,
     _child: Child,
     pub events: mpsc::Receiver<LspEvent>,
 }
@@ -74,14 +74,16 @@ impl LspClient {
         let stdin = child.stdin.take().context("no stdin")?;
         let stdout = child.stdout.take().context("no stdout")?;
 
-        let (tx, rx) = mpsc::channel(64);
+        let (event_tx, event_rx) = mpsc::channel(64);
+        let (write_tx, write_rx) = mpsc::channel::<String>(64);
 
-        tokio::spawn(read_loop(BufReader::new(stdout), tx));
+        tokio::spawn(read_loop(BufReader::new(stdout), event_tx));
+        tokio::spawn(write_loop(stdin, write_rx));
 
         let mut client = Self {
-            stdin,
+            write_tx,
             _child: child,
-            events: rx,
+            events: event_rx,
         };
 
         client.initialize(root_uri).await?;
@@ -188,11 +190,21 @@ impl LspClient {
     }
 
     async fn send(&mut self, body: &str) -> anyhow::Result<()> {
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
-        self.stdin.write_all(header.as_bytes()).await?;
-        self.stdin.write_all(body.as_bytes()).await?;
-        self.stdin.flush().await?;
+        let msg = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        self.write_tx.send(msg).await?;
         Ok(())
+    }
+}
+
+async fn write_loop(stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
+    let mut writer = BufWriter::new(stdin);
+    while let Some(msg) = rx.recv().await {
+        if writer.write_all(msg.as_bytes()).await.is_err() {
+            break;
+        }
+        if writer.flush().await.is_err() {
+            break;
+        }
     }
 }
 

@@ -7,6 +7,7 @@ enum Mode {
     Normal,
     Insert,
     Visual,
+    VisualLine,
     /// Operator pending: next motion completes d/c/y + motion (e.g. dw, c$, yy)
     Operator(char),
 }
@@ -19,18 +20,22 @@ pub struct Editor<'a> {
     pub keybinding_mode: KeybindingMode,
     /// Set when the user yanks/cuts; caller drains this to write to OS clipboard.
     pub last_yank: Option<String>,
+    /// True when the last yank/cut was a full line (yy/dd/cc), so p/P paste as a new line.
+    yank_linewise: bool,
+    /// Row (0-based) where V was pressed; anchor for VisualLine selection.
+    visual_line_anchor: usize,
     /// Accumulated numeric prefix (0 = not set, treated as 1)
     count: usize,
     /// Count captured when entering insert mode; drives replay on Esc
     insert_count: usize,
     /// Content snapshot taken just before entering insert mode
     content_before_insert: String,
-    /// Scroll-top row from the previous render frame, used to compute cursor screen row.
-    last_viewport_top: u16,
     /// Undo history: each entry is (lines, cursor) before the edit.
     undo_stack: Vec<(Vec<String>, (usize, usize))>,
     /// Redo history: entries pushed when undoing.
     redo_stack: Vec<(Vec<String>, (usize, usize))>,
+    /// Set whenever the buffer content changes; cleared by `take_dirty`.
+    content_dirty: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -43,29 +48,36 @@ impl<'a> Editor<'a> {
             pending: Input::default(),
             keybinding_mode,
             last_yank: None,
+            yank_linewise: false,
+            visual_line_anchor: 0,
             count: 0,
             insert_count: 1,
             content_before_insert: String::new(),
-            last_viewport_top: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            content_dirty: false,
         }
+    }
+
+    /// Calls `f` on the textarea and marks the content dirty.
+    fn mutate<R>(&mut self, f: impl FnOnce(&mut TextArea<'a>) -> R) -> R {
+        self.content_dirty = true;
+        f(&mut self.textarea)
+    }
+
+    /// Returns true if content changed since the last call, then clears the flag.
+    pub fn take_dirty(&mut self) -> bool {
+        let dirty = self.content_dirty;
+        self.content_dirty = false;
+        dirty
     }
 
     /// Returns the cursor's row within the visible textarea (0-based), updating
     /// the stored viewport top so subsequent calls remain accurate.
     pub fn cursor_screen_row(&mut self, height: u16) -> u16 {
-        let cursor = self.textarea.cursor().0 as u16;
-        let top = self.last_viewport_top;
-        let new_top = if cursor < top {
-            cursor
-        } else if top + height <= cursor {
-            cursor + 1 - height
-        } else {
-            top
-        };
-        self.last_viewport_top = new_top;
-        cursor.saturating_sub(new_top)
+        let cursor = self.textarea.cursor().0;
+        let top = self.textarea.viewport_top_row();
+        cursor.saturating_sub(top).min(height as usize - 1) as u16
     }
 
     pub fn vim_mode(&self) -> VimMode {
@@ -73,6 +85,7 @@ impl<'a> Editor<'a> {
             Mode::Normal | Mode::Operator(_) => VimMode::Normal,
             Mode::Insert => VimMode::Insert,
             Mode::Visual => VimMode::Visual,
+            Mode::VisualLine => VimMode::VisualLine,
         }
     }
 
@@ -90,11 +103,18 @@ impl<'a> Editor<'a> {
     }
 
     pub fn set_content(&mut self, text: &str) {
-        let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+        let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+        while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+            lines.pop();
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
         self.textarea = TextArea::new(lines);
         self.textarea.set_max_histories(0);
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.content_dirty = true;
     }
 
     pub fn scroll_down(&mut self, rows: i16) {
@@ -109,13 +129,13 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn goto_line(&mut self, line: u16) {
+    pub fn goto_line(&mut self, line: usize) {
         self.textarea
-            .move_cursor(CursorMove::Jump(line.saturating_sub(1), 0));
+            .move_cursor_clamped(CursorMove::Jump(clamp_u16(line.saturating_sub(1)), 0));
     }
 
     pub fn insert_str(&mut self, text: &str) {
-        self.textarea.insert_str(text);
+        self.mutate(|t| t.insert_str(text));
     }
 
     pub fn accept_completion(&mut self, completion: &str) {
@@ -128,9 +148,9 @@ impl<'a> Editor<'a> {
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .count();
         for _ in 0..prefix_len {
-            self.textarea.delete_char();
+            self.mutate(|t| t.delete_char());
         }
-        self.textarea.insert_str(completion);
+        self.mutate(|t| t.insert_str(completion));
     }
 
     fn snapshot(&self) -> (Vec<String>, (usize, usize)) {
@@ -150,7 +170,8 @@ impl<'a> Editor<'a> {
         self.textarea = TextArea::new(lines);
         self.textarea.set_max_histories(0);
         self.textarea
-            .move_cursor(CursorMove::Jump(cursor.0 as u16, cursor.1 as u16));
+            .move_cursor_clamped(CursorMove::Jump(clamp_u16(cursor.0), clamp_u16(cursor.1)));
+        self.content_dirty = true;
     }
 
     /// Returns true if the key was consumed by the editor.
@@ -180,7 +201,9 @@ impl<'a> Editor<'a> {
                 true
             }
             input => {
-                self.textarea.input(input);
+                if self.textarea.input(input) {
+                    self.content_dirty = true;
+                }
                 true
             }
         }
@@ -193,7 +216,7 @@ impl<'a> Editor<'a> {
             return;
         }
         for _ in 0..self.insert_count - 1 {
-            self.textarea.insert_str(&inserted);
+            self.mutate(|t| t.insert_str(&inserted));
         }
     }
 
@@ -210,8 +233,8 @@ impl<'a> Editor<'a> {
         if pending.key == Key::Char('r') {
             if let Key::Char(c) = input.key {
                 self.push_undo();
-                self.textarea.delete_next_char();
-                self.textarea.insert_char(c);
+                self.mutate(|t| t.delete_next_char());
+                self.mutate(|t| t.insert_char(c));
                 self.textarea.move_cursor(CursorMove::Back);
                 return true;
             }
@@ -410,7 +433,7 @@ impl<'a> Editor<'a> {
             } if self.mode != Mode::Visual => {
                 self.begin_insert(n);
                 self.textarea.move_cursor(CursorMove::End);
-                self.textarea.insert_newline();
+                self.mutate(|t| t.insert_newline());
                 self.mode = Mode::Insert;
                 return true;
             }
@@ -420,7 +443,7 @@ impl<'a> Editor<'a> {
             } if self.mode != Mode::Visual => {
                 self.begin_insert(n);
                 self.textarea.move_cursor(CursorMove::Head);
-                self.textarea.insert_newline();
+                self.mutate(|t| t.insert_newline());
                 self.textarea.move_cursor(CursorMove::Up);
                 self.mode = Mode::Insert;
                 return true;
@@ -439,12 +462,87 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode == Mode::Normal => {
-                self.textarea.move_cursor(CursorMove::Head);
+                let (row, _) = self.textarea.cursor();
+                self.visual_line_anchor = row;
+                self.refresh_visual_line_selection();
+                self.mode = Mode::VisualLine;
+                return true;
+            }
+            // ── VisualLine exit ──────────────────────────────────────────────
+            Input { key: Key::Esc, .. }
+            | Input {
+                key: Key::Char('V'),
+                ctrl: false,
+                ..
+            } if self.mode == Mode::VisualLine => {
+                self.textarea.cancel_selection();
+                self.mode = Mode::Normal;
+                return true;
+            }
+            Input {
+                key: Key::Char('v'),
+                ctrl: false,
+                ..
+            } if self.mode == Mode::VisualLine => {
+                self.textarea.cancel_selection();
                 self.textarea.start_selection();
-                self.textarea.move_cursor(CursorMove::End);
                 self.mode = Mode::Visual;
                 return true;
             }
+            // ── VisualLine operators ─────────────────────────────────────────
+            Input {
+                key: Key::Char('y'),
+                ctrl: false,
+                ..
+            } if self.mode == Mode::VisualLine => {
+                let (cursor_row, _) = self.textarea.cursor();
+                let top_row = cursor_row.min(self.visual_line_anchor);
+                self.finalize_visual_line_selection();
+                self.yank_linewise = true;
+                self.textarea.copy();
+                let y = self.textarea.yank_text();
+                if !y.is_empty() {
+                    self.last_yank = Some(y);
+                }
+                self.textarea.cancel_selection();
+                self.textarea
+                    .move_cursor_clamped(CursorMove::Jump(clamp_u16(top_row), 0));
+                self.mode = Mode::Normal;
+                return true;
+            }
+            Input {
+                key: Key::Char('d') | Key::Char('x'),
+                ctrl: false,
+                ..
+            } if self.mode == Mode::VisualLine => {
+                self.push_undo();
+                self.finalize_visual_line_selection();
+                self.yank_linewise = true;
+                self.mutate(|t| t.cut());
+                let y = self.textarea.yank_text();
+                if !y.is_empty() {
+                    self.last_yank = Some(y);
+                }
+                self.mode = Mode::Normal;
+                return true;
+            }
+            Input {
+                key: Key::Char('c'),
+                ctrl: false,
+                ..
+            } if self.mode == Mode::VisualLine => {
+                self.push_undo();
+                self.finalize_visual_line_selection();
+                self.yank_linewise = true;
+                self.mutate(|t| t.cut());
+                let y = self.textarea.yank_text();
+                if !y.is_empty() {
+                    self.last_yank = Some(y);
+                }
+                self.mode = Mode::Insert;
+                return true;
+            }
+            // ── Visual exit ──────────────────────────────────────────────────
             Input { key: Key::Esc, .. }
             | Input {
                 key: Key::Char('v'),
@@ -467,7 +565,7 @@ impl<'a> Editor<'a> {
                 ..
             } if self.mode != Mode::Visual => {
                 self.push_undo();
-                self.textarea.delete_next_char();
+                self.mutate(|t| t.delete_next_char());
                 self.mode = Mode::Normal;
                 return true;
             }
@@ -476,7 +574,7 @@ impl<'a> Editor<'a> {
                 ..
             } => {
                 self.push_undo();
-                self.textarea.delete_char();
+                self.mutate(|t| t.delete_char());
                 return true;
             }
             Input {
@@ -493,7 +591,7 @@ impl<'a> Editor<'a> {
                 ..
             } => {
                 self.push_undo();
-                self.textarea.delete_line_by_end();
+                self.mutate(|t| t.delete_line_by_end());
                 self.mode = Mode::Normal;
                 return true;
             }
@@ -502,7 +600,7 @@ impl<'a> Editor<'a> {
                 ..
             } => {
                 self.push_undo();
-                self.textarea.delete_line_by_end();
+                self.mutate(|t| t.delete_line_by_end());
                 self.textarea.cancel_selection();
                 self.mode = Mode::Insert;
                 return true;
@@ -512,7 +610,15 @@ impl<'a> Editor<'a> {
                 ..
             } => {
                 self.push_undo();
-                self.textarea.paste();
+                if self.yank_linewise {
+                    let content = self.textarea.yank_text();
+                    let text = content.trim_matches('\n').to_string();
+                    self.textarea.move_cursor(CursorMove::End);
+                    self.mutate(|t| t.insert_str(&format!("\n{text}")));
+                    self.textarea.move_cursor(CursorMove::Head);
+                } else {
+                    self.mutate(|t| t.paste());
+                }
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
                     self.last_yank = Some(y);
@@ -525,9 +631,16 @@ impl<'a> Editor<'a> {
                 ..
             } => {
                 self.push_undo();
-                // paste before: step back, paste, step forward past inserted text
-                self.textarea.move_cursor(CursorMove::Back);
-                self.textarea.paste();
+                if self.yank_linewise {
+                    let content = self.textarea.yank_text();
+                    let text = content.trim_matches('\n').to_string();
+                    self.textarea.move_cursor(CursorMove::Head);
+                    self.mutate(|t| t.insert_str(&format!("{text}\n")));
+                    self.textarea.move_cursor(CursorMove::Up);
+                } else {
+                    self.textarea.move_cursor(CursorMove::Back);
+                    self.mutate(|t| t.paste());
+                }
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
                     self.last_yank = Some(y);
@@ -576,13 +689,7 @@ impl<'a> Editor<'a> {
                 ..
             } if self.mode == Mode::Operator('y') => {
                 let (row, col) = self.textarea.cursor();
-                self.textarea.move_cursor(CursorMove::Head);
-                self.textarea.start_selection();
-                let before = self.textarea.cursor();
-                self.textarea.move_cursor(CursorMove::Down);
-                if self.textarea.cursor() == before {
-                    self.textarea.move_cursor(CursorMove::End);
-                }
+                self.select_line_for_operation();
                 self.textarea.copy();
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
@@ -590,7 +697,7 @@ impl<'a> Editor<'a> {
                 }
                 self.textarea.cancel_selection();
                 self.textarea
-                    .move_cursor(CursorMove::Jump(row as u16, col as u16));
+                    .move_cursor_clamped(CursorMove::Jump(clamp_u16(row), clamp_u16(col)));
                 self.mode = Mode::Normal;
                 return true;
             }
@@ -601,14 +708,7 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode == Mode::Operator(c) => {
-                // dd / cc: select whole line
-                self.textarea.move_cursor(CursorMove::Head);
-                self.textarea.start_selection();
-                let before = self.textarea.cursor();
-                self.textarea.move_cursor(CursorMove::Down);
-                if self.textarea.cursor() == before {
-                    self.textarea.move_cursor(CursorMove::End);
-                }
+                self.select_line_for_operation();
                 // fall through to operator apply below
             }
 
@@ -618,6 +718,7 @@ impl<'a> Editor<'a> {
                 ctrl: false,
                 ..
             } if self.mode == Mode::Normal => {
+                self.yank_linewise = false;
                 if op != 'y' {
                     self.push_undo();
                 }
@@ -648,7 +749,7 @@ impl<'a> Editor<'a> {
             } if self.mode == Mode::Visual => {
                 self.push_undo();
                 self.textarea.move_cursor(CursorMove::Forward);
-                self.textarea.cut();
+                self.mutate(|t| t.cut());
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
                     self.last_yank = Some(y);
@@ -663,7 +764,7 @@ impl<'a> Editor<'a> {
             } if self.mode == Mode::Visual => {
                 self.push_undo();
                 self.textarea.move_cursor(CursorMove::Forward);
-                self.textarea.cut();
+                self.mutate(|t| t.cut());
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
                     self.last_yank = Some(y);
@@ -679,6 +780,12 @@ impl<'a> Editor<'a> {
             }
         }
 
+        // Refresh line-wise selection after any cursor movement in VisualLine mode.
+        if self.mode == Mode::VisualLine {
+            self.refresh_visual_line_selection();
+            return true;
+        }
+
         // Apply pending operator after a motion
         match self.mode {
             Mode::Operator('y') => {
@@ -690,7 +797,7 @@ impl<'a> Editor<'a> {
                 self.mode = Mode::Normal;
             }
             Mode::Operator('d') => {
-                self.textarea.cut();
+                self.mutate(|t| t.cut());
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
                     self.last_yank = Some(y);
@@ -698,7 +805,7 @@ impl<'a> Editor<'a> {
                 self.mode = Mode::Normal;
             }
             Mode::Operator('c') => {
-                self.textarea.cut();
+                self.mutate(|t| t.cut());
                 let y = self.textarea.yank_text();
                 if !y.is_empty() {
                     self.last_yank = Some(y);
@@ -709,6 +816,89 @@ impl<'a> Editor<'a> {
         }
 
         true
+    }
+
+    /// Extends the VisualLine selection to `(bottom+1, 0)` so the trailing `\n` of
+    /// the last selected line is included. Must be called immediately before cut/copy
+    /// in VisualLine operators; cursor is left at the end of the extended selection.
+    fn finalize_visual_line_selection(&mut self) {
+        let (cursor_row, _) = self.textarea.cursor();
+        let anchor_row = self.visual_line_anchor;
+        let top = cursor_row.min(anchor_row);
+        let bottom = cursor_row.max(anchor_row);
+        let total_lines = self.textarea.lines().len();
+        self.textarea.cancel_selection();
+        self.textarea.move_cursor_clamped(CursorMove::Jump(clamp_u16(top), 0));
+        self.textarea.start_selection();
+        if bottom + 1 < total_lines {
+            self.textarea
+                .move_cursor_clamped(CursorMove::Jump(clamp_u16(bottom + 1), 0));
+        } else {
+            self.textarea.move_cursor_clamped(CursorMove::Jump(clamp_u16(bottom), 0));
+            self.textarea.move_cursor(CursorMove::End);
+        }
+    }
+
+    /// Rebuilds the VisualLine selection to cover full lines from visual_line_anchor
+    /// to the current cursor row. Cursor ends up at the active end of the selection
+    /// so subsequent j/k movement extends or shrinks it naturally.
+    fn refresh_visual_line_selection(&mut self) {
+        let (cursor_row, _) = self.textarea.cursor();
+        let anchor_row = self.visual_line_anchor;
+        let total_lines = self.textarea.lines().len();
+        let top = cursor_row.min(anchor_row);
+        let bottom = cursor_row.max(anchor_row);
+
+        self.textarea.cancel_selection();
+        if cursor_row >= anchor_row {
+            // Cursor at bottom: anchor top-start → cursor bottom-start
+            self.textarea.move_cursor_clamped(CursorMove::Jump(clamp_u16(top), 0));
+            self.textarea.start_selection();
+            self.textarea.move_cursor_clamped(CursorMove::Jump(clamp_u16(bottom), 0));
+        } else {
+            // Cursor at top: anchor below bottom-end → cursor top-start
+            if bottom + 1 < total_lines {
+                self.textarea
+                    .move_cursor_clamped(CursorMove::Jump(clamp_u16(bottom + 1), 0));
+            } else {
+                self.textarea.move_cursor_clamped(CursorMove::Jump(clamp_u16(bottom), 0));
+                self.textarea.move_cursor(CursorMove::End);
+            }
+            self.textarea.start_selection();
+            self.textarea.move_cursor_clamped(CursorMove::Jump(clamp_u16(top), 0));
+        }
+    }
+
+    /// Selects the current line for dd/yy/cc.
+    ///
+    /// For row > 0: selects from the end of the previous line (the preceding \n)
+    /// through the end of the current line, so the line merges cleanly upward.
+    ///
+    /// For row == 0 with more lines: selects from the start of the line through
+    /// the start of the next line (includes the trailing \n) so the next line
+    /// becomes the new first line.
+    ///
+    /// For the only line: selects the full content (no \n to grab).
+    fn select_line_for_operation(&mut self) {
+        self.yank_linewise = true;
+        let (row, _) = self.textarea.cursor();
+        let total_lines = self.textarea.lines().len();
+        if row > 0 {
+            self.textarea.move_cursor(CursorMove::Up);
+            self.textarea.move_cursor(CursorMove::End);
+            self.textarea.start_selection();
+            self.textarea.move_cursor(CursorMove::Down);
+            self.textarea.move_cursor(CursorMove::End);
+        } else if total_lines > 1 {
+            self.textarea.move_cursor(CursorMove::Head);
+            self.textarea.start_selection();
+            self.textarea.move_cursor(CursorMove::Down);
+            self.textarea.move_cursor(CursorMove::Head);
+        } else {
+            self.textarea.move_cursor(CursorMove::Head);
+            self.textarea.start_selection();
+            self.textarea.move_cursor(CursorMove::End);
+        }
     }
 
     fn move_first_non_whitespace(&mut self) {
@@ -730,14 +920,14 @@ impl<'a> Editor<'a> {
         }
         self.textarea.move_cursor(CursorMove::End);
         let end_col = self.textarea.cursor().1;
-        self.textarea.delete_next_char(); // delete newline
+        self.mutate(|t| t.delete_next_char()); // delete newline
         // strip leading whitespace from the (formerly next) line
         loop {
             let (r, c) = self.textarea.cursor();
             let line = self.textarea.lines()[r].clone();
             match line[c..].chars().next() {
                 Some(ch) if ch.is_whitespace() => {
-                    self.textarea.delete_next_char();
+                    self.mutate(|t| t.delete_next_char());
                 }
                 _ => break,
             }
@@ -746,7 +936,7 @@ impl<'a> Editor<'a> {
         let (r, c) = self.textarea.cursor();
         let has_right = c < self.textarea.lines()[r].len();
         if end_col > 0 && has_right {
-            self.textarea.insert_char(' ');
+            self.mutate(|t| t.insert_char(' '));
             self.textarea.move_cursor(CursorMove::Back);
         }
     }
@@ -764,11 +954,32 @@ impl<'a> Editor<'a> {
             } else {
                 c.to_uppercase().next().unwrap_or(c)
             };
-            self.textarea.delete_next_char();
-            self.textarea.insert_char(toggled);
+            self.mutate(|t| t.delete_next_char());
+            self.mutate(|t| t.insert_char(toggled));
             self.textarea.move_cursor(CursorMove::Back);
         }
     }
+}
+
+trait TextAreaExt {
+    fn move_cursor_clamped(&mut self, m: CursorMove);
+}
+
+impl TextAreaExt for TextArea<'_> {
+    fn move_cursor_clamped(&mut self, m: CursorMove) {
+        let m = match m {
+            CursorMove::Jump(row, col) => CursorMove::Jump(
+                row.min(u16::MAX),
+                col.min(u16::MAX),
+            ),
+            other => other,
+        };
+        self.move_cursor(m);
+    }
+}
+
+fn clamp_u16(n: usize) -> u16 {
+    n.min(u16::MAX as usize) as u16
 }
 
 /// Return the text inserted between `before` and `after`.

@@ -47,6 +47,7 @@ pub enum VimMode {
     Normal,
     Insert,
     Visual,
+    VisualLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -237,6 +238,28 @@ impl AppState {
 
     pub fn clear_status(&mut self) {
         self.status_message = None;
+    }
+
+    /// Collect all identifier names from the schema tree (databases, tables, columns),
+    /// filter by case-insensitive prefix, deduplicate, and return sorted.
+    pub fn schema_identifier_completions(&self, prefix: &str) -> Vec<String> {
+        let prefix_lower = prefix.to_lowercase();
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        let mut stack: Vec<&SchemaNode> = self.schema_nodes.iter().collect();
+        while let Some(node) = stack.pop() {
+            let name = node.name();
+            if name.to_lowercase().starts_with(&prefix_lower) && seen.insert(name.to_owned()) {
+                out.push(name.to_owned());
+            }
+            match node {
+                SchemaNode::Database { tables, .. } => stack.extend(tables.iter()),
+                SchemaNode::Table { columns, .. } => stack.extend(columns.iter()),
+                SchemaNode::Column { .. } => {}
+            }
+        }
+        out.sort();
+        out
     }
 
     pub fn visible_schema_items(&self) -> Vec<SchemaTreeItem> {
