@@ -306,7 +306,7 @@ async fn run_loop(
                                 .selected_completion()
                                 .map(|s| s.to_owned());
                             if let Some(text) = chosen {
-                                editor.insert_str(&text);
+                                editor.accept_completion(&text);
                                 state.lock().unwrap().dismiss_completions();
                             }
                             continue;

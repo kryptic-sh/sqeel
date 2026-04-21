@@ -52,6 +52,26 @@ impl<'a> Editor<'a> {
         self.textarea.insert_str(text);
     }
 
+    /// Replace the word currently being typed before the cursor with `completion`.
+    /// Scans back from cursor to find the start of the current word (alphanumeric / _),
+    /// deletes those characters, then inserts the completion text.
+    pub fn accept_completion(&mut self, completion: &str) {
+        let (row, col) = self.textarea.cursor();
+        let line = self.textarea.lines()[row].clone();
+        let before = &line[..col.min(line.len())];
+        // Count how many word chars sit immediately before the cursor
+        let prefix_len = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .count();
+        // Delete those chars one at a time (backspace)
+        for _ in 0..prefix_len {
+            self.textarea.delete_char();
+        }
+        self.textarea.insert_str(completion);
+    }
+
     /// Returns true if the key was consumed by the editor.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         match self.keybinding_mode {
