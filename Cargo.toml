@@ -1,6 +1,8 @@
-[package]
-name = "squeal"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
+[workspace]
+members = [
+    "sqeel-core",
+    "sqeel-tui",
+    "sqeel-gui",
+    "sqeel",
+]
+resolver = "2"

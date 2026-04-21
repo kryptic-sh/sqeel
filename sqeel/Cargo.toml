@@ -1,0 +1,18 @@
+[package]
+name = "sqeel"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "sqeel"
+path = "src/bin/sqeel.rs"
+
+[[bin]]
+name = "sqeel-gui"
+path = "src/bin/sqeel-gui.rs"
+
+[dependencies]
+sqeel-core = { path = "../sqeel-core" }
+sqeel-tui = { path = "../sqeel-tui" }
+sqeel-gui = { path = "../sqeel-gui" }
+anyhow = "1"
