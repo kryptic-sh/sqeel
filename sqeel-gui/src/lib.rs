@@ -67,7 +67,9 @@ impl SqeelApp {
             Message::EditorAction(action) => {
                 self.editor_content.perform(action);
                 let content = self.editor_content.text();
-                self.state.lock().unwrap().editor_content = content;
+                let mut s = self.state.lock().unwrap();
+                s.editor_content = content;
+                s.autosave();
             }
             Message::ExecuteQuery => {
                 self.state.lock().unwrap().set_error(

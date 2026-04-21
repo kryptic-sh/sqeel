@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use crate::lsp::Diagnostic;
 use crate::highlight::HighlightSpan;
+use crate::persistence;
 use crate::schema::{SchemaNode, SchemaTreeItem, flatten_tree, toggle_node};
 use lsp_types::DiagnosticSeverity;
 
@@ -27,7 +28,7 @@ pub enum Focus {
     Results,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -44,6 +45,7 @@ pub enum ResultsPane {
 #[derive(Debug, Default)]
 pub struct AppState {
     pub editor_content: String,
+    pub current_file: Option<String>,
     pub keybinding_mode: KeybindingMode,
     pub vim_mode: VimMode,
     pub focus: Focus,
@@ -155,6 +157,26 @@ impl AppState {
     pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
         self.schema_nodes = nodes;
         self.schema_cursor = 0;
+    }
+
+    /// Auto-save editor content to disk. Creates a scratch file if none is open.
+    pub fn autosave(&mut self) {
+        let file = match &self.current_file {
+            Some(f) => f.clone(),
+            None => match persistence::next_scratch_name() {
+                Ok(name) => {
+                    self.current_file = Some(name.clone());
+                    name
+                }
+                Err(_) => return,
+            },
+        };
+        let _ = persistence::save_query(&file, &self.editor_content);
+    }
+
+    /// Persist a successful query result to disk (errors are never stored).
+    pub fn persist_result(&self, query: &str, result: &QueryResult) {
+        let _ = persistence::save_result(query, result);
     }
 }
 

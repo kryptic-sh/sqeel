@@ -57,15 +57,22 @@ async fn run_loop(
     let mut editor = Editor::new(keybinding_mode);
     let mut highlighter = Highlighter::new()?;
 
+    let mut last_saved_content = String::new();
+
     loop {
         // Sync editor content + re-highlight
         {
             let content = editor.content();
             let spans = highlighter.highlight(&content);
             let mut s = state.lock().unwrap();
-            s.editor_content = content;
+            s.editor_content = content.clone();
             s.vim_mode = editor.vim_mode;
             s.set_highlights(spans);
+            // Auto-save on change
+            if content != last_saved_content {
+                s.autosave();
+                last_saved_content = content;
+            }
         }
 
         terminal.draw(|f| {
