@@ -53,6 +53,8 @@ pub struct AppState {
     pub highlight_spans: Vec<HighlightSpan>,
     pub completions: Vec<String>,
     pub show_completions: bool,
+    pub active_connection: Option<String>,
+    pub status_message: Option<String>,
 }
 
 impl AppState {
@@ -97,6 +99,14 @@ impl AppState {
 
     pub fn has_errors(&self) -> bool {
         self.lsp_diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::ERROR)
+    }
+
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
     }
 }
 

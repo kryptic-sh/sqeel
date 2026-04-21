@@ -16,3 +16,5 @@ sqeel-core = { path = "../sqeel-core" }
 sqeel-tui = { path = "../sqeel-tui" }
 sqeel-gui = { path = "../sqeel-gui" }
 anyhow = "1"
+clap = { version = "4.6.1", features = ["derive"] }
+tokio = { version = "1.52.1", features = ["full"] }

@@ -1,3 +1,5 @@
+pub mod config;
+pub mod db;
 pub mod highlight;
 pub mod lsp;
 pub mod provider;
