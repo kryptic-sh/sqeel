@@ -125,9 +125,19 @@ async fn run_loop(
     let mut mouse_did_drag = false;
     // Force redraw on first iteration and after every event.
     let mut event_triggered_redraw = true;
+    let mut last_terminal_size = terminal.size()?;
     loop {
         let mut needs_redraw = event_triggered_redraw;
         event_triggered_redraw = false;
+
+        // Detect terminal size changes that don't produce Event::Resize (e.g. fullscreen toggle).
+        if let Ok(size) = terminal.size() {
+            if size != last_terminal_size {
+                last_terminal_size = size;
+                terminal.autoresize()?;
+                needs_redraw = true;
+            }
+        }
 
         // Drain pending tab content (set when connection loads or tab switches)
         {
@@ -266,6 +276,7 @@ async fn run_loop(
                     last_editor_search_snap.as_deref(),
                 );
             })?;
+            last_terminal_size = terminal.size()?;
         }
 
         if !event::poll(Duration::from_millis(50))? {
