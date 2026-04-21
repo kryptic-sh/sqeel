@@ -8,20 +8,23 @@ Fast, vim-native SQL client. No Electron. No JVM.
 ## Features
 
 - Native Rust — instant startup
-- Vim or Emacs bindings — first class
-- Mouse support in all modes
+- Vim bindings — first class
+- Mouse support in all panes
 - Two UIs: terminal (`sqeel`) or native GUI (`sqeel-gui`)
 - MySQL, SQLite, PostgreSQL via sqlx
 - tree-sitter SQL syntax highlighting (dialect-aware)
 - LSP integration (`sqls`) — completions + diagnostics
-- Schema browser — databases → tables → columns
+- Schema browser — click or keyboard to expand/collapse
+- Editor tabs with lazy loading and 5-min RAM eviction
 - Auto-save SQL buffers, result history, query history
+- tmux-aware pane navigation
+- Vim-style status bar + command mode (`:`)
 
 ## Layout
 
 ```
 ┌──────────┬─────────────────────────────┐
-│          │                             │
+│          │  [tab1] [tab2]              │
 │  Schema  │         Editor              │
 │  (15%)   │         (85%)               │
 │          │                             │
@@ -56,8 +59,13 @@ Binaries land in `target/release/sqeel` and `target/release/sqeel-gui`.
 
 ```toml
 [editor]
-keybindings = "vim"   # or "emacs"
+keybindings = "vim"
+
+# Path to the SQL LSP binary (sqls recommended: https://github.com/sqls-server/sqls)
 lsp_binary = "sqls"
+
+# Lines scrolled per mouse wheel tick (all panes)
+mouse_scroll_lines = 3
 ```
 
 ### Connections — `~/.config/sqeel/conns/<name>.toml`
@@ -70,42 +78,84 @@ url = "mysql://localhost/mydb"
 
 ```toml
 url = "postgres://user:pass@host/db"
-
-[tls]
-ca_cert = "/path/to/ca.pem"
 ```
 
 sqeel scans `conns/` on startup and loads all `.toml` files.
 
 ## Keybindings
 
-### Vim (default)
+Press `?` in normal mode to open the help overlay.
 
-| Key | Action |
-|-----|--------|
-| `<leader>r` / `Ctrl+Enter` | Execute query |
-| `Ctrl+h/l` | Left/right pane |
-| `Ctrl+j/k` | Editor/results pane |
-| `+/-` or mouse drag | Resize splits |
-| `Ctrl+W` | Connection switcher |
-| `Ctrl+P/N` | Query history |
-| `?` | Help overlay |
+### Global
 
-### Emacs
+| Key          | Action                                |
+| ------------ | ------------------------------------- |
+| `Ctrl+Enter` | Execute query                         |
+| `Ctrl+W`     | Connection switcher                   |
+| `?`          | Help overlay                          |
+| `q`          | Quit (normal mode / schema / results) |
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+x Ctrl+e` | Execute query |
-| `Ctrl+x o` | Cycle pane focus |
-| `Ctrl+Space` | Autocomplete |
-| `Ctrl+P/N` | Query history |
+### Pane Focus
+
+| Key              | Action        |
+| ---------------- | ------------- |
+| `Ctrl+H` / click | Focus schema  |
+| `Ctrl+L` / click | Focus editor  |
+| `Ctrl+J` / click | Focus results |
+| `Ctrl+K` / click | Focus editor  |
+
+### Tabs
+
+| Key            | Action          |
+| -------------- | --------------- |
+| `Ctrl+T`       | New scratch tab |
+| `Ctrl+Right`   | Next tab        |
+| `Ctrl+Left`    | Prev tab        |
+| Click tab name | Switch to tab   |
+
+### Editor — Vim
+
+| Key                 | Action                    |
+| ------------------- | ------------------------- |
+| `i`                 | Insert mode               |
+| `Esc`               | Normal mode               |
+| `v`                 | Visual mode               |
+| `:`                 | Command mode              |
+| `/`                 | Search                    |
+| `Ctrl+P` / `Ctrl+N` | Query history prev / next |
+
+### Explorer Pane
+
+| Key           | Action                 |
+| ------------- | ---------------------- |
+| `j` / `k`     | Navigate down / up     |
+| `Enter` / `l` | Expand / collapse node |
+| `/`           | Search                 |
+
+### Results Pane
+
+| Key            | Action           |
+| -------------- | ---------------- |
+| `j` / `k`      | Scroll down / up |
+| `q` / `Ctrl+C` | Dismiss results  |
+
+### Connection Switcher
+
+| Key       | Action            |
+| --------- | ----------------- |
+| `j` / `k` | Navigate          |
+| `Enter`   | Connect           |
+| `n`       | New connection    |
+| `e`       | Edit connection   |
+| `d`       | Delete connection |
+| `Esc`     | Close             |
 
 ## Data
 
 ```
 ~/.local/share/sqeel/
-  queries/    # auto-saved SQL buffers
-  results/    # last 10 successful results (JSON)
+  queries/    # auto-saved SQL buffers (grouped by connection)
+  results/    # last 10 successful results (JSON, grouped by connection)
 ```
 
 ## Workspace
