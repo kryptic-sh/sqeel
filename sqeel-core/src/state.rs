@@ -17,10 +17,18 @@ pub struct TabEntry {
 
 impl TabEntry {
     fn new(name: String) -> Self {
-        Self { name, content: None, last_accessed: None }
+        Self {
+            name,
+            content: None,
+            last_accessed: None,
+        }
     }
     fn open(name: String, content: String) -> Self {
-        Self { name, content: Some(content), last_accessed: Some(Instant::now()) }
+        Self {
+            name,
+            content: Some(content),
+            last_accessed: Some(Instant::now()),
+        }
     }
 }
 
@@ -257,35 +265,34 @@ impl AppState {
     /// Does not touch other databases or reset the cursor.
     pub fn append_db_tables(&mut self, db_name: &str, tables: Vec<SchemaNode>) {
         for node in self.schema_nodes.iter_mut() {
-            if let SchemaNode::Database { name, tables: t, .. } = node {
-                if name == db_name {
-                    t.extend(tables);
-                    return;
-                }
+            if let SchemaNode::Database {
+                name, tables: t, ..
+            } = node
+                && name == db_name
+            {
+                t.extend(tables);
+                return;
             }
         }
     }
 
     /// Set the columns for one specific table without touching anything else.
-    pub fn set_table_columns(
-        &mut self,
-        db_name: &str,
-        table_name: &str,
-        columns: Vec<SchemaNode>,
-    ) {
+    pub fn set_table_columns(&mut self, db_name: &str, table_name: &str, columns: Vec<SchemaNode>) {
         for node in self.schema_nodes.iter_mut() {
-            if let SchemaNode::Database { name, tables, .. } = node {
-                if name == db_name {
-                    for table in tables.iter_mut() {
-                        if let SchemaNode::Table { name, columns: c, .. } = table {
-                            if name == table_name {
-                                *c = columns;
-                                return;
-                            }
-                        }
+            if let SchemaNode::Database { name, tables, .. } = node
+                && name == db_name
+            {
+                for table in tables.iter_mut() {
+                    if let SchemaNode::Table {
+                        name, columns: c, ..
+                    } = table
+                        && name == table_name
+                    {
+                        *c = columns;
+                        return;
                     }
-                    return;
                 }
+                return;
             }
         }
     }
@@ -496,9 +503,8 @@ impl AppState {
             tab.content = Some(self.editor_content.clone());
         }
         self.active_tab = idx;
-        let slug = persistence::sanitize_conn_slug(
-            self.active_connection.as_deref().unwrap_or("default"),
-        );
+        let slug =
+            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         let content = if let Some(tab) = self.tabs.get_mut(idx) {
             tab.last_accessed = Some(Instant::now());
             if let Some(ref c) = tab.content {
@@ -540,9 +546,8 @@ impl AppState {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             tab.content = Some(self.editor_content.clone());
         }
-        let slug = persistence::sanitize_conn_slug(
-            self.active_connection.as_deref().unwrap_or("default"),
-        );
+        let slug =
+            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         if let Ok(name) = persistence::next_scratch_name(&slug) {
             let _ = persistence::save_query(&slug, &name, "");
             self.tabs.push(TabEntry::open(name, String::new()));
@@ -559,23 +564,23 @@ impl AppState {
             if i == self.active_tab {
                 continue;
             }
-            if let Some(accessed) = tab.last_accessed {
-                if now.duration_since(accessed) > cutoff {
-                    tab.content = None;
-                }
+            if let Some(accessed) = tab.last_accessed
+                && now.duration_since(accessed) > cutoff
+            {
+                tab.content = None;
             }
         }
     }
 
     /// Auto-save editor content to the active tab on disk.
     pub fn autosave(&mut self) {
-        let slug = persistence::sanitize_conn_slug(
-            self.active_connection.as_deref().unwrap_or("default"),
-        );
+        let slug =
+            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         if self.tabs.is_empty() {
             if let Ok(name) = persistence::next_scratch_name(&slug) {
                 let _ = persistence::save_query(&slug, &name, &self.editor_content);
-                self.tabs.push(TabEntry::open(name, self.editor_content.clone()));
+                self.tabs
+                    .push(TabEntry::open(name, self.editor_content.clone()));
                 self.active_tab = 0;
             }
             return;
@@ -589,9 +594,8 @@ impl AppState {
 
     /// Persist a successful query result to disk (errors are never stored).
     pub fn persist_result(&self, query: &str, result: &QueryResult) {
-        let slug = persistence::sanitize_conn_slug(
-            self.active_connection.as_deref().unwrap_or("default"),
-        );
+        let slug =
+            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         let _ = persistence::save_result(&slug, query, result);
     }
 

@@ -71,8 +71,8 @@ fn ensure_dir(path: &std::path::Path) -> anyhow::Result<()> {
 
 /// Returns next available scratch_NNN.sql name inside the connection's subdir.
 pub fn next_scratch_name(conn_slug: &str) -> anyhow::Result<String> {
-    let dir = queries_dir_for(conn_slug)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir =
+        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
     for i in 1..=999u32 {
         let name = format!("scratch_{:03}.sql", i);
@@ -85,8 +85,8 @@ pub fn next_scratch_name(conn_slug: &str) -> anyhow::Result<String> {
 
 /// Save a SQL buffer to the connection's queries subdir.
 pub fn save_query(conn_slug: &str, name: &str, content: &str) -> anyhow::Result<()> {
-    let dir = queries_dir_for(conn_slug)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir =
+        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
     std::fs::write(dir.join(name), content)?;
     Ok(())
@@ -94,15 +94,15 @@ pub fn save_query(conn_slug: &str, name: &str, content: &str) -> anyhow::Result<
 
 /// Load a SQL buffer from the connection's queries subdir.
 pub fn load_query(conn_slug: &str, name: &str) -> anyhow::Result<String> {
-    let dir = queries_dir_for(conn_slug)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir =
+        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     Ok(std::fs::read_to_string(dir.join(name))?)
 }
 
 /// List saved SQL files for a specific connection, sorted by name.
 pub fn list_queries_for(conn_slug: &str) -> anyhow::Result<Vec<String>> {
-    let dir = queries_dir_for(conn_slug)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir =
+        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -166,8 +166,8 @@ fn unix_timestamp() -> u64 {
 /// Persist a successful query result under the connection's results subdir.
 /// Keeps at most RESULT_HISTORY_LIMIT files per connection; oldest is evicted.
 pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow::Result<()> {
-    let dir = results_dir_for(conn_slug)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir =
+        results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
 
     let ts = unix_timestamp();

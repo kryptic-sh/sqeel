@@ -202,7 +202,16 @@ async fn run_loop(
         let last_editor_search_snap = last_editor_search.clone();
         terminal.draw(|f| {
             let s = state.lock().unwrap();
-            last_draw_areas = draw(f, &s, &mut editor, tick_snap, cmd_snap.as_deref(), schema_search_snap.as_deref(), editor_search_snap.as_deref(), last_editor_search_snap.as_deref());
+            last_draw_areas = draw(
+                f,
+                &s,
+                &mut editor,
+                tick_snap,
+                cmd_snap.as_deref(),
+                schema_search_snap.as_deref(),
+                editor_search_snap.as_deref(),
+                last_editor_search_snap.as_deref(),
+            );
         })?;
 
         if !event::poll(Duration::from_millis(50))? {
@@ -240,16 +249,21 @@ async fn run_loop(
                 match mouse.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
                         use ratatui::layout::Position;
-                        let pos = Position { x: mouse.column, y: mouse.row };
+                        let pos = Position {
+                            x: mouse.column,
+                            y: mouse.row,
+                        };
                         if last_draw_areas.tab_bar.contains(pos) {
                             // Click on tab bar — determine which tab
-                            let rel_x = mouse.column.saturating_sub(last_draw_areas.tab_bar.x) as usize;
+                            let rel_x =
+                                mouse.column.saturating_sub(last_draw_areas.tab_bar.x) as usize;
                             let clicked = {
                                 let s = state.lock().unwrap();
                                 let mut offset = 0usize;
                                 let mut found = None;
                                 for (i, tab) in s.tabs.iter().enumerate() {
-                                    let w = tab.name.len() + 2
+                                    let w = tab.name.len()
+                                        + 2
                                         + if i + 1 < s.tabs.len() { 1 } else { 0 };
                                     if rel_x < offset + w {
                                         found = Some(i);
@@ -286,21 +300,15 @@ async fn run_loop(
                         mouse_did_drag = true;
                     }
                     MouseEventKind::Up(MouseButton::Left) => {
-                        if mouse_did_drag {
-                            if let Some(start) = mouse_select_start {
-                                let end = (mouse.column, mouse.row);
-                                let s = state.lock().unwrap();
-                                if let Some(text) = extract_mouse_selection(
-                                    start,
-                                    end,
-                                    &last_draw_areas,
-                                    &editor,
-                                    &s,
-                                ) {
-                                    drop(s);
-                                    if let Some(ref mut cb) = clipboard {
-                                        let _ = cb.set_text(text);
-                                    }
+                        if mouse_did_drag && let Some(start) = mouse_select_start {
+                            let end = (mouse.column, mouse.row);
+                            let s = state.lock().unwrap();
+                            if let Some(text) =
+                                extract_mouse_selection(start, end, &last_draw_areas, &editor, &s)
+                            {
+                                drop(s);
+                                if let Some(ref mut cb) = clipboard {
+                                    let _ = cb.set_text(text);
                                 }
                             }
                         }
@@ -469,7 +477,10 @@ async fn run_loop(
                         (KeyModifiers::NONE, KeyCode::Char('d')) => {
                             let result = state.lock().unwrap().delete_selected_connection();
                             if let Err(e) = result {
-                                state.lock().unwrap().set_error(format!("Delete failed: {e}"));
+                                state
+                                    .lock()
+                                    .unwrap()
+                                    .set_error(format!("Delete failed: {e}"));
                             }
                         }
                         (KeyModifiers::NONE, KeyCode::Enter) => {
@@ -685,22 +696,26 @@ async fn run_loop(
                     }
                     // n / N — navigate search matches
                     (KeyModifiers::NONE, KeyCode::Char('n'))
-                        if focus == Focus::Editor && vim_mode == VimMode::Normal && last_editor_search.is_some() =>
+                        if focus == Focus::Editor
+                            && vim_mode == VimMode::Normal
+                            && last_editor_search.is_some() =>
                     {
                         editor.textarea.search_forward(false);
                     }
                     (KeyModifiers::SHIFT, KeyCode::Char('N'))
                     | (KeyModifiers::NONE, KeyCode::Char('N'))
-                        if focus == Focus::Editor && vim_mode == VimMode::Normal && last_editor_search.is_some() =>
+                        if focus == Focus::Editor
+                            && vim_mode == VimMode::Normal
+                            && last_editor_search.is_some() =>
                     {
                         editor.textarea.search_back(false);
                     }
                     _ if focus == Focus::Editor => {
                         editor.handle_key(key);
-                        if let Some(text) = editor.last_yank.take() {
-                            if let Some(ref mut cb) = clipboard {
-                                let _ = cb.set_text(text);
-                            }
+                        if let Some(text) = editor.last_yank.take()
+                            && let Some(ref mut cb) = clipboard
+                        {
+                            let _ = cb.set_text(text);
                         }
                     }
                     _ => {}
@@ -762,7 +777,17 @@ struct DrawAreas {
     results: Option<Rect>,
 }
 
-fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &mut Editor, tick: u32, command_input: Option<&str>, schema_search: Option<&str>, editor_search: Option<&str>, last_editor_search: Option<&str>) -> DrawAreas {
+#[allow(clippy::too_many_arguments)]
+fn draw(
+    f: &mut ratatui::Frame<'_>,
+    state: &AppState,
+    editor: &mut Editor,
+    tick: u32,
+    command_input: Option<&str>,
+    schema_search: Option<&str>,
+    editor_search: Option<&str>,
+    last_editor_search: Option<&str>,
+) -> DrawAreas {
     let area = f.area();
 
     let lsp_warn = !state.lsp_available;
@@ -771,7 +796,11 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &mut Editor, tick:
     let (main_area, lsp_warn_area, status_area) = if lsp_warn {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
             .split(area);
         (chunks[0], Some(chunks[1]), chunks[2])
     } else {
@@ -824,10 +853,22 @@ fn draw(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &mut Editor, tick:
         schema: outer[0],
         editor: right_chunks[0],
         tab_bar,
-        results: if show_results { Some(right_chunks[1]) } else { None },
+        results: if show_results {
+            Some(right_chunks[1])
+        } else {
+            None
+        },
     };
 
-    draw_editor(f, state, editor, right_chunks[0], editor_focused, editor_search, last_editor_search);
+    draw_editor(
+        f,
+        state,
+        editor,
+        right_chunks[0],
+        editor_focused,
+        editor_search,
+        last_editor_search,
+    );
 
     if show_results {
         draw_results(f, state, right_chunks[1], results_focused);
@@ -889,7 +930,10 @@ fn extract_mouse_selection(
     state: &AppState,
 ) -> Option<String> {
     use ratatui::layout::Position;
-    let start_pos = Position { x: start.0, y: start.1 };
+    let start_pos = Position {
+        x: start.0,
+        y: start.1,
+    };
 
     let (r1, r2) = if start.1 <= end.1 {
         (start.1, end.1)
@@ -919,35 +963,35 @@ fn extract_mouse_selection(
         return if text.is_empty() { None } else { Some(text) };
     }
 
-    if let Some(results_area) = areas.results {
-        if results_area.contains(start_pos) {
-            if let sqeel_core::state::ResultsPane::Results(ref r) = state.results {
-                // border (1) + header row (1) = 2 rows offset
-                let inner_top = results_area.y + 2;
-                let row_start = (r1.saturating_sub(inner_top) as usize)
-                    .saturating_add(state.results_scroll);
-                let row_end = (r2.saturating_sub(inner_top) as usize)
-                    .saturating_add(state.results_scroll);
-                if row_start >= r.rows.len() {
-                    return None;
-                }
-                let row_end = row_end.min(r.rows.len() - 1);
-                let col_start = state.results_col_scroll;
-                let text = r.rows[row_start..=row_end]
-                    .iter()
-                    .map(|row| {
-                        row.iter()
-                            .skip(col_start)
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join("\t")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                return if text.is_empty() { None } else { Some(text) };
+    if let Some(results_area) = areas.results
+        && results_area.contains(start_pos)
+    {
+        if let sqeel_core::state::ResultsPane::Results(ref r) = state.results {
+            // border (1) + header row (1) = 2 rows offset
+            let inner_top = results_area.y + 2;
+            let row_start =
+                (r1.saturating_sub(inner_top) as usize).saturating_add(state.results_scroll);
+            let row_end =
+                (r2.saturating_sub(inner_top) as usize).saturating_add(state.results_scroll);
+            if row_start >= r.rows.len() {
+                return None;
             }
-            return None;
+            let row_end = row_end.min(r.rows.len() - 1);
+            let col_start = state.results_col_scroll;
+            let text = r.rows[row_start..=row_end]
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .skip(col_start)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\t")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return if text.is_empty() { None } else { Some(text) };
         }
+        return None;
     }
 
     // Editor pane
@@ -980,16 +1024,14 @@ fn extract_mouse_selection(
     if text.is_empty() { None } else { Some(text) }
 }
 
-fn draw_status_bar(
-    f: &mut ratatui::Frame<'_>,
-    state: &AppState,
-    editor: &Editor,
-    area: Rect,
-) {
+fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, area: Rect) {
     let mode = mode_label(state);
     let mode_width = mode.content.len() as u16;
 
-    let conn = state.active_connection.as_deref().unwrap_or("no connection");
+    let conn = state
+        .active_connection
+        .as_deref()
+        .unwrap_or("no connection");
     let tab_name = state
         .tabs
         .get(state.active_tab)
@@ -1008,7 +1050,12 @@ fn draw_status_bar(
     let center_width = area.width.saturating_sub(mode_width + right_width);
 
     // Mode block (left)
-    let mode_area = Rect { x: area.x, y: area.y, width: mode_width.min(area.width), height: 1 };
+    let mode_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: mode_width.min(area.width),
+        height: 1,
+    };
     // Center info
     let center_area = Rect {
         x: area.x + mode_width,
@@ -1018,11 +1065,19 @@ fn draw_status_bar(
     };
     // Right side (diag + cursor)
     let right_x = area.x + mode_width + center_width;
-    let diag_area = Rect { x: right_x, y: area.y, width: diag_width, height: 1 };
+    let diag_area = Rect {
+        x: right_x,
+        y: area.y,
+        width: diag_width,
+        height: 1,
+    };
     let cursor_area = Rect {
         x: right_x + diag_width,
         y: area.y,
-        width: cursor_width.min(area.width.saturating_sub(mode_width + center_width + diag_width)),
+        width: cursor_width.min(
+            area.width
+                .saturating_sub(mode_width + center_width + diag_width),
+        ),
         height: 1,
     };
 
@@ -1033,7 +1088,10 @@ fn draw_status_bar(
         .bg(mode.style.fg.unwrap_or(Color::Blue))
         .fg(Color::Black)
         .add_modifier(Modifier::BOLD);
-    f.render_widget(Paragraph::new(Span::styled(mode.content.to_string(), mode_style)), mode_area);
+    f.render_widget(
+        Paragraph::new(Span::styled(mode.content.to_string(), mode_style)),
+        mode_area,
+    );
 
     // Center: connection > tab
     f.render_widget(Paragraph::new(center_text).style(bar_bg), center_area);
@@ -1044,7 +1102,10 @@ fn draw_status_bar(
             .bg(d.style.fg.unwrap_or(Color::Yellow))
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD);
-        f.render_widget(Paragraph::new(Span::styled(d.content.to_string(), diag_style)), diag_area);
+        f.render_widget(
+            Paragraph::new(Span::styled(d.content.to_string(), diag_style)),
+            diag_area,
+        );
     }
 
     // Cursor position (right-aligned, highlighted)
@@ -1052,10 +1113,20 @@ fn draw_status_bar(
         .bg(Color::Blue)
         .fg(Color::Black)
         .add_modifier(Modifier::BOLD);
-    f.render_widget(Paragraph::new(Span::styled(cursor_str, cursor_style)), cursor_area);
+    f.render_widget(
+        Paragraph::new(Span::styled(cursor_str, cursor_style)),
+        cursor_area,
+    );
 }
 
-fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool, tick: u32, search: Option<&str>) {
+fn draw_schema(
+    f: &mut ratatui::Frame<'_>,
+    state: &AppState,
+    area: Rect,
+    focused: bool,
+    tick: u32,
+    search: Option<&str>,
+) {
     const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
     let status = if state.schema_loading {
         SPINNER[(tick as usize) % SPINNER.len()]
@@ -1120,11 +1191,14 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
     let all_items = state.visible_schema_items();
     let items: Vec<_> = if !query.is_empty() {
         let q = query.to_lowercase();
-        all_items.into_iter().filter(|item| {
-            let label = item.label.to_lowercase();
-            let mut chars = label.chars();
-            q.chars().all(|qc| chars.any(|lc| lc == qc))
-        }).collect()
+        all_items
+            .into_iter()
+            .filter(|item| {
+                let label = item.label.to_lowercase();
+                let mut chars = label.chars();
+                q.chars().all(|qc| chars.any(|lc| lc == qc))
+            })
+            .collect()
     } else {
         all_items
     };
@@ -1153,9 +1227,15 @@ fn draw_schema(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused
     let (highlight_style, selected) = if searching {
         (Style::default(), None)
     } else if focused {
-        (Style::default().add_modifier(Modifier::REVERSED), Some(state.schema_cursor))
+        (
+            Style::default().add_modifier(Modifier::REVERSED),
+            Some(state.schema_cursor),
+        )
     } else {
-        (Style::default().add_modifier(Modifier::BOLD), Some(state.schema_cursor))
+        (
+            Style::default().add_modifier(Modifier::BOLD),
+            Some(state.schema_cursor),
+        )
     };
 
     let list = List::new(list_items).highlight_style(highlight_style);
@@ -1192,8 +1272,7 @@ fn draw_editor(
         .split(area);
 
     f.render_widget(
-        Paragraph::new(build_tab_title(state))
-            .style(Style::default().bg(Color::Rgb(30, 30, 38))),
+        Paragraph::new(build_tab_title(state)).style(Style::default().bg(Color::Rgb(30, 30, 38))),
         chunks[0],
     );
 
@@ -1214,8 +1293,12 @@ fn draw_editor(
         );
     }
 
-    editor.textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
-    editor.textarea.set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 45)));
+    editor
+        .textarea
+        .set_line_number_style(Style::default().fg(Color::DarkGray));
+    editor
+        .textarea
+        .set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 45)));
     // In Visual mode tui-textarea's Search boundary (rank 2) overrides Select (rank 1),
     // so syntax highlights would erase the selection color. Clear the pattern instead.
     if state.vim_mode == VimMode::Visual {
@@ -1223,9 +1306,9 @@ fn draw_editor(
     } else if let Some(query) = editor_search.or(last_editor_search) {
         let pattern = if query.is_empty() { "" } else { query };
         let _ = editor.textarea.set_search_pattern(pattern);
-        editor.textarea.set_search_style(
-            Style::default().bg(Color::Rgb(80, 60, 20)).fg(Color::White),
-        );
+        editor
+            .textarea
+            .set_search_style(Style::default().bg(Color::Rgb(80, 60, 20)).fg(Color::White));
     } else {
         let _ = editor.textarea.set_search_pattern(
             r"(?i)\b(select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|column|join|inner|outer|left|right|full|cross|on|and|or|not|null|is|in|like|between|order|by|group|having|limit|offset|union|all|distinct|as|case|when|then|else|end|if|exists|primary|foreign|key|references|unique|default|constraint|check|with|view|begin|commit|rollback|transaction|use|show|describe|explain|database|schema|index|procedure|function|returns|return|trigger|true|false)\b",
@@ -1241,8 +1324,7 @@ fn draw_editor(
     let mut extra_idx = 2usize;
     if let Some(query) = editor_search {
         f.render_widget(
-            Paragraph::new(format!("/{query}"))
-                .style(Style::default().fg(Color::Yellow)),
+            Paragraph::new(format!("/{query}")).style(Style::default().fg(Color::Yellow)),
             chunks[extra_idx],
         );
         extra_idx += 1;

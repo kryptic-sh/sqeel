@@ -5,7 +5,7 @@ use sqeel_core::{
     AppState, UiProvider,
     config::{load_connections, load_session_data, save_session},
     db::DbConnection,
-    persistence::{load_schema_cache, save_schema_cache, sanitize_conn_slug},
+    persistence::{load_schema_cache, sanitize_conn_slug, save_schema_cache},
     schema::SchemaNode,
 };
 use sqeel_tui::TuiProvider;
@@ -126,8 +126,7 @@ fn spawn_executor(
     }
 
     // Channel: table loader sends (db, table) pairs; column loader consumes them.
-    let (col_tx, mut col_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    let (col_tx, mut col_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
 
     // ── Column loader task (separate thread) ─────────────────────────────────
     state.lock().unwrap().schema_loading = true;
@@ -191,10 +190,7 @@ fn spawn_executor(
             })
             .collect();
 
-        schema_state
-            .lock()
-            .unwrap()
-            .refresh_schema_nodes(db_shells);
+        schema_state.lock().unwrap().refresh_schema_nodes(db_shells);
 
         // Phase 1: first 100 tables for every database.
         let mut overflow: Vec<(String, Vec<String>)> = Vec::new();
