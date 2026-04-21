@@ -118,6 +118,10 @@ async fn run_loop(
     let mut last_draw_areas = DrawAreas::default();
     let mut mouse_select_start: Option<(u16, u16)> = None;
     let mut mouse_did_drag = false;
+    // Schema explorer viewport offset — persisted across frames so ratatui's auto-scroll
+    // adjustments (from keyboard nav) are carried forward, and mouse scroll can move both
+    // cursor and viewport together to keep the selection at the same screen row.
+    let mut schema_viewport_offset: usize = 0;
 
     loop {
         // Drain pending tab content (set when connection loads or tab switches)
@@ -199,6 +203,7 @@ async fn run_loop(
         let schema_search_snap = schema_search.clone();
         let editor_search_snap = editor_search.clone();
         let last_editor_search_snap = last_editor_search.clone();
+        let schema_viewport_offset_snap = schema_viewport_offset;
         terminal.draw(|f| {
             let s = state.lock().unwrap();
             last_draw_areas = draw(
@@ -208,10 +213,14 @@ async fn run_loop(
                 tick_snap,
                 cmd_snap.as_deref(),
                 schema_search_snap.as_deref(),
+                schema_viewport_offset_snap,
                 editor_search_snap.as_deref(),
                 last_editor_search_snap.as_deref(),
             );
         })?;
+        // Sync after draw: captures ratatui's auto-scroll adjustments (e.g. keyboard nav).
+        // Mouse scroll events below will overwrite this, taking precedence for the next frame.
+        schema_viewport_offset = last_draw_areas.schema_list_offset;
 
         if !event::poll(Duration::from_millis(50))? {
             continue;
@@ -335,9 +344,14 @@ async fn run_loop(
                         let mut s = state.lock().unwrap();
                         match pane {
                             Focus::Schema => {
-                                for _ in 0..mouse_scroll_lines {
-                                    s.schema_cursor_down();
-                                }
+                                let max = s.visible_schema_items().len();
+                                s.schema_cursor = s
+                                    .schema_cursor
+                                    .saturating_add(mouse_scroll_lines)
+                                    .min(max.saturating_sub(1));
+                                schema_viewport_offset = schema_viewport_offset
+                                    .saturating_add(mouse_scroll_lines)
+                                    .min(max.saturating_sub(1));
                             }
                             Focus::Results => {
                                 for _ in 0..mouse_scroll_lines {
@@ -354,9 +368,10 @@ async fn run_loop(
                         let mut s = state.lock().unwrap();
                         match pane {
                             Focus::Schema => {
-                                for _ in 0..mouse_scroll_lines {
-                                    s.schema_cursor_up();
-                                }
+                                s.schema_cursor =
+                                    s.schema_cursor.saturating_sub(mouse_scroll_lines);
+                                schema_viewport_offset =
+                                    schema_viewport_offset.saturating_sub(mouse_scroll_lines);
                             }
                             Focus::Results => {
                                 for _ in 0..mouse_scroll_lines {
@@ -832,6 +847,7 @@ fn draw(
     tick: u32,
     command_input: Option<&str>,
     schema_search: Option<&str>,
+    schema_viewport_offset: usize,
     editor_search: Option<&str>,
     last_editor_search: Option<&str>,
 ) -> DrawAreas {
@@ -868,8 +884,15 @@ fn draw(
     let results_focused = state.focus == Focus::Results;
 
     // Schema panel
-    let (schema_list_area, schema_list_offset, schema_list_filtered) =
-        draw_schema(f, state, outer[0], schema_focused, tick, schema_search);
+    let (schema_list_area, schema_list_offset, schema_list_filtered) = draw_schema(
+        f,
+        state,
+        outer[0],
+        schema_focused,
+        tick,
+        schema_search,
+        schema_viewport_offset,
+    );
 
     let show_results = !matches!(state.results, ResultsPane::Empty);
     let editor_pct = (state.editor_ratio * 100.0) as u16;
@@ -1177,6 +1200,7 @@ fn draw_schema(
     focused: bool,
     tick: u32,
     search: Option<&str>,
+    viewport_offset: usize,
 ) -> (Rect, usize, bool) {
     const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
     let status = if state.schema_loading {
@@ -1293,7 +1317,9 @@ fn draw_schema(
     };
 
     let list = List::new(list_items).highlight_style(highlight_style);
-    let mut list_state = ListState::default().with_selected(selected);
+    let mut list_state = ListState::default()
+        .with_offset(viewport_offset)
+        .with_selected(selected);
     f.render_stateful_widget(list, list_area, &mut list_state);
     (list_area, list_state.offset(), filtered)
 }
