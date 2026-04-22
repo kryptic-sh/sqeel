@@ -220,6 +220,9 @@ pub struct AppState {
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
     all_schema_items_cache: Vec<SchemaTreeItem>,
+    /// Sorted, deduplicated identifier names for completion. Rebuilt on schema changes
+    /// so hot-path completion submissions only clone an `Arc`.
+    schema_identifier_cache: Arc<Vec<String>>,
     pub query_history: Vec<String>,
     pub history_cursor: Option<usize>,
     // Connection switcher
@@ -272,6 +275,19 @@ impl AppState {
     fn rebuild_schema_cache(&mut self) {
         self.schema_items_cache = flatten_tree(&self.schema_nodes);
         self.all_schema_items_cache = flatten_all(&self.schema_nodes);
+        let mut ids = Vec::new();
+        let mut stack: Vec<&SchemaNode> = self.schema_nodes.iter().collect();
+        while let Some(node) = stack.pop() {
+            ids.push(node.name().to_owned());
+            match node {
+                SchemaNode::Database { tables, .. } => stack.extend(tables.iter()),
+                SchemaNode::Table { columns, .. } => stack.extend(columns.iter()),
+                SchemaNode::Column { .. } => {}
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        self.schema_identifier_cache = Arc::new(ids);
     }
 
     /// Active result tab's pane (or `Empty` if no tabs).
@@ -708,20 +724,10 @@ impl AppState {
         self.status_message = None;
     }
 
-    /// Collect all identifier names from the schema tree (databases, tables, columns)
-    /// with no filtering — for passing to a background completion thread.
-    pub fn schema_identifier_names(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut stack: Vec<&SchemaNode> = self.schema_nodes.iter().collect();
-        while let Some(node) = stack.pop() {
-            out.push(node.name().to_owned());
-            match node {
-                SchemaNode::Database { tables, .. } => stack.extend(tables.iter()),
-                SchemaNode::Table { columns, .. } => stack.extend(columns.iter()),
-                SchemaNode::Column { .. } => {}
-            }
-        }
-        out
+    /// Sorted, deduplicated identifier names from the schema tree. Cheap to clone —
+    /// backed by an `Arc` that is only rebuilt when the schema changes.
+    pub fn schema_identifier_names(&self) -> Arc<Vec<String>> {
+        Arc::clone(&self.schema_identifier_cache)
     }
 
     /// Collect all identifier names from the schema tree (databases, tables, columns),

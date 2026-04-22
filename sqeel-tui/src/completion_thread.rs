@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 /// Submit `(prefix, identifiers)` with [`CompletionThread::submit`]; the thread
 /// always processes the latest submitted pair (older pending pairs are discarded).
 /// Poll completed results with [`CompletionThread::try_recv`].
-type PendingSlot = Arc<(Mutex<Option<(String, Vec<String>)>>, Condvar)>;
+type PendingSlot = Arc<(Mutex<Option<(String, Arc<Vec<String>>)>>, Condvar)>;
 
 pub struct CompletionThread {
     pending: PendingSlot,
@@ -34,12 +34,12 @@ impl CompletionThread {
                         }
                     };
                     let prefix_lower = prefix.to_lowercase();
-                    let mut results: Vec<String> = identifiers
-                        .into_iter()
+                    // `identifiers` is already sorted + deduped upstream (AppState cache).
+                    let results: Vec<String> = identifiers
+                        .iter()
                         .filter(|name| name.to_lowercase().starts_with(&prefix_lower))
+                        .cloned()
                         .collect();
-                    results.sort();
-                    results.dedup();
                     if result_tx.send(results).is_err() {
                         break;
                     }
@@ -50,7 +50,7 @@ impl CompletionThread {
     }
 
     /// Submit a new completion query. Replaces any not-yet-processed pair.
-    pub fn submit(&self, prefix: String, identifiers: Vec<String>) {
+    pub fn submit(&self, prefix: String, identifiers: Arc<Vec<String>>) {
         let (lock, cvar) = &*self.pending;
         *lock.lock().unwrap() = Some((prefix, identifiers));
         cvar.notify_one();

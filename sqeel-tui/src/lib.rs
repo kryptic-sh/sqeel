@@ -503,11 +503,14 @@ async fn run_loop(
                         if Some(id) == last_completion_id {
                             // LSP results lead; schema identifiers fill in any gaps.
                             let mut merged = lsp_items;
-                            for item in &last_schema_completions {
-                                if !merged.contains(item) {
-                                    merged.push(item.clone());
-                                }
-                            }
+                            let seen: std::collections::HashSet<&str> =
+                                merged.iter().map(String::as_str).collect();
+                            let extras: Vec<String> = last_schema_completions
+                                .iter()
+                                .filter(|item| !seen.contains(item.as_str()))
+                                .cloned()
+                                .collect();
+                            merged.extend(extras);
                             state.lock().unwrap().set_completions(merged);
                         }
                     }
