@@ -2059,21 +2059,17 @@ fn extract_results_left_click(
                 .map(|t| t.query.clone())
                 .unwrap_or_default();
             if !query.trim().is_empty() {
-                // title(0), blank(1), "Query:"(2), query lines(3..3+n), blank, "Error:", err lines
-                let qn = query.lines().count();
-                let query_start = 3;
-                let query_end = query_start + qn; // exclusive
-                let error_start = query_end + 2; // blank + "Error:"
-                if (query_start..query_end).contains(&rel_y) {
+                // hr(0), title(1), hr(2), query(3), hr(4), err lines(5..)
+                if rel_y == 3 {
                     return Some((query.clone(), "Query"));
                 }
-                if rel_y >= error_start {
+                if rel_y >= 5 {
                     return Some((e.clone(), "Error"));
                 }
                 None
             } else {
-                // title(0) then errors from row 1 (wrap ignored — best effort)
-                if rel_y >= 1 {
+                // hr(0), title(1), hr(2), err lines(3..)
+                if rel_y >= 3 {
                     Some((e.clone(), "Error"))
                 } else {
                     None
@@ -2640,94 +2636,133 @@ fn draw_results(
             );
         }
         ResultsPane::Error(e) => {
-            let title = if state.result_tabs.len() > 1 {
-                format!(
-                    "Result ({}/{})",
-                    state.active_result_tab + 1,
-                    state.result_tabs.len(),
-                )
-            } else {
-                "Result".into()
-            };
-            let query = state
+            let title_text = render_pos_title(state, "Result");
+            let body: Vec<Line<'static>> = e
+                .lines()
+                .map(|el| {
+                    Line::from(Span::styled(
+                        format!(" {}", el),
+                        Style::default().fg(Color::Red),
+                    ))
+                })
+                .collect();
+            let has_query = state
                 .active_result()
-                .map(|t| t.query.clone())
-                .unwrap_or_default();
-            let mut lines: Vec<Line<'static>> = Vec::new();
-            lines.push(Line::from(Span::styled(
-                title,
-                Style::default().fg(Color::Red),
-            )));
-            if !query.trim().is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Query:",
-                    Style::default().fg(Color::DarkGray),
-                )));
-                for ql in query.lines() {
-                    lines.push(Line::from(Span::styled(
-                        ql.to_string(),
-                        Style::default().fg(Color::White),
-                    )));
-                }
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Error:",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            for el in e.lines() {
-                lines.push(Line::from(Span::styled(
-                    el.to_string(),
-                    Style::default().fg(Color::Red),
-                )));
-            }
-            f.render_widget(
-                Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+                .map(|t| !t.query.trim().is_empty())
+                .unwrap_or(false);
+            render_framed_pane(
+                f,
                 content_area,
+                &title_text,
+                Style::default().fg(Color::Red),
+                state,
+                body,
+                has_query,
             );
         }
         ResultsPane::Loading => {
             const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
             let frame = SPINNER[(tick as usize) % SPINNER.len()];
-            let msg = format!("{} Running query…", frame);
-
-            let title = if state.result_tabs.len() > 1 {
-                format!(
-                    "Result ({}/{})",
-                    state.active_result_tab + 1,
-                    state.result_tabs.len(),
-                )
-            } else {
-                "Result".into()
-            };
-            let block = Block::default().title(title).borders(Borders::NONE);
-            f.render_widget(
-                Paragraph::new(msg)
-                    .style(Style::default().fg(Color::Yellow))
-                    .block(block),
+            let title_text = render_pos_title(state, "Result");
+            let body = vec![Line::from(Span::styled(
+                format!(" {} Running query…", frame),
+                Style::default().fg(Color::Yellow),
+            ))];
+            render_framed_pane(
+                f,
                 content_area,
+                &title_text,
+                Style::default().fg(Color::Yellow),
+                state,
+                body,
+                false,
             );
         }
         ResultsPane::Cancelled => {
-            let title = if state.result_tabs.len() > 1 {
-                format!(
-                    "Result ({}/{})",
-                    state.active_result_tab + 1,
-                    state.result_tabs.len(),
-                )
-            } else {
-                "Result".into()
-            };
-            let block = Block::default().title(title).borders(Borders::NONE);
-            f.render_widget(
-                Paragraph::new("Skipped (previous query failed)")
-                    .style(Style::default().fg(Color::DarkGray))
-                    .block(block),
+            let title_text = render_pos_title(state, "Result");
+            let body = vec![Line::from(Span::styled(
+                " Skipped (previous query failed)",
+                Style::default().fg(Color::DarkGray),
+            ))];
+            render_framed_pane(
+                f,
                 content_area,
+                &title_text,
+                Style::default().fg(Color::DarkGray),
+                state,
+                body,
+                false,
             );
         }
         ResultsPane::Empty => unreachable!(),
+    }
+}
+
+fn render_pos_title(state: &AppState, label: &str) -> String {
+    if state.result_tabs.len() > 1 {
+        format!(
+            " {label} ({}/{})",
+            state.active_result_tab + 1,
+            state.result_tabs.len(),
+        )
+    } else {
+        format!(" {label}")
+    }
+}
+
+/// Draw the hr/title/hr/query/hr chrome shared by Error, Loading, and
+/// Cancelled panes, then the caller-supplied body below. When `show_query`
+/// is false the query row + its trailing separator are omitted.
+fn render_framed_pane(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    title: &str,
+    title_style: Style,
+    state: &AppState,
+    body: Vec<Line<'static>>,
+    show_query: bool,
+) {
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let hr: String = "─".repeat(area.width as usize);
+    let query_text = state
+        .active_result()
+        .map(|t| t.query.clone())
+        .unwrap_or_default();
+
+    let mut constraints: Vec<Constraint> = vec![
+        Constraint::Length(1), // hr
+        Constraint::Length(1), // title
+        Constraint::Length(1), // hr
+    ];
+    if show_query {
+        constraints.push(Constraint::Length(1)); // query
+        constraints.push(Constraint::Length(1)); // hr
+    }
+    constraints.push(Constraint::Min(0));
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    f.render_widget(Paragraph::new(hr.clone()).style(sep_style), chunks[0]);
+    f.render_widget(
+        Paragraph::new(title.to_string()).style(title_style),
+        chunks[1],
+    );
+    f.render_widget(Paragraph::new(hr.clone()).style(sep_style), chunks[2]);
+    if show_query {
+        f.render_widget(Paragraph::new(highlight_query_line(&query_text)), chunks[3]);
+        f.render_widget(Paragraph::new(hr).style(sep_style), chunks[4]);
+        f.render_widget(
+            Paragraph::new(body).wrap(ratatui::widgets::Wrap { trim: false }),
+            chunks[5],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(body).wrap(ratatui::widgets::Wrap { trim: false }),
+            chunks[3],
+        );
     }
 }
 
