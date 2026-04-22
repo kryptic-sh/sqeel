@@ -2006,28 +2006,65 @@ fn extract_mouse_selection(
         && results_area.contains(start_pos)
     {
         if let sqeel_core::state::ResultsPane::Results(r) = state.results() {
-            // border (1) + header row (1) = 2 rows offset
-            let inner_top = results_area.y + 2;
+            // Body starts after (optional tab bar) + title(1) + header(1) + hr(1).
+            let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 1 } else { 0 };
+            let body_y = results_area.y + tab_bar_rows + 3;
+            let body_x = results_area.x + 1; // horizontal Margin(1)
             let row_start =
-                (r1.saturating_sub(inner_top) as usize).saturating_add(state.results_scroll());
+                (r1.saturating_sub(body_y) as usize).saturating_add(state.results_scroll());
             let row_end =
-                (r2.saturating_sub(inner_top) as usize).saturating_add(state.results_scroll());
+                (r2.saturating_sub(body_y) as usize).saturating_add(state.results_scroll());
             if row_start >= r.rows.len() {
                 return None;
             }
             let row_end = row_end.min(r.rows.len() - 1);
-            let col_start = state.results_col_scroll();
-            let text = r.rows[row_start..=row_end]
+
+            // Rebuild the full (unscrolled) line for a row, matching draw_results.
+            let build_line = |row: &[String]| -> String {
+                let mut s = String::new();
+                for i in 0..r.columns.len() {
+                    let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
+                    let inner = w.saturating_sub(1);
+                    let cell = row.get(i).map(|x| x.as_str()).unwrap_or("");
+                    s.push_str(&format!(" {:<inner$}", cell, inner = inner));
+                    if i + 1 < r.columns.len() {
+                        s.push('│');
+                    }
+                }
+                s
+            };
+
+            let char_offset: usize = r
+                .col_widths
                 .iter()
-                .map(|row| {
-                    row.iter()
-                        .skip(col_start)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("\t")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+                .take(state.results_col_scroll())
+                .map(|&w| w as usize + 1)
+                .sum();
+
+            let text = if row_start == row_end {
+                let full = build_line(&r.rows[row_start]);
+                let chars: Vec<char> = full.chars().collect();
+                let start_idx = (c1.saturating_sub(body_x) as usize).saturating_add(char_offset);
+                let end_idx = (c2.saturating_sub(body_x) as usize)
+                    .saturating_add(char_offset)
+                    .saturating_add(1)
+                    .min(chars.len());
+                if start_idx >= chars.len() {
+                    String::new()
+                } else {
+                    chars[start_idx..end_idx]
+                        .iter()
+                        .collect::<String>()
+                        .trim()
+                        .to_string()
+                }
+            } else {
+                r.rows[row_start..=row_end]
+                    .iter()
+                    .map(|row| row.join("\t"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
             return if text.is_empty() { None } else { Some(text) };
         }
         return None;
