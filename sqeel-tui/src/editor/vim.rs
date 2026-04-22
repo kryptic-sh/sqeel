@@ -1513,31 +1513,27 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
 
 // ─── Visual-line helpers ───────────────────────────────────────────────────
 
+/// Rebuild the VisualLine selection after the cursor moved. The cursor
+/// must land on the "active" row (the end opposite the anchor) so the
+/// user sees it on the line they're extending to — not one row past it.
+/// Line-wise highlighting is achieved by pinning the anchor end to the
+/// start of its line and the cursor end to the end of its line.
 fn refresh_visual_line_selection(ed: &mut Editor<'_>) {
     let (cursor_row, _) = ed.textarea.cursor();
     let anchor_row = ed.vim.visual_line_anchor;
-    let total = ed.textarea.lines().len();
-    let top = cursor_row.min(anchor_row);
-    let bot = cursor_row.max(anchor_row);
     ed.textarea.cancel_selection();
     if cursor_row >= anchor_row {
-        ed.textarea.move_cursor(CursorMove::Jump(top, 0));
+        // Extending down: anchor at start of top row, cursor at end of bot row.
+        ed.textarea.move_cursor(CursorMove::Jump(anchor_row, 0));
         ed.textarea.start_selection();
-        if bot + 1 < total {
-            ed.textarea.move_cursor(CursorMove::Jump(bot + 1, 0));
-        } else {
-            ed.textarea.move_cursor(CursorMove::Jump(bot, 0));
-            ed.textarea.move_cursor(CursorMove::End);
-        }
+        ed.textarea.move_cursor(CursorMove::Jump(cursor_row, 0));
+        ed.textarea.move_cursor(CursorMove::End);
     } else {
-        if bot + 1 < total {
-            ed.textarea.move_cursor(CursorMove::Jump(bot + 1, 0));
-        } else {
-            ed.textarea.move_cursor(CursorMove::Jump(bot, 0));
-            ed.textarea.move_cursor(CursorMove::End);
-        }
+        // Extending up: anchor at end of bot row, cursor at start of top row.
+        ed.textarea.move_cursor(CursorMove::Jump(anchor_row, 0));
+        ed.textarea.move_cursor(CursorMove::End);
         ed.textarea.start_selection();
-        ed.textarea.move_cursor(CursorMove::Jump(top, 0));
+        ed.textarea.move_cursor(CursorMove::Jump(cursor_row, 0));
     }
 }
 
@@ -2325,5 +2321,32 @@ mod tests {
         let mut e = editor_with("foo bar");
         run_keys(&mut e, "n");
         assert_eq!(e.textarea.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn visual_line_cursor_stays_on_active_row() {
+        let mut e = editor_with("aaa\nbbb\nccc\nddd");
+        run_keys(&mut e, "V");
+        assert_eq!(e.vim_mode(), VimMode::VisualLine);
+        // Fresh V on row 0 — cursor must stay on row 0, not spill onto row 1.
+        assert_eq!(e.textarea.cursor().0, 0);
+        run_keys(&mut e, "j");
+        // After `j`, cursor is on row 1 (end of line 1).
+        assert_eq!(e.textarea.cursor().0, 1);
+        run_keys(&mut e, "j");
+        assert_eq!(e.textarea.cursor().0, 2);
+    }
+
+    #[test]
+    fn visual_line_extending_up_keeps_cursor_on_top_row() {
+        let mut e = editor_with("aaa\nbbb\nccc\nddd");
+        // Move to row 3 first, then V, then go up.
+        run_keys(&mut e, "jjj");
+        run_keys(&mut e, "V");
+        assert_eq!(e.textarea.cursor().0, 3);
+        run_keys(&mut e, "k");
+        assert_eq!(e.textarea.cursor().0, 2);
+        run_keys(&mut e, "k");
+        assert_eq!(e.textarea.cursor().0, 1);
     }
 }
