@@ -341,6 +341,8 @@ async fn run_loop(
     let mut mouse_select_start: Option<(u16, u16)> = None;
     let mut mouse_drag_pane: Option<Focus> = None;
     let mut mouse_did_drag = false;
+    // Double-click detection for result-row copy.
+    let mut last_click: Option<(Instant, u16, u16)> = None;
     // Force redraw on first iteration and after every event.
     let mut event_triggered_redraw = true;
     let mut last_terminal_size = terminal.size()?;
@@ -733,6 +735,30 @@ async fn run_loop(
                                     let _ = cb.set_text(text);
                                 }
                             }
+                        } else if !mouse_did_drag && mouse_drag_pane == Some(Focus::Results) {
+                            let x = mouse.column;
+                            let y = mouse.row;
+                            let is_double = last_click
+                                .filter(|(t, lx, ly)| {
+                                    t.elapsed() < Duration::from_millis(500)
+                                        && *ly == y
+                                        && x.abs_diff(*lx) <= 2
+                                })
+                                .is_some();
+                            let s = state.lock().unwrap();
+                            if let Some(text) =
+                                extract_results_click(x, y, &last_draw_areas, &s, is_double)
+                            {
+                                drop(s);
+                                if let Some(ref mut cb) = clipboard {
+                                    let _ = cb.set_text(text);
+                                }
+                            }
+                            last_click = if is_double {
+                                None
+                            } else {
+                                Some((Instant::now(), x, y))
+                            };
                         }
                         mouse_select_start = None;
                         mouse_drag_pane = None;
@@ -1959,6 +1985,62 @@ fn draw(
     areas.cursor_shape = shape;
 
     areas
+}
+
+fn extract_results_click(
+    x: u16,
+    y: u16,
+    areas: &DrawAreas,
+    state: &AppState,
+    double: bool,
+) -> Option<String> {
+    let results_area = areas.results?;
+    use ratatui::layout::Position;
+    if !results_area.contains(Position { x, y }) {
+        return None;
+    }
+    let r = match state.results() {
+        sqeel_core::state::ResultsPane::Results(r) => r,
+        _ => return None,
+    };
+    let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 1 } else { 0 };
+    let body_y = results_area.y + tab_bar_rows + 3;
+    let body_x = results_area.x + 1;
+    if y < body_y {
+        return None;
+    }
+    let row_idx = (y - body_y) as usize + state.results_scroll();
+    if row_idx >= r.rows.len() {
+        return None;
+    }
+    let row = &r.rows[row_idx];
+    if double {
+        return Some(row.join("\t"));
+    }
+    // Single click: find column under x (accounting for col_scroll char offset).
+    let char_offset: usize = r
+        .col_widths
+        .iter()
+        .take(state.results_col_scroll())
+        .map(|&w| w as usize + 1)
+        .sum();
+    let rel = (x.saturating_sub(body_x) as usize).saturating_add(char_offset);
+    let mut cursor = 0usize;
+    for (i, &w) in r.col_widths.iter().enumerate() {
+        let col_w = w as usize;
+        if rel < cursor + col_w {
+            return row.get(i).map(|s| s.trim().to_string());
+        }
+        cursor += col_w;
+        // separator
+        if i + 1 < r.col_widths.len() {
+            if rel == cursor {
+                return None;
+            }
+            cursor += 1;
+        }
+    }
+    None
 }
 
 fn extract_mouse_selection(
