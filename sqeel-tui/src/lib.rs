@@ -31,9 +31,42 @@ use sqeel_core::{
     AppState, UiProvider,
     config::load_main_config,
     lsp::{LspClient, LspEvent},
-    schema::SchemaTreeItem,
+    schema::{self, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsPane, VimMode},
 };
+
+/// Bundle of schema-sidebar search state: query string, whether the input box has
+/// focus (typing mode), and cursor position within the filtered list.
+#[derive(Clone, Default)]
+struct SchemaSearch {
+    query: Option<String>,
+    focused: bool,
+    cursor: usize,
+}
+
+impl SchemaSearch {
+    fn from_initial(q: Option<String>) -> Self {
+        Self { query: q, focused: false, cursor: 0 }
+    }
+    fn query(&self) -> Option<&str> { self.query.as_deref() }
+    fn is_filtering(&self) -> bool { self.query.as_deref().is_some_and(|q| !q.is_empty()) }
+    fn clear(&mut self) { *self = Self::default(); }
+    fn start(&mut self) {
+        if self.query.is_none() { self.query = Some(String::new()); self.cursor = 0; }
+        self.focused = true;
+    }
+    fn push(&mut self, c: char) {
+        if let Some(ref mut q) = self.query { q.push(c); self.cursor = 0; }
+    }
+    fn pop(&mut self) {
+        if let Some(ref mut q) = self.query { q.pop(); self.cursor = 0; }
+    }
+    fn cursor_down(&mut self, list_len: usize) {
+        let max = list_len.saturating_sub(1);
+        self.cursor = (self.cursor + 1).min(max);
+    }
+    fn cursor_up(&mut self) { self.cursor = self.cursor.saturating_sub(1); }
+}
 
 pub struct TuiProvider;
 
@@ -114,9 +147,7 @@ async fn run_loop(
     let mut last_schema_completions: Vec<String> = Vec::new();
     let mut tick: u32 = 0;
     let mut command_input: Option<String> = None;
-    let mut schema_search: Option<String> = state.lock().unwrap().schema_search_query.clone();
-    let mut schema_search_focused = false;
-    let mut schema_search_cursor: usize = 0;
+    let mut schema_search = SchemaSearch::from_initial(state.lock().unwrap().schema_search_query.clone());
     let mut editor_search: Option<String> = None;
     let mut last_editor_search: Option<String> = None;
 
@@ -130,6 +161,7 @@ async fn run_loop(
     // Force redraw on first iteration and after every event.
     let mut event_triggered_redraw = true;
     let mut last_terminal_size = terminal.size()?;
+    let mut last_schema_loading = false;
     loop {
         let mut needs_redraw = event_triggered_redraw;
         event_triggered_redraw = false;
@@ -176,8 +208,13 @@ async fn run_loop(
         };
         {
             let mut s = state.lock().unwrap();
+            // Leaving the schema pane exits search mode entirely.
+            if s.focus != Focus::Schema && schema_search.query.is_some() {
+                schema_search.clear();
+                needs_redraw = true;
+            }
             s.vim_mode = editor.vim_mode();
-            s.schema_search_query = schema_search.clone();
+            s.schema_search_query = schema_search.query.clone();
             if let Some(ref c) = content {
                 s.editor_content = c.clone();
                 editor_dirty = true;
@@ -266,18 +303,19 @@ async fn run_loop(
             }
         }
 
-        // Spinner needs periodic redraws while schema is loading.
-        if state.lock().unwrap().schema_loading {
+        // Spinner needs periodic redraws while schema is loading, plus one final
+        // redraw on the loading→idle transition so the spinner is replaced by the ✓.
+        let schema_loading = state.lock().unwrap().schema_loading;
+        if schema_loading || last_schema_loading != schema_loading {
             needs_redraw = true;
         }
+        last_schema_loading = schema_loading;
 
         if needs_redraw {
             tick = tick.wrapping_add(1);
             let tick_snap = tick;
             let cmd_snap = command_input.clone();
             let schema_search_snap = schema_search.clone();
-            let schema_search_focused_snap = schema_search_focused;
-            let schema_search_cursor_snap = schema_search_cursor;
             let editor_search_snap = editor_search.clone();
             let last_editor_search_snap = last_editor_search.clone();
             let toast_snap = toast.as_ref().map(|(msg, _)| msg.clone());
@@ -289,9 +327,7 @@ async fn run_loop(
                     &mut editor,
                     tick_snap,
                     cmd_snap.as_deref(),
-                    schema_search_snap.as_deref(),
-                    schema_search_focused_snap,
-                    schema_search_cursor_snap,
+                    &schema_search_snap,
                     editor_search_snap.as_deref(),
                     last_editor_search_snap.as_deref(),
                     toast_snap.as_deref(),
@@ -381,47 +417,23 @@ async fn run_loop(
                             s.focus = pane;
                             if pane == Focus::Schema {
                                 let la = last_draw_areas.schema_list_area;
-                                if mouse.row >= la.y
+                                if mouse.row < la.y {
+                                    // Click in the search box row: enter search mode.
+                                    schema_search.start();
+                                } else if mouse.row >= la.y
                                     && mouse.column >= la.x
                                     && mouse.column < la.x + la.width
                                 {
                                     let rel = (mouse.row - la.y) as usize;
                                     let idx = rel + last_draw_areas.schema_list_offset;
                                     if last_draw_areas.schema_list_filtered {
-                                        // Recompute filtered list to find node_path.
-                                        let q = schema_search.as_deref().unwrap_or("").to_lowercase();
-                                        let all = s.all_schema_items();
-                                        let matched: std::collections::HashSet<usize> = all
-                                            .iter()
-                                            .enumerate()
-                                            .filter_map(|(i, item)| {
-                                                let name = item.label.trim().to_lowercase();
-                                                let mut chars = name.chars();
-                                                if q.chars().all(|qc| chars.any(|lc| lc == qc)) {
-                                                    Some(i)
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .collect();
-                                        let mut needed: std::collections::HashSet<Vec<usize>> =
-                                            std::collections::HashSet::new();
-                                        for &i in &matched {
-                                            let path = &all[i].node_path;
-                                            for len in 1..=path.len() {
-                                                needed.insert(path[..len].to_vec());
-                                            }
-                                        }
-                                        let filtered: Vec<Vec<usize>> = all
-                                            .iter()
-                                            .filter(|item| needed.contains(&item.node_path))
-                                            .map(|item| item.node_path.clone())
-                                            .collect();
+                                        let query = schema_search.query().unwrap_or("");
+                                        let filtered = schema::filter_items(s.all_schema_items(), query);
                                         if idx < filtered.len() {
-                                            schema_search_cursor = idx;
-                                            schema_search_focused = false;
-                                            let path_str = sqeel_core::schema::path_to_string(
-                                                &filtered[idx],
+                                            schema_search.cursor = idx;
+                                            schema_search.focused = false;
+                                            let path_str = schema::path_to_string(
+                                                &filtered[idx].node_path,
                                                 &s.schema_nodes,
                                             );
                                             s.restore_schema_cursor_by_path(&path_str);
@@ -468,8 +480,15 @@ async fn run_loop(
                             s.focus = pane;
                             match pane {
                                 Focus::Schema => {
-                                    for _ in 0..mouse_scroll_lines {
-                                        s.schema_cursor_down();
+                                    schema_search.focused = false;
+                                    if schema_search.is_filtering() {
+                                        for _ in 0..mouse_scroll_lines {
+                                            schema_search.cursor_down(last_draw_areas.schema_list_count);
+                                        }
+                                    } else {
+                                        for _ in 0..mouse_scroll_lines {
+                                            s.schema_cursor_down();
+                                        }
                                     }
                                 }
                                 Focus::Results => {
@@ -492,8 +511,15 @@ async fn run_loop(
                             s.focus = pane;
                             match pane {
                                 Focus::Schema => {
-                                    for _ in 0..mouse_scroll_lines {
-                                        s.schema_cursor_up();
+                                    schema_search.focused = false;
+                                    if schema_search.is_filtering() {
+                                        for _ in 0..mouse_scroll_lines {
+                                            schema_search.cursor_up();
+                                        }
+                                    } else {
+                                        for _ in 0..mouse_scroll_lines {
+                                            s.schema_cursor_up();
+                                        }
                                     }
                                 }
                                 Focus::Results => {
@@ -562,53 +588,33 @@ async fn run_loop(
                 }
 
                 // ── Schema search box (typing mode) ─────────────────────────────
-                if schema_search_focused {
+                if schema_search.focused {
                     match (key.modifiers, key.code) {
-                        (KeyModifiers::NONE, KeyCode::Esc) => {
-                            schema_search = None;
-                            schema_search_focused = false;
-                            schema_search_cursor = 0;
-                        }
-                        (KeyModifiers::NONE, KeyCode::Backspace) => {
-                            if let Some(ref mut q) = schema_search {
-                                q.pop();
-                                schema_search_cursor = 0;
-                            }
-                        }
+                        (KeyModifiers::NONE, KeyCode::Esc) => schema_search.clear(),
+                        (KeyModifiers::NONE, KeyCode::Backspace) => schema_search.pop(),
                         (KeyModifiers::NONE, KeyCode::Enter) => {
                             // Keep filter active, switch to list navigation mode.
-                            schema_search_focused = false;
+                            schema_search.focused = false;
                         }
                         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
-                            if let Some(ref mut q) = schema_search {
-                                q.push(c);
-                                schema_search_cursor = 0;
-                            }
+                            schema_search.push(c);
                         }
                         // ctrl+hjkl: dismiss search and move focus.
                         (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
-                            schema_search = None;
-                            schema_search_focused = false;
+                            schema_search.clear();
                             tmux_navigate('L');
                         }
-                        (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                            schema_search = None;
-                            schema_search_focused = false;
+                        (KeyModifiers::CONTROL, KeyCode::Char('l' | 'k')) => {
+                            schema_search.clear();
                             state.lock().unwrap().focus = Focus::Editor;
                         }
                         (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
-                            schema_search = None;
-                            schema_search_focused = false;
+                            schema_search.clear();
                             if show_results {
                                 state.lock().unwrap().focus = Focus::Results;
                             } else {
                                 tmux_navigate('D');
                             }
-                        }
-                        (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-                            schema_search = None;
-                            schema_search_focused = false;
-                            state.lock().unwrap().focus = Focus::Editor;
                         }
                         _ => {}
                     }
@@ -616,21 +622,17 @@ async fn run_loop(
                 }
 
                 // ── Schema filter navigation (filter active, box unfocused) ───────
-                if schema_search.as_deref().is_some_and(|q| !q.is_empty()) && focus == Focus::Schema {
+                if schema_search.is_filtering() && focus == Focus::Schema {
                     match (key.modifiers, key.code) {
-                        (KeyModifiers::NONE, KeyCode::Esc) => {
-                            schema_search = None;
-                            schema_search_cursor = 0;
-                        }
+                        (KeyModifiers::NONE, KeyCode::Esc) => schema_search.clear(),
                         (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
-                            let max = last_draw_areas.schema_list_count.saturating_sub(1);
-                            schema_search_cursor = (schema_search_cursor + 1).min(max);
+                            schema_search.cursor_down(last_draw_areas.schema_list_count);
                         }
                         (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up) => {
-                            schema_search_cursor = schema_search_cursor.saturating_sub(1);
+                            schema_search.cursor_up();
                         }
                         (KeyModifiers::NONE, KeyCode::Char('/')) => {
-                            schema_search_focused = true;
+                            schema_search.focused = true;
                         }
                         _ => {}
                     }
@@ -868,11 +870,7 @@ async fn run_loop(
                     }
                     // Schema search
                     (KeyModifiers::NONE, KeyCode::Char('/')) if focus == Focus::Schema => {
-                        if schema_search.is_none() {
-                            schema_search = Some(String::new());
-                            schema_search_cursor = 0;
-                        }
-                        schema_search_focused = true;
+                        schema_search.start();
                     }
                     // Results pane navigation
                     (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Results => {
@@ -1058,9 +1056,7 @@ fn draw(
     editor: &mut Editor,
     tick: u32,
     command_input: Option<&str>,
-    schema_search: Option<&str>,
-    schema_search_focused: bool,
-    schema_search_cursor: usize,
+    schema_search: &SchemaSearch,
     editor_search: Option<&str>,
     last_editor_search: Option<&str>,
     toast: Option<&str>,
@@ -1104,16 +1100,7 @@ fn draw(
     // Schema panel
     let (schema_list_area, schema_list_offset, schema_list_count, schema_list_filtered) =
         if state.sidebar_visible {
-            draw_schema(
-                f,
-                state,
-                outer[0],
-                schema_focused,
-                tick,
-                schema_search,
-                schema_search_focused,
-                schema_search_cursor,
-            )
+            draw_schema(f, state, outer[0], schema_focused, tick, schema_search)
         } else {
             (Rect::default(), 0, 0, false)
         };
@@ -1441,10 +1428,10 @@ fn draw_schema(
     area: Rect,
     focused: bool,
     tick: u32,
-    search: Option<&str>,
-    searching: bool,
-    search_cursor: usize,
+    search: &SchemaSearch,
 ) -> (Rect, usize, usize, bool) {
+    let searching = search.focused;
+    let search_cursor = search.cursor;
     const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
     let status = if state.schema_loading {
         SPINNER[(tick as usize) % SPINNER.len()]
@@ -1480,7 +1467,7 @@ fn draw_schema(
         .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(inner);
 
-    let query = search.unwrap_or("");
+    let query = search.query().unwrap_or("");
     let has_filter = !query.is_empty();
     let input_text = if searching {
         format!("{query}▌")
@@ -1508,41 +1495,10 @@ fn draw_schema(
         height: chunks[1].height,
     };
 
-    let all_items = if has_filter {
-        state.all_schema_items()
-    } else {
-        state.visible_schema_items()
-    };
     let items: Vec<&SchemaTreeItem> = if has_filter {
-        let q = query.to_lowercase();
-        // Collect indices of items whose name matches the query.
-        let matched: std::collections::HashSet<usize> = all_items
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, item)| {
-                let name = item.label.trim().to_lowercase();
-                let mut chars = name.chars();
-                if q.chars().all(|qc| chars.any(|lc| lc == qc)) {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // Build the set of paths that must be shown: matched + all their ancestors.
-        let mut needed: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
-        for &idx in &matched {
-            let path = &all_items[idx].node_path;
-            for len in 1..=path.len() {
-                needed.insert(path[..len].to_vec());
-            }
-        }
-        all_items
-            .iter()
-            .filter(|item| needed.contains(&item.node_path))
-            .collect()
+        schema::filter_items(state.all_schema_items(), query)
     } else {
-        all_items.iter().collect()
+        state.visible_schema_items().iter().collect()
     };
 
     let item_count = items.len();

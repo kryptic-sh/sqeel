@@ -170,6 +170,27 @@ fn flatten_nodes(
     }
 }
 
+/// Subsequence (fuzzy) match: every char of `query` appears in `label` in order.
+/// `query` must already be lowercase; `label` gets trimmed + lowered here.
+pub fn label_matches(label: &str, query_lower: &str) -> bool {
+    let name = label.trim().to_lowercase();
+    let mut chars = name.chars();
+    query_lower.chars().all(|qc| chars.any(|lc| lc == qc))
+}
+
+/// Filter `all` to items whose label fuzzy-matches `query`, including all ancestors
+/// of matches so the tree stays navigable. Returns items in original order.
+pub fn filter_items<'a>(all: &'a [SchemaTreeItem], query: &str) -> Vec<&'a SchemaTreeItem> {
+    let q = query.to_lowercase();
+    let mut needed: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
+    for item in all.iter().filter(|it| label_matches(&it.label, &q)) {
+        for len in 1..=item.node_path.len() {
+            needed.insert(item.node_path[..len].to_vec());
+        }
+    }
+    all.iter().filter(|it| needed.contains(&it.node_path)).collect()
+}
+
 /// Copy `expanded` flags from `old` into `new` by matching node names at each level.
 /// Called before replacing schema nodes on a background refresh so the user's
 /// open/closed state is preserved.
@@ -419,6 +440,23 @@ mod tests {
         toggle_node(&mut tree, &[0]); // collapse
         let items = flatten_tree(&tree);
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn filter_items_includes_ancestors() {
+        let all = flatten_all(&sample_tree());
+        let filtered = filter_items(&all, "id");
+        // Match on "id" column must pull in mydb + users ancestors.
+        assert_eq!(filtered.len(), 3);
+        assert!(filtered[0].label.contains("mydb"));
+        assert!(filtered[1].label.contains("users"));
+        assert!(filtered[2].label.contains("id"));
+    }
+
+    #[test]
+    fn filter_items_empty_on_no_match() {
+        let all = flatten_all(&sample_tree());
+        assert!(filter_items(&all, "zzz").is_empty());
     }
 
     #[test]
