@@ -2521,7 +2521,11 @@ fn draw_results(
                 let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
                 for (i, c) in r.columns.iter().enumerate() {
                     let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
-                    spans.push(Span::styled(format!("{:<w$}", c, w = w), header_style));
+                    let inner = w.saturating_sub(1);
+                    spans.push(Span::styled(
+                        format!(" {:<inner$}", c, inner = inner),
+                        header_style,
+                    ));
                     if i + 1 < r.columns.len() {
                         spans.push(Span::styled("│".to_string(), sep_style));
                     }
@@ -2533,8 +2537,9 @@ fn draw_results(
                 let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
                 for i in 0..r.columns.len() {
                     let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
+                    let inner = w.saturating_sub(1);
                     let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
-                    spans.push(Span::raw(format!("{:<w$}", cell, w = w)));
+                    spans.push(Span::raw(format!(" {:<inner$}", cell, inner = inner)));
                     if i + 1 < r.columns.len() {
                         spans.push(Span::styled("│".to_string(), sep_style));
                     }
