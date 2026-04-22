@@ -1,6 +1,6 @@
 use crate::schema::SchemaNode;
 use crate::state::QueryResult;
-use sqlx::{Column, Row, mysql::MySqlPool, postgres::PgPool, sqlite::SqlitePool};
+use sqlx::{Column, Row, TypeInfo, mysql::MySqlPool, postgres::PgPool, sqlite::SqlitePool};
 
 /// Per-engine connection pool. Sqeel dispatches typed queries through the
 /// matching variant so each engine can decode its native column types
@@ -334,11 +334,78 @@ fn decode_mysql(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
     if raw_is_null!(row, idx) {
         return "NULL".into();
     }
+    let ty = row.columns()[idx].type_info().name().to_ascii_uppercase();
+    match ty.as_str() {
+        "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" => {
+            if let Ok(v) = row.try_get::<i64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TINYINT UNSIGNED" | "SMALLINT UNSIGNED" | "MEDIUMINT UNSIGNED" | "INT UNSIGNED"
+        | "BIGINT UNSIGNED" => {
+            if let Ok(v) = row.try_get::<u64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "BOOLEAN" => {
+            if let Ok(v) = row.try_get::<bool, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "FLOAT" | "DOUBLE" => {
+            if let Ok(v) = row.try_get::<f64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "DECIMAL" | "NUMERIC" => {
+            if let Ok(v) = row.try_get::<bigdecimal::BigDecimal, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "DATE" => {
+            if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TIME" => {
+            if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "DATETIME" => {
+            if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TIMESTAMP" => {
+            if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx) {
+                return v.to_rfc3339();
+            }
+            if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "JSON" => {
+            if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" => {
+            if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
+                return bytes_to_display(&v);
+            }
+        }
+        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
+            if let Ok(v) = row.try_get::<String, _>(idx) {
+                return v;
+            }
+        }
+        _ => {}
+    }
+    // Fallback probe ladder — bool moved after numerics so integer columns
+    // with unknown type names don't get stringified as true/false.
     if let Ok(v) = row.try_get::<String, _>(idx) {
         return v;
-    }
-    if let Ok(v) = row.try_get::<bool, _>(idx) {
-        return v.to_string();
     }
     if let Ok(v) = row.try_get::<i64, _>(idx) {
         return v.to_string();
@@ -367,6 +434,9 @@ fn decode_mysql(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
     if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
         return v.to_string();
     }
+    if let Ok(v) = row.try_get::<bool, _>(idx) {
+        return v.to_string();
+    }
     if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
         return bytes_to_display(&v);
     }
@@ -377,11 +447,88 @@ fn decode_pg(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     if raw_is_null!(row, idx) {
         return "NULL".into();
     }
+    let ty = row.columns()[idx].type_info().name().to_ascii_uppercase();
+    match ty.as_str() {
+        "BOOL" => {
+            if let Ok(v) = row.try_get::<bool, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "INT2" => {
+            if let Ok(v) = row.try_get::<i16, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "INT4" => {
+            if let Ok(v) = row.try_get::<i32, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "INT8" => {
+            if let Ok(v) = row.try_get::<i64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "FLOAT4" => {
+            if let Ok(v) = row.try_get::<f32, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "FLOAT8" => {
+            if let Ok(v) = row.try_get::<f64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "NUMERIC" => {
+            if let Ok(v) = row.try_get::<bigdecimal::BigDecimal, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "UUID" => {
+            if let Ok(v) = row.try_get::<uuid::Uuid, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "DATE" => {
+            if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TIME" => {
+            if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TIMESTAMP" => {
+            if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TIMESTAMPTZ" => {
+            if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx) {
+                return v.to_rfc3339();
+            }
+        }
+        "JSON" | "JSONB" => {
+            if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "BYTEA" => {
+            if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
+                return bytes_to_display(&v);
+            }
+        }
+        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "CITEXT" => {
+            if let Ok(v) = row.try_get::<String, _>(idx) {
+                return v;
+            }
+        }
+        _ => {}
+    }
+    // Fallback probe ladder — bool moved after numerics.
     if let Ok(v) = row.try_get::<String, _>(idx) {
         return v;
-    }
-    if let Ok(v) = row.try_get::<bool, _>(idx) {
-        return v.to_string();
     }
     if let Ok(v) = row.try_get::<i64, _>(idx) {
         return v.to_string();
@@ -419,6 +566,9 @@ fn decode_pg(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
         return v.to_string();
     }
+    if let Ok(v) = row.try_get::<bool, _>(idx) {
+        return v.to_string();
+    }
     if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
         return bytes_to_display(&v);
     }
@@ -428,6 +578,35 @@ fn decode_pg(row: &sqlx::postgres::PgRow, idx: usize) -> String {
 fn decode_sqlite(row: &sqlx::sqlite::SqliteRow, idx: usize) -> String {
     if raw_is_null!(row, idx) {
         return "NULL".into();
+    }
+    let ty = row.columns()[idx].type_info().name().to_ascii_uppercase();
+    match ty.as_str() {
+        "INTEGER" => {
+            if let Ok(v) = row.try_get::<i64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "REAL" => {
+            if let Ok(v) = row.try_get::<f64, _>(idx) {
+                return v.to_string();
+            }
+        }
+        "TEXT" => {
+            if let Ok(v) = row.try_get::<String, _>(idx) {
+                return v;
+            }
+        }
+        "BLOB" => {
+            if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
+                return bytes_to_display(&v);
+            }
+        }
+        "BOOLEAN" => {
+            if let Ok(v) = row.try_get::<bool, _>(idx) {
+                return v.to_string();
+            }
+        }
+        _ => {}
     }
     if let Ok(v) = row.try_get::<String, _>(idx) {
         return v;
