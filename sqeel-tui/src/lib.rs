@@ -2532,13 +2532,13 @@ fn draw_results(
             };
             let title = if state.result_tabs.len() > 1 {
                 format!(
-                    "Results ({}/{} • {} rows)",
+                    " Results ({}/{} • {} rows)",
                     state.active_result_tab + 1,
                     state.result_tabs.len(),
                     r.rows.len()
                 )
             } else {
-                format!("Results ({} rows)", r.rows.len())
+                format!(" Results ({} rows)", r.rows.len())
             };
             let col_start = state.results_col_scroll();
             let sep_style = Style::default().fg(Color::DarkGray);
@@ -2767,7 +2767,7 @@ fn highlight_query_line(query: &str) -> Line<'static> {
     }
 
     if query.is_empty() {
-        return Line::from(Vec::<Span<'static>>::new());
+        return Line::from(vec![Span::raw(" ")]);
     }
 
     let spans = HL.with(|cell| {
@@ -2783,7 +2783,7 @@ fn highlight_query_line(query: &str) -> Line<'static> {
     });
 
     let bytes = query.as_bytes();
-    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut out: Vec<Span<'static>> = vec![Span::raw(" ")];
     let plain = Style::default().fg(Color::Gray);
     let mut cursor = 0usize;
     let flatten = |b: &[u8]| -> String {
