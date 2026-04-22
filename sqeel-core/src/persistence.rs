@@ -188,7 +188,8 @@ fn unix_timestamp() -> u64 {
 }
 
 /// Persist a successful query result under the connection's results subdir.
-pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow::Result<()> {
+/// Returns the filename the result was saved as.
+pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow::Result<String> {
     let dir =
         results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
@@ -201,7 +202,17 @@ pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow
     std::fs::write(dir.join(&filename), json)?;
 
     evict_old_results_dir(&dir);
-    Ok(())
+    Ok(filename)
+}
+
+/// Load a saved result by filename from a specific connection's results subdir.
+pub fn load_result_for(conn_slug: &str, name: &str) -> anyhow::Result<QueryResult> {
+    let dir =
+        results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let content = std::fs::read_to_string(dir.join(name))?;
+    let mut result: QueryResult = serde_json::from_str(&content)?;
+    result.compute_col_widths();
+    Ok(result)
 }
 
 const RESULT_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60; // 30 days

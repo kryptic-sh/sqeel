@@ -5,9 +5,12 @@ use sqeel_core::{
     AppState, UiProvider,
     config::{load_connections, load_main_config, load_session_data, save_session},
     db::DbConnection,
-    persistence::{evict_old_results, load_schema_cache, sanitize_conn_slug, save_schema_cache},
+    persistence::{
+        evict_old_results, load_result_for, load_schema_cache, sanitize_conn_slug,
+        save_schema_cache,
+    },
     schema::SchemaNode,
-    state::{QueryRequest, ResultsPane},
+    state::{QueryRequest, ResultsPane, ResultsTab},
 };
 use sqeel_tui::TuiProvider;
 
@@ -46,20 +49,27 @@ fn main() -> anyhow::Result<()> {
         s.focus = session.focus;
         s.sidebar_visible = session.sidebar_visible;
         s.schema_search_query = session.schema_search.clone();
-        s.result_tabs = session
-            .result_tabs
+        let conn_for_results = args
+            .connection
             .clone()
-            .into_iter()
-            .map(|mut t| {
-                if matches!(t.kind, sqeel_core::state::ResultsPane::Loading) {
-                    t.kind = sqeel_core::state::ResultsPane::Cancelled;
-                }
-                if let sqeel_core::state::ResultsPane::Results(ref mut r) = t.kind {
-                    r.compute_col_widths();
-                }
-                t
-            })
-            .collect();
+            .or_else(|| session.connection.clone());
+        if let Some(name) = conn_for_results {
+            let slug = sanitize_conn_slug(&name);
+            s.result_tabs = session
+                .result_tabs
+                .iter()
+                .filter_map(|r| {
+                    let qr = load_result_for(&slug, &r.filename).ok()?;
+                    Some(ResultsTab {
+                        query: r.query.clone(),
+                        kind: ResultsPane::Results(qr),
+                        scroll: r.scroll,
+                        col_scroll: r.col_scroll,
+                        saved_filename: Some(r.filename.clone()),
+                    })
+                })
+                .collect();
+        }
         s.active_result_tab = session
             .active_result_tab
             .min(s.result_tabs.len().saturating_sub(1));
@@ -101,7 +111,7 @@ fn main() -> anyhow::Result<()> {
         let mut last_written_search: Option<String> = None;
         let mut last_written_tab_cursors: Vec<sqeel_core::config::TabCursor> = Vec::new();
         let mut last_written_active_tab: usize = 0;
-        let mut last_written_result_tabs: Vec<sqeel_core::state::ResultsTab> = Vec::new();
+        let mut last_written_result_tabs: Vec<sqeel_core::config::SavedResultRef> = Vec::new();
         let mut last_written_active_result_tab: usize = 0;
         let mut dirty = false;
         let mut pending_conn: Option<String> = None;
@@ -113,7 +123,7 @@ fn main() -> anyhow::Result<()> {
         let mut pending_search: Option<String> = None;
         let mut pending_tab_cursors: Vec<sqeel_core::config::TabCursor> = Vec::new();
         let mut pending_active_tab: usize = 0;
-        let mut pending_result_tabs: Vec<sqeel_core::state::ResultsTab> = Vec::new();
+        let mut pending_result_tabs: Vec<sqeel_core::config::SavedResultRef> = Vec::new();
         let mut pending_active_result_tab: usize = 0;
         let mut last_write = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(2))
@@ -141,7 +151,22 @@ fn main() -> anyhow::Result<()> {
                 .map(|(name, row, col)| sqeel_core::config::TabCursor { name, row, col })
                 .collect();
             let active_tab = s.active_tab;
-            let result_tabs = s.result_tabs.clone();
+            let result_tabs: Vec<sqeel_core::config::SavedResultRef> = s
+                .result_tabs
+                .iter()
+                .filter_map(|t| {
+                    let filename = t.saved_filename.clone()?;
+                    if !matches!(t.kind, sqeel_core::state::ResultsPane::Results(_)) {
+                        return None;
+                    }
+                    Some(sqeel_core::config::SavedResultRef {
+                        filename,
+                        query: t.query.clone(),
+                        scroll: t.scroll,
+                        col_scroll: t.col_scroll,
+                    })
+                })
+                .collect();
             let active_result_tab = s.active_result_tab;
             drop(s);
 
@@ -349,7 +374,22 @@ fn spawn_executor(
             .map(|(name, row, col)| sqeel_core::config::TabCursor { name, row, col })
             .collect();
         let active_tab = s.active_tab;
-        let result_tabs = s.result_tabs.clone();
+        let result_tabs: Vec<sqeel_core::config::SavedResultRef> = s
+            .result_tabs
+            .iter()
+            .filter_map(|t| {
+                let filename = t.saved_filename.clone()?;
+                if !matches!(t.kind, sqeel_core::state::ResultsPane::Results(_)) {
+                    return None;
+                }
+                Some(sqeel_core::config::SavedResultRef {
+                    filename,
+                    query: t.query.clone(),
+                    scroll: t.scroll,
+                    col_scroll: t.col_scroll,
+                })
+            })
+            .collect();
         let active_result_tab = s.active_result_tab;
         let _ = save_schema_cache(&col_schema_url, &nodes);
         if let Some(ref name) = s.active_connection.clone() {
@@ -449,10 +489,13 @@ fn spawn_executor(
                     s.batch_in_progress = false;
                     match result {
                         Ok(mut r) => {
-                            s.persist_result(&query, &r);
+                            let filename = s.persist_result(&query, &r);
                             s.push_history(&query);
                             r.compute_col_widths();
                             s.finish_result_tab(tab_idx, ResultsPane::Results(r));
+                            if let Some(tab) = s.result_tabs.get_mut(tab_idx) {
+                                tab.saved_filename = filename;
+                            }
                         }
                         Err(e) => {
                             s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
@@ -479,10 +522,13 @@ fn spawn_executor(
                             let mut s = state.lock().unwrap();
                             match result {
                                 Ok(mut r) => {
-                                    s.persist_result(&query, &r);
+                                    let filename = s.persist_result(&query, &r);
                                     s.push_history(&query);
                                     r.compute_col_widths();
                                     s.finish_result_tab(tab_idx, ResultsPane::Results(r));
+                                    if let Some(tab) = s.result_tabs.get_mut(tab_idx) {
+                                        tab.saved_filename = filename;
+                                    }
                                 }
                                 Err(e) => {
                                     s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));

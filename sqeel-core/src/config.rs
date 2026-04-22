@@ -60,6 +60,19 @@ pub struct TabCursor {
     pub col: usize,
 }
 
+/// Lightweight pointer persisted in session.toml for a single results tab.
+/// Points at a JSON file under `~/.local/share/sqeel/results/<conn>/`.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct SavedResultRef {
+    pub filename: String,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub scroll: usize,
+    #[serde(default)]
+    pub col_scroll: usize,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct Session {
     connection: String,
@@ -80,7 +93,7 @@ struct Session {
     #[serde(default)]
     active_tab: usize,
     #[serde(default)]
-    result_tabs: Vec<crate::state::ResultsTab>,
+    result_tabs: Vec<SavedResultRef>,
     #[serde(default)]
     active_result_tab: usize,
 }
@@ -105,7 +118,7 @@ pub struct SessionData {
     /// Per-tab editor cursor positions, keyed by tab name.
     pub tab_cursors: Vec<TabCursor>,
     pub active_tab: usize,
-    pub result_tabs: Vec<crate::state::ResultsTab>,
+    pub result_tabs: Vec<SavedResultRef>,
     pub active_result_tab: usize,
 }
 
@@ -197,7 +210,7 @@ pub fn save_session(
     schema_search: Option<String>,
     tab_cursors: Vec<TabCursor>,
     active_tab: usize,
-    result_tabs: Vec<crate::state::ResultsTab>,
+    result_tabs: Vec<SavedResultRef>,
     active_result_tab: usize,
 ) -> anyhow::Result<()> {
     let dir = config_dir().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;

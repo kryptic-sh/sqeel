@@ -98,7 +98,7 @@ impl QueryResult {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ResultsPane {
     #[default]
     Empty,
@@ -110,16 +110,18 @@ pub enum ResultsPane {
 
 /// One entry in the results pane's tab bar — the query that produced it and
 /// either a result set, an error, or a loading placeholder.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResultsTab {
     pub query: String,
     pub kind: ResultsPane,
     /// Per-tab vertical scroll position; preserved across tab switches.
-    #[serde(default)]
     pub scroll: usize,
     /// Per-tab horizontal column scroll position.
-    #[serde(default)]
     pub col_scroll: usize,
+    /// On-disk filename under `~/.local/share/sqeel/results/<conn>/` once a
+    /// successful result is persisted. `None` for error/loading/cancelled tabs
+    /// or until the result is saved.
+    pub saved_filename: Option<String>,
 }
 
 /// A query request sent over the executor channel — single statement or batch.
@@ -255,6 +257,7 @@ impl AppState {
             kind,
             scroll: 0,
             col_scroll: 0,
+            saved_filename: None,
         };
         self.result_tabs.push(tab);
         self.active_result_tab = self.result_tabs.len() - 1;
@@ -269,6 +272,7 @@ impl AppState {
             kind: ResultsPane::Loading,
             scroll: 0,
             col_scroll: 0,
+            saved_filename: None,
         };
         self.result_tabs.push(tab);
         let idx = self.result_tabs.len() - 1;
@@ -1086,10 +1090,12 @@ impl AppState {
     }
 
     /// Persist a successful query result to disk (errors are never stored).
-    pub fn persist_result(&self, query: &str, result: &QueryResult) {
+    /// Returns the on-disk filename on success, so the caller can record it on
+    /// the owning `ResultsTab` for session restoration.
+    pub fn persist_result(&self, query: &str, result: &QueryResult) -> Option<String> {
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
-        let _ = persistence::save_result(&slug, query, result);
+        persistence::save_result(&slug, query, result).ok()
     }
 
     /// Record a query in history (dedup consecutive identical entries, max 100).
