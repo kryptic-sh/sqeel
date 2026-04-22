@@ -2016,6 +2016,27 @@ fn extract_results_left_click(
         return None;
     }
     let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 2 } else { 0 };
+    // Shared query-row hit-test: row 3 below the tab bar is the query line
+    // for every pane that shows it (Results/Error/Cancelled when a query is
+    // attached). Clicking it copies the query verbatim.
+    let query_text = state
+        .active_result()
+        .map(|t| t.query.clone())
+        .unwrap_or_default();
+    let has_query = !query_text.trim().is_empty();
+    let pane_has_query_row = matches!(
+        state.results(),
+        sqeel_core::state::ResultsPane::Results(_)
+            | sqeel_core::state::ResultsPane::Cancelled
+            | sqeel_core::state::ResultsPane::Error(_)
+    ) && has_query;
+    if pane_has_query_row
+        && y == results_area.y + tab_bar_rows + 3
+        && x >= results_area.x
+        && x < results_area.x + results_area.width
+    {
+        return Some((query_text, "Query"));
+    }
     match state.results() {
         sqeel_core::state::ResultsPane::Results(r) => {
             let body_y = results_area.y + tab_bar_rows + 7;
