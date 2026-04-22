@@ -2684,6 +2684,10 @@ fn draw_results(
                 " Skipped (previous query failed)",
                 Style::default().fg(Color::DarkGray),
             ))];
+            let has_query = state
+                .active_result()
+                .map(|t| !t.query.trim().is_empty())
+                .unwrap_or(false);
             render_framed_pane(
                 f,
                 content_area,
@@ -2691,7 +2695,7 @@ fn draw_results(
                 Style::default().fg(Color::DarkGray),
                 state,
                 body,
-                false,
+                has_query,
             );
         }
         ResultsPane::Empty => unreachable!(),
