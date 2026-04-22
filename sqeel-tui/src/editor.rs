@@ -130,8 +130,12 @@ impl<'a> Editor<'a> {
         if lines.is_empty() {
             lines.push(String::new());
         }
+        let carried_yank = self.textarea.yank_text();
         self.textarea = TextArea::new(lines);
         self.textarea.set_max_histories(0);
+        if !carried_yank.is_empty() {
+            self.textarea.set_yank_text(carried_yank);
+        }
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.content_dirty = true;

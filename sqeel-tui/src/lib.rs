@@ -399,6 +399,7 @@ async fn run_loop(
             s.schema_search_query = schema_search.query().map(|q| q.to_string());
             if let Some(ref c) = content {
                 s.editor_content = c.clone();
+                s.editor_content_synced = true;
                 editor_dirty = true;
             }
             // Apply any completed highlight results from the background thread.
@@ -612,6 +613,12 @@ async fn run_loop(
                                 let content = {
                                     let mut s = state.lock().unwrap();
                                     s.focus = Focus::Editor;
+                                    if editor_dirty {
+                                        s.editor_content = Arc::new(editor.content());
+                                        s.autosave();
+                                        editor_dirty = false;
+                                        last_save_time = Instant::now();
+                                    }
                                     s.switch_to_tab(idx);
                                     s.tab_content_pending.take()
                                 };
@@ -1017,6 +1024,12 @@ async fn run_loop(
                             if let Some(name) = matched.get(picker.cursor) {
                                 let mut s = state.lock().unwrap();
                                 if let Some(idx) = s.tabs.iter().position(|t| &t.name == name) {
+                                    if editor_dirty {
+                                        s.editor_content = Arc::new(editor.content());
+                                        s.autosave();
+                                        editor_dirty = false;
+                                        last_save_time = Instant::now();
+                                    }
                                     s.switch_to_tab(idx);
                                 }
                             }
@@ -1265,11 +1278,23 @@ async fn run_loop(
                     // Shift+H / Shift+L: prev / next tab. Active outside the
                     // editor or when in Vim Normal mode so it doesn't shadow
                     // typing in Insert mode.
+                    (KeyModifiers::SHIFT, KeyCode::Char('L')) if focus == Focus::Results => {
+                        state.lock().unwrap().scroll_results_right();
+                    }
+                    (KeyModifiers::SHIFT, KeyCode::Char('H')) if focus == Focus::Results => {
+                        state.lock().unwrap().scroll_results_left();
+                    }
                     (KeyModifiers::SHIFT, KeyCode::Char('L'))
                         if focus != Focus::Editor || vim_mode == VimMode::Normal =>
                     {
                         let content = {
                             let mut s = state.lock().unwrap();
+                            if editor_dirty {
+                                s.editor_content = Arc::new(editor.content());
+                                s.autosave();
+                                editor_dirty = false;
+                                last_save_time = Instant::now();
+                            }
                             s.next_tab();
                             s.tab_content_pending.take()
                         };
@@ -1283,6 +1308,12 @@ async fn run_loop(
                     {
                         let content = {
                             let mut s = state.lock().unwrap();
+                            if editor_dirty {
+                                s.editor_content = Arc::new(editor.content());
+                                s.autosave();
+                                editor_dirty = false;
+                                last_save_time = Instant::now();
+                            }
                             s.prev_tab();
                             s.tab_content_pending.take()
                         };
@@ -1505,6 +1536,11 @@ async fn run_loop(
             }
             _ => {} // FocusGained, FocusLost, Paste — ignore
         } // match event
+    }
+    {
+        let mut s = state.lock().unwrap();
+        s.editor_content = Arc::new(editor.content());
+        s.autosave_all();
     }
     Ok(())
 }

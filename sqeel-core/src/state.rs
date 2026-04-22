@@ -132,6 +132,10 @@ pub enum QueryRequest {
 #[derive(Default)]
 pub struct AppState {
     pub editor_content: Arc<String>,
+    /// True once the TUI has pushed the live editor buffer into
+    /// `editor_content`. Before this, `editor_content` holds the default empty
+    /// string and must not be mistaken for user-authored content.
+    pub editor_content_synced: bool,
     pub tabs: Vec<TabEntry>,
     pub active_tab: usize,
     /// Set when the active tab changes; TUI drains this to reload the editor.
@@ -873,8 +877,13 @@ impl AppState {
         if idx >= self.tabs.len() {
             return;
         }
-        // Persist current tab content in memory before leaving
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+        // Persist current tab content in memory before leaving. Skip when the
+        // TUI hasn't synced the live editor into `editor_content` yet —
+        // otherwise we'd clobber the freshly loaded tab content with the
+        // default empty buffer during startup restoration.
+        if self.editor_content_synced
+            && let Some(tab) = self.tabs.get_mut(self.active_tab)
+        {
             tab.content = Some((*self.editor_content).clone());
         }
         self.active_tab = idx;
@@ -1034,6 +1043,9 @@ impl AppState {
 
     /// Auto-save editor content to the active tab on disk.
     pub fn autosave(&mut self) {
+        if !self.editor_content_synced {
+            return;
+        }
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         if self.tabs.is_empty() {
@@ -1049,6 +1061,25 @@ impl AppState {
             tab.content = Some((*self.editor_content).clone());
             tab.last_accessed = Some(Instant::now());
             let _ = persistence::save_query(&slug, &tab.name, &self.editor_content);
+        }
+    }
+
+    /// Persist every open tab's cached content to disk. The active tab is
+    /// written from `editor_content`; the rest from each tab's stored content.
+    /// Intended for shutdown so no in-memory edits are lost.
+    pub fn autosave_all(&mut self) {
+        let slug =
+            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            let content = if i == self.active_tab && self.editor_content_synced {
+                (*self.editor_content).clone()
+            } else if let Some(c) = &tab.content {
+                c.clone()
+            } else {
+                continue;
+            };
+            tab.content = Some(content.clone());
+            let _ = persistence::save_query(&slug, &tab.name, &content);
         }
     }
 
