@@ -66,6 +66,13 @@ lsp_binary = "sqls"
 
 # Lines scrolled per mouse wheel tick (all panes)
 mouse_scroll_lines = 3
+
+# Leader key for chord shortcuts (e.g. <leader>e toggles the schema sidebar).
+# Single character; " " for Space.
+leader_key = " "
+
+# Stop a Ctrl+Shift+Enter batch on the first query error.
+stop_on_error = true
 ```
 
 ### Connections — `~/.config/sqeel/conns/<name>.toml`
@@ -88,12 +95,24 @@ Press `?` in normal mode to open the help overlay.
 
 ### Global
 
-| Key          | Action                                |
-| ------------ | ------------------------------------- |
-| `Ctrl+Enter` | Execute query                         |
-| `Ctrl+W`     | Connection switcher                   |
-| `?`          | Help overlay                          |
-| `q`          | Quit (normal mode / schema / results) |
+| Key                | Action                          |
+| ------------------ | ------------------------------- |
+| `?`                | Open help overlay (normal mode) |
+| `Ctrl+Enter`       | Run statement under cursor      |
+| `Ctrl+Shift+Enter` | Run all statements in file      |
+| `:q`               | Quit                            |
+| `Esc Esc`          | Dismiss all toasts              |
+
+### Leader (default `Space` — config: `editor.leader_key`)
+
+| Key                | Action                       |
+| ------------------ | ---------------------------- |
+| `<leader>e`        | Toggle schema sidebar        |
+| `<leader>c`        | Connection switcher          |
+| `<leader>n`        | New scratch tab              |
+| `<leader>r`        | Rename current tab           |
+| `<leader>d`        | Delete current tab (confirm) |
+| `<leader><leader>` | Fuzzy file picker            |
 
 ### Pane Focus
 
@@ -106,12 +125,11 @@ Press `?` in normal mode to open the help overlay.
 
 ### Tabs
 
-| Key            | Action          |
-| -------------- | --------------- |
-| `Ctrl+T`       | New scratch tab |
-| `Ctrl+Right`   | Next tab        |
-| `Ctrl+Left`    | Prev tab        |
-| Click tab name | Switch to tab   |
+| Key            | Action        |
+| -------------- | ------------- |
+| `Shift+L`      | Next tab      |
+| `Shift+H`      | Prev tab      |
+| Click tab name | Switch to tab |
 
 ### Editor — Vim
 
@@ -134,10 +152,13 @@ Press `?` in normal mode to open the help overlay.
 
 ### Results Pane
 
-| Key            | Action           |
-| -------------- | ---------------- |
-| `j` / `k`      | Scroll down / up |
-| `q` / `Ctrl+C` | Dismiss results  |
+| Key                   | Action                                           |
+| --------------------- | ------------------------------------------------ |
+| `j` / `k`             | Scroll down / up                                 |
+| `h` / `l`             | Scroll left / right                              |
+| `Shift+H` / `Shift+L` | Prev / next result tab                           |
+| `Enter`               | Jump editor cursor to error line:col (error tab) |
+| `q` / `Ctrl+C`        | Dismiss results                                  |
 
 ### Connection Switcher
 
@@ -149,6 +170,14 @@ Press `?` in normal mode to open the help overlay.
 | `e`       | Edit connection   |
 | `d`       | Delete connection |
 | `Esc`     | Close             |
+
+### Add / Edit Connection
+
+| Key     | Action                  |
+| ------- | ----------------------- |
+| `Tab`   | Switch Name / URL field |
+| `Enter` | Save                    |
+| `Esc`   | Cancel                  |
 
 ## Data
 
