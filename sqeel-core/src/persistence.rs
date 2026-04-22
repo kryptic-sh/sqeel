@@ -200,12 +200,38 @@ pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow
     let json = serde_json::to_string_pretty(result)?;
     std::fs::write(dir.join(&filename), json)?;
 
-    evict_oldest_results(&dir);
+    evict_old_results_dir(&dir);
     Ok(())
 }
 
-fn evict_oldest_results(_dir: &std::path::Path) {
-    // No eviction — results accumulate until user clears them.
+const RESULT_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
+
+/// Delete result files older than 30 days for the given connection.
+pub fn evict_old_results(conn_slug: &str) {
+    let Some(dir) = results_dir_for(conn_slug) else {
+        return;
+    };
+    evict_old_results_dir(&dir);
+}
+
+fn evict_old_results_dir(dir: &std::path::Path) {
+    let cutoff = unix_timestamp().saturating_sub(RESULT_MAX_AGE_SECS);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.ends_with(".json") {
+            continue;
+        }
+        if let Some(ts_str) = name_str.split('_').next()
+            && let Ok(ts) = ts_str.parse::<u64>()
+            && ts < cutoff
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// List saved result filenames, newest first.
@@ -310,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn results_no_eviction() {
+    fn results_evict_older_than_30_days() {
         let tmp = temp_data_dir();
         let dir = tmp.path().to_path_buf();
         let result = QueryResult {
@@ -318,16 +344,28 @@ mod tests {
             rows: vec![vec!["1".into()]],
             col_widths: vec![],
         };
-        // Save 20 results — none should be evicted
-        for i in 0..20u64 {
-            let r = dir.join("results");
-            fs::create_dir_all(&r).unwrap();
-            let filename = format!("{}_{}.json", i, i);
+        let r = dir.join("results");
+        fs::create_dir_all(&r).unwrap();
+
+        let now = unix_timestamp();
+        let thirty_one_days_ago = now - 31 * 24 * 60 * 60;
+        let yesterday = now - 24 * 60 * 60;
+
+        // Write 5 old files (should be evicted)
+        for i in 0..5u64 {
+            let filename = format!("{}_{}.json", thirty_one_days_ago + i, i);
             let json = serde_json::to_string_pretty(&result).unwrap();
             fs::write(r.join(&filename), json).unwrap();
-            evict_oldest_results(&r);
         }
-        assert_eq!(count_results(&dir), 20);
+        // Write 3 recent files (should survive)
+        for i in 0..3u64 {
+            let filename = format!("{}_{}.json", yesterday + i, i + 100);
+            let json = serde_json::to_string_pretty(&result).unwrap();
+            fs::write(r.join(&filename), json).unwrap();
+        }
+
+        evict_old_results_dir(&r);
+        assert_eq!(count_results(&dir), 3);
     }
 
     #[test]

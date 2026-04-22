@@ -5,7 +5,7 @@ use sqeel_core::{
     AppState, UiProvider,
     config::{load_connections, load_main_config, load_session_data, save_session},
     db::DbConnection,
-    persistence::{load_schema_cache, sanitize_conn_slug, save_schema_cache},
+    persistence::{evict_old_results, load_schema_cache, sanitize_conn_slug, save_schema_cache},
     schema::SchemaNode,
     state::{QueryRequest, ResultsPane},
 };
@@ -243,6 +243,12 @@ fn spawn_executor(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<QueryRequest>(8);
     state.lock().unwrap().query_tx = Some(tx);
 
+    let conn_slug = {
+        let s = state.lock().unwrap();
+        let conn_name = s.active_connection.as_deref().unwrap_or("default");
+        sanitize_conn_slug(conn_name)
+    };
+
     // Show cached schema immediately with restored expansion + cursor, then refresh in background
     if let Some(cached) = load_schema_cache(&conn.url) {
         let mut s = state.lock().unwrap();
@@ -398,6 +404,11 @@ fn spawn_executor(
         while let Some(req) = rx.recv().await {
             match req {
                 QueryRequest::Single(query, tab_idx) => {
+                    // Run old-results cleanup concurrently with query execution
+                    let cleanup_slug = conn_slug.clone();
+                    tokio::spawn(async move {
+                        evict_old_results(&cleanup_slug);
+                    });
                     let result = conn.execute(&query).await;
                     let mut s = state.lock().unwrap();
                     s.batch_in_progress = false;
@@ -415,6 +426,11 @@ fn spawn_executor(
                     s.results_dirty = true;
                 }
                 QueryRequest::Batch(queries, start_idx) => {
+                    // Run old-results cleanup concurrently with batch execution
+                    let cleanup_slug = conn_slug.clone();
+                    tokio::spawn(async move {
+                        evict_old_results(&cleanup_slug);
+                    });
                     let (stop_on_error, batch_start) = {
                         let mut s = state.lock().unwrap();
                         (s.stop_on_error, s.start_batch())
