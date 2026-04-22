@@ -2016,7 +2016,7 @@ fn extract_results_left_click(
     let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 1 } else { 0 };
     match state.results() {
         sqeel_core::state::ResultsPane::Results(r) => {
-            let body_y = results_area.y + tab_bar_rows + 3;
+            let body_y = results_area.y + tab_bar_rows + 4;
             let body_x = results_area.x + 1;
             if y < body_y {
                 return None;
@@ -2093,7 +2093,7 @@ fn extract_results_row(x: u16, y: u16, areas: &DrawAreas, state: &AppState) -> O
         _ => return None,
     };
     let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 1 } else { 0 };
-    let body_y = results_area.y + tab_bar_rows + 3;
+    let body_y = results_area.y + tab_bar_rows + 4;
     if y < body_y {
         return None;
     }
@@ -2592,10 +2592,20 @@ fn draw_results(
                 .map(build_row)
                 .collect();
 
-            // Split content_area: title (1) + header (1) + hr (1) + body (rest).
+            let query_text = state
+                .active_result()
+                .map(|t| t.query.replace('\n', " "))
+                .unwrap_or_default();
+            let query_line = Line::from(vec![
+                Span::styled("› ", Style::default().fg(Color::DarkGray)),
+                Span::styled(query_text, Style::default().fg(Color::Gray)),
+            ]);
+
+            // Split content_area: title (1) + query (1) + header (1) + hr (1) + body (rest).
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
+                    Constraint::Length(1),
                     Constraint::Length(1),
                     Constraint::Length(1),
                     Constraint::Length(1),
@@ -2604,15 +2614,16 @@ fn draw_results(
                 .split(content_area);
 
             f.render_widget(Paragraph::new(title).style(title_style), chunks[0]);
+            f.render_widget(Paragraph::new(query_line), chunks[1]);
             f.render_widget(
                 Paragraph::new(build_header()).scroll((0, char_offset)),
-                chunks[1],
+                chunks[2],
             );
             let hr: String = "─".repeat(content_area.width as usize);
-            f.render_widget(Paragraph::new(hr).style(sep_style), chunks[2]);
+            f.render_widget(Paragraph::new(hr).style(sep_style), chunks[3]);
             f.render_widget(
                 Paragraph::new(body_lines).scroll((0, char_offset)),
-                chunks[3],
+                chunks[4],
             );
         }
         ResultsPane::Error(e) => {

@@ -73,6 +73,9 @@ fn main() -> anyhow::Result<()> {
         s.active_result_tab = session
             .active_result_tab
             .min(s.result_tabs.len().saturating_sub(1));
+        if !s.result_tabs.is_empty() {
+            s.editor_ratio = 0.5;
+        }
     }
     let url = if let Some(url) = args.url {
         Some(url)
