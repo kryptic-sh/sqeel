@@ -1821,10 +1821,12 @@ fn draw(
     };
     let results_tab_bar = if show_results {
         let results_area = right_chunks[1];
-        if state.result_tabs.len() > 1 && results_area.height > 1 {
+        if state.result_tabs.len() > 1 && results_area.height > 2 {
+            // Tab bar now sits beneath a 1-row separator at the top of the
+            // results pane — shift its y accordingly for click hit-testing.
             Some(Rect {
                 x: results_area.x + 1,
-                y: results_area.y,
+                y: results_area.y + 1,
                 width: results_area.width.saturating_sub(2),
                 height: 1,
             })
@@ -2013,7 +2015,7 @@ fn extract_results_left_click(
     if !results_area.contains(Position { x, y }) {
         return None;
     }
-    let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 1 } else { 0 };
+    let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 2 } else { 0 };
     match state.results() {
         sqeel_core::state::ResultsPane::Results(r) => {
             let body_y = results_area.y + tab_bar_rows + 7;
@@ -2092,7 +2094,7 @@ fn extract_results_row(x: u16, y: u16, areas: &DrawAreas, state: &AppState) -> O
         sqeel_core::state::ResultsPane::Results(r) => r,
         _ => return None,
     };
-    let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 1 } else { 0 };
+    let tab_bar_rows: u16 = if state.result_tabs.len() > 1 { 2 } else { 0 };
     let body_y = results_area.y + tab_bar_rows + 7;
     if y < body_y {
         return None;
@@ -2508,13 +2510,21 @@ fn draw_results(
         vertical: 0,
     });
 
-    // Split off a 1-row tab bar at the top when there are multiple result tabs.
-    let (tab_bar_area, content_area) = if state.result_tabs.len() > 1 && area.height > 1 {
+    // Split off a separator + 1-row tab bar at the top when there are multiple
+    // result tabs. The separator sits above the tab strip.
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let (tab_bar_area, content_area) = if state.result_tabs.len() > 1 && area.height > 2 {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
             .split(area);
-        (Some(chunks[0]), chunks[1])
+        let hr: String = "─".repeat(area.width as usize);
+        f.render_widget(Paragraph::new(hr).style(sep_style), chunks[0]);
+        (Some(chunks[1]), chunks[2])
     } else {
         (None, area)
     };
