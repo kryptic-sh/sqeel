@@ -256,6 +256,15 @@ async fn async_run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let theme_err = theme::load();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    // Inside tmux, wrap the Kitty keyboard protocol enable sequence in a DCS
+    // passthrough so the outer terminal receives it; tmux itself silently
+    // drops bare CSI > u. Requires `set -g allow-passthrough on` in tmux.
+    let in_tmux = std::env::var_os("TMUX").is_some();
+    if in_tmux {
+        use std::io::Write;
+        stdout.write_all(b"\x1bPtmux;\x1b\x1b[>1u\x1b\\")?;
+        stdout.flush()?;
+    }
     execute!(
         stdout,
         EnterAlternateScreen,
@@ -276,6 +285,12 @@ async fn async_run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         LeaveAlternateScreen,
         DisableMouseCapture
     )?;
+    if in_tmux {
+        use std::io::Write;
+        let mut out = io::stdout();
+        out.write_all(b"\x1bPtmux;\x1b\x1b[<u\x1b\\")?;
+        out.flush()?;
+    }
     terminal.show_cursor()?;
     result
 }
