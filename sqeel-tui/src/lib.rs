@@ -31,7 +31,9 @@ use ratatui::{
 use sqeel_core::{
     AppState, UiProvider,
     config::load_main_config,
-    highlight::{HighlightSpan, TokenKind, statement_at_byte, statement_ranges},
+    highlight::{
+        HighlightSpan, TokenKind, first_syntax_error, statement_at_byte, statement_ranges,
+    },
     lsp::{LspClient, LspEvent},
     schema::{self, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsPane, VimMode},
@@ -1308,6 +1310,20 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Esc) if focus == Focus::Results => {
                         state.lock().unwrap().dismiss_results();
                     }
+                    // On error tab: Enter jumps editor cursor to the reported line:col
+                    (KeyModifiers::NONE, KeyCode::Enter) if focus == Focus::Results => {
+                        let jump = {
+                            let s = state.lock().unwrap();
+                            s.active_result().and_then(|t| match &t.kind {
+                                ResultsPane::Error(msg) => parse_error_position(msg),
+                                _ => None,
+                            })
+                        };
+                        if let Some((line, col)) = jump {
+                            editor.jump_to(line, col);
+                            state.lock().unwrap().focus = Focus::Editor;
+                        }
+                    }
                     // Execute query under cursor: Ctrl+Enter
                     (KeyModifiers::CONTROL, KeyCode::Enter) => {
                         let content = editor.content();
@@ -1319,13 +1335,24 @@ async fn run_loop(
                             .unwrap_or_else(|| content.trim().to_string());
                         let mut s = state.lock().unwrap();
                         s.dismiss_completions();
-                        let sent = s.send_query(stmt.clone());
-                        if !sent {
-                            s.push_history(&stmt);
-                            s.set_error(
-                                "No DB connected. Use --url / --connection or <leader>c to switch."
-                                    .into(),
-                            );
+                        if stmt.is_empty() {
+                            // nothing to run on empty/whitespace-only content
+                        } else if let Some(err) = first_syntax_error(&stmt) {
+                            s.set_error(format!(
+                                "Syntax error at {}:{} — {}",
+                                err.line, err.col, err.message
+                            ));
+                        } else {
+                            let tab_idx = s.push_loading_tab(stmt.clone());
+                            let sent = s.send_query(stmt.clone(), tab_idx);
+                            if !sent {
+                                s.push_history(&stmt);
+                                s.close_active_result_tab();
+                                s.set_error(
+                                    "No DB connected. Use --url / --connection or <leader>c to switch."
+                                        .into(),
+                                );
+                            }
                         }
                     }
                     // Run all statements in the file: Ctrl+Shift+Enter
@@ -1341,12 +1368,30 @@ async fn run_loop(
                         let mut s = state.lock().unwrap();
                         s.dismiss_completions();
                         if stmts.is_empty() {
-                            s.set_error("No statements to run.".into());
-                        } else if !s.send_batch(stmts) {
-                            s.set_error(
-                                "No DB connected. Use --url / --connection or <leader>c to switch."
-                                    .into(),
-                            );
+                            // nothing to run on empty/whitespace-only content
+                        } else if let Some(err) = first_syntax_error(&content) {
+                            s.set_error(format!(
+                                "Syntax error at {}:{} — {}",
+                                err.line, err.col, err.message
+                            ));
+                        } else {
+                            let start_idx = s.result_tabs.len();
+                            for stmt in &stmts {
+                                s.push_loading_tab(stmt.clone());
+                            }
+                            if !s.send_batch(stmts, start_idx) {
+                                // Remove the loading tabs we just pushed
+                                s.result_tabs.truncate(start_idx);
+                                if s.result_tabs.is_empty() {
+                                    s.editor_ratio = 1.0;
+                                } else {
+                                    s.active_result_tab = s.result_tabs.len() - 1;
+                                }
+                                s.set_error(
+                                    "No DB connected. Use --url / --connection or <leader>c to switch."
+                                        .into(),
+                                );
+                            }
                         }
                     }
                     // History navigation: Ctrl+P (prev) / Ctrl+N (next)
@@ -1515,6 +1560,36 @@ fn byte_to_char_col(line: &str, byte_idx: usize) -> usize {
     line[..byte_idx.min(line.len())].chars().count()
 }
 
+/// Extract the first `L:C` (1-based line:column) location from a message like
+/// `"Syntax error at 3:7 — unexpected `foo`"`. Returns `None` if no match.
+fn parse_error_position(msg: &str) -> Option<(usize, usize)> {
+    let bytes = msg.as_bytes();
+    for i in 0..bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b':' {
+            continue;
+        }
+        let mut k = j + 1;
+        let col_start = k;
+        while k < bytes.len() && bytes[k].is_ascii_digit() {
+            k += 1;
+        }
+        if k == col_start {
+            continue;
+        }
+        let line: usize = msg[i..j].parse().ok()?;
+        let col: usize = msg[col_start..k].parse().ok()?;
+        return Some((line, col));
+    }
+    None
+}
+
 /// Convert a (row, char-col) cursor into a byte offset into `lines.join("\n")`.
 fn cursor_byte_offset(lines: &[String], cursor: (usize, usize)) -> usize {
     let mut byte = 0;
@@ -1675,7 +1750,7 @@ fn draw(
     );
 
     if show_results {
-        draw_results(f, state, right_chunks[1], results_focused);
+        draw_results(f, state, right_chunks[1], results_focused, tick);
     }
 
     // Completion popup (overlay)
@@ -2304,7 +2379,7 @@ fn build_tab_title(state: &AppState) -> Line<'_> {
     Line::from(spans)
 }
 
-fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool) {
+fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focused: bool, tick: u32) {
     // Fill pane background (full area), then inset content by 1 on all sides.
     f.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(18, 26, 20))),
@@ -2434,6 +2509,18 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                 content_area,
             );
         }
+        ResultsPane::Loading => {
+            const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+            let frame = SPINNER[(tick as usize) % SPINNER.len()];
+            let msg = format!("{} Running query…", frame);
+            let block = Block::default().title("Results").borders(Borders::NONE);
+            f.render_widget(
+                Paragraph::new(msg)
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(block),
+                content_area,
+            );
+        }
         ResultsPane::Empty => unreachable!(),
     }
 }
@@ -2444,6 +2531,7 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(state.result_tabs.len() * 2);
     for (i, tab) in state.result_tabs.iter().enumerate() {
         let is_err = matches!(tab.kind, ResultsPane::Error(_));
+        let is_loading = matches!(tab.kind, ResultsPane::Loading);
         let snippet: String = tab
             .query
             .lines()
@@ -2460,10 +2548,18 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
         let style = if i == state.active_result_tab {
             Style::default()
                 .fg(Color::Black)
-                .bg(if is_err { Color::Red } else { Color::Cyan })
+                .bg(if is_err {
+                    Color::Red
+                } else if is_loading {
+                    Color::Yellow
+                } else {
+                    Color::Cyan
+                })
                 .add_modifier(Modifier::BOLD)
         } else if is_err {
             Style::default().fg(Color::Red)
+        } else if is_loading {
+            Style::default().fg(Color::Yellow)
         } else {
             Style::default().fg(Color::DarkGray)
         };

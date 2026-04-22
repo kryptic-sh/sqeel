@@ -62,6 +62,13 @@ pub struct ConnectionConfig {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct TabCursor {
+    pub name: String,
+    pub row: usize,
+    pub col: usize,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct Session {
     connection: String,
@@ -77,6 +84,10 @@ struct Session {
     sidebar_visible: bool,
     #[serde(default)]
     schema_search: Option<String>,
+    #[serde(default)]
+    tab_cursors: Vec<TabCursor>,
+    #[serde(default)]
+    active_tab: usize,
 }
 
 fn default_sidebar_visible() -> bool {
@@ -96,6 +107,9 @@ pub struct SessionData {
     pub focus: Focus,
     pub sidebar_visible: bool,
     pub schema_search: Option<String>,
+    /// Per-tab editor cursor positions, keyed by tab name.
+    pub tab_cursors: Vec<TabCursor>,
+    pub active_tab: usize,
 }
 
 impl serde::Serialize for KeybindingMode {
@@ -180,6 +194,7 @@ pub fn load_connections() -> anyhow::Result<Vec<ConnectionConfig>> {
 }
 
 /// Save session state to session.toml.
+#[allow(clippy::too_many_arguments)]
 pub fn save_session(
     name: &str,
     schema_cursor: usize,
@@ -188,6 +203,8 @@ pub fn save_session(
     focus: Focus,
     sidebar_visible: bool,
     schema_search: Option<String>,
+    tab_cursors: Vec<TabCursor>,
+    active_tab: usize,
 ) -> anyhow::Result<()> {
     let dir = config_dir().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
     std::fs::create_dir_all(&dir)?;
@@ -199,6 +216,8 @@ pub fn save_session(
         focus,
         sidebar_visible,
         schema_search,
+        tab_cursors,
+        active_tab,
     })?;
     std::fs::write(dir.join("session.toml"), content)?;
     Ok(())
@@ -227,6 +246,8 @@ pub fn load_session_data() -> SessionData {
         focus: s.focus,
         sidebar_visible: s.sidebar_visible,
         schema_search: s.schema_search,
+        tab_cursors: s.tab_cursors,
+        active_tab: s.active_tab,
     }
 }
 

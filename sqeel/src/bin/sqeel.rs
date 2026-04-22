@@ -56,6 +56,7 @@ fn main() -> anyhow::Result<()> {
     let session_schema_cursor = session.schema_cursor;
     let session_schema_cursor_path = session.schema_cursor_path;
     let session_schema_expanded_paths = session.schema_expanded_paths;
+    let session_active_tab = session.active_tab;
 
     // Runtime for async setup (initial connect + reconnection watcher).
     // TuiProvider::run creates its own runtime; must not be called from inside one.
@@ -68,6 +69,7 @@ fn main() -> anyhow::Result<()> {
             session_schema_cursor,
             session_schema_cursor_path,
             session_schema_expanded_paths,
+            session_active_tab,
         ));
     }
 
@@ -80,6 +82,8 @@ fn main() -> anyhow::Result<()> {
         let mut last_written_focus = sqeel_core::state::Focus::default();
         let mut last_written_sidebar = true;
         let mut last_written_search: Option<String> = None;
+        let mut last_written_tab_cursors: Vec<sqeel_core::config::TabCursor> = Vec::new();
+        let mut last_written_active_tab: usize = 0;
         let mut dirty = false;
         let mut pending_conn: Option<String> = None;
         let mut pending_cursor: usize = 0;
@@ -88,6 +92,8 @@ fn main() -> anyhow::Result<()> {
         let mut pending_focus = sqeel_core::state::Focus::default();
         let mut pending_sidebar = true;
         let mut pending_search: Option<String> = None;
+        let mut pending_tab_cursors: Vec<sqeel_core::config::TabCursor> = Vec::new();
+        let mut pending_active_tab: usize = 0;
         let mut last_write = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(2))
             .unwrap_or_else(std::time::Instant::now);
@@ -96,7 +102,7 @@ fn main() -> anyhow::Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let reconnect = watcher_state.lock().unwrap().pending_reconnect.take();
             if let Some(url) = reconnect {
-                connect_and_spawn(&watcher_state, &url, 0, None, Vec::new()).await;
+                connect_and_spawn(&watcher_state, &url, 0, None, Vec::new(), 0).await;
             }
 
             let s = watcher_state.lock().unwrap();
@@ -108,6 +114,12 @@ fn main() -> anyhow::Result<()> {
             let sidebar = s.sidebar_visible;
             let search = s.schema_search_query.clone();
             let loading = s.schema_loading;
+            let tab_cursors: Vec<sqeel_core::config::TabCursor> = s
+                .tab_cursor_snapshot()
+                .into_iter()
+                .map(|(name, row, col)| sqeel_core::config::TabCursor { name, row, col })
+                .collect();
+            let active_tab = s.active_tab;
             drop(s);
 
             // Skip while the schema is still loading: schema_nodes is partial,
@@ -124,7 +136,9 @@ fn main() -> anyhow::Result<()> {
                     || expanded_paths != last_written_expanded_paths
                     || focus != last_written_focus
                     || sidebar != last_written_sidebar
-                    || search != last_written_search)
+                    || search != last_written_search
+                    || tab_cursors != last_written_tab_cursors
+                    || active_tab != last_written_active_tab)
             {
                 pending_conn = conn;
                 pending_cursor = cursor;
@@ -133,6 +147,8 @@ fn main() -> anyhow::Result<()> {
                 pending_focus = focus;
                 pending_sidebar = sidebar;
                 pending_search = search;
+                pending_tab_cursors = tab_cursors;
+                pending_active_tab = active_tab;
                 dirty = true;
             }
 
@@ -146,6 +162,8 @@ fn main() -> anyhow::Result<()> {
                         pending_focus,
                         pending_sidebar,
                         pending_search.clone(),
+                        pending_tab_cursors.clone(),
+                        pending_active_tab,
                     );
                 }
                 last_written_conn = pending_conn.clone();
@@ -155,6 +173,8 @@ fn main() -> anyhow::Result<()> {
                 last_written_focus = pending_focus;
                 last_written_sidebar = pending_sidebar;
                 last_written_search = pending_search.clone();
+                last_written_tab_cursors = pending_tab_cursors.clone();
+                last_written_active_tab = pending_active_tab;
                 dirty = false;
                 last_write = std::time::Instant::now();
             }
@@ -171,6 +191,7 @@ async fn connect_and_spawn(
     session_schema_cursor: usize,
     session_schema_cursor_path: Option<String>,
     session_schema_expanded_paths: Vec<String>,
+    session_active_tab: usize,
 ) {
     match DbConnection::connect(url).await {
         Ok(conn) => {
@@ -186,6 +207,9 @@ async fn connect_and_spawn(
                 s.set_status(format!("Connected: {conn_name}"));
                 let slug = sanitize_conn_slug(&conn_name);
                 s.load_tabs_for_connection(&slug);
+                if session_active_tab < s.tabs.len() {
+                    s.switch_to_tab(session_active_tab);
+                }
                 // Mark loading so the session watcher won't persist the
                 // empty schema_expanded_paths before the loader has had a
                 // chance to restore them from the session file.
@@ -282,6 +306,12 @@ fn spawn_executor(
         let focus = s.focus;
         let sidebar_visible = s.sidebar_visible;
         let search_query = s.schema_search_query.clone();
+        let tab_cursors: Vec<sqeel_core::config::TabCursor> = s
+            .tab_cursor_snapshot()
+            .into_iter()
+            .map(|(name, row, col)| sqeel_core::config::TabCursor { name, row, col })
+            .collect();
+        let active_tab = s.active_tab;
         let _ = save_schema_cache(&col_schema_url, &nodes);
         if let Some(ref name) = s.active_connection.clone() {
             let _ = save_session(
@@ -292,6 +322,8 @@ fn spawn_executor(
                 focus,
                 sidebar_visible,
                 search_query,
+                tab_cursors,
+                active_tab,
             );
         }
     });
@@ -365,7 +397,7 @@ fn spawn_executor(
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
             match req {
-                QueryRequest::Single(query) => {
+                QueryRequest::Single(query, tab_idx) => {
                     let result = conn.execute(&query).await;
                     let mut s = state.lock().unwrap();
                     s.batch_in_progress = false;
@@ -374,19 +406,20 @@ fn spawn_executor(
                             s.persist_result(&query, &r);
                             s.push_history(&query);
                             r.compute_col_widths();
-                            s.push_result_tab(query, ResultsPane::Results(r));
+                            s.finish_result_tab(tab_idx, ResultsPane::Results(r));
                         }
                         Err(e) => {
-                            s.push_result_tab(query, ResultsPane::Error(e.to_string()));
+                            s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
                         }
                     }
                 }
-                QueryRequest::Batch(queries) => {
+                QueryRequest::Batch(queries, start_idx) => {
                     let (stop_on_error, batch_start) = {
                         let mut s = state.lock().unwrap();
                         (s.stop_on_error, s.start_batch())
                     };
-                    for query in queries {
+                    for (i, query) in queries.into_iter().enumerate() {
+                        let tab_idx = start_idx + i;
                         let result = conn.execute(&query).await;
                         let is_err = result.is_err();
                         {
@@ -396,10 +429,10 @@ fn spawn_executor(
                                     s.persist_result(&query, &r);
                                     s.push_history(&query);
                                     r.compute_col_widths();
-                                    s.push_result_tab(query, ResultsPane::Results(r));
+                                    s.finish_result_tab(tab_idx, ResultsPane::Results(r));
                                 }
                                 Err(e) => {
-                                    s.push_result_tab(query, ResultsPane::Error(e.to_string()));
+                                    s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
                                 }
                             }
                         }

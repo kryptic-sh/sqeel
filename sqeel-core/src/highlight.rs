@@ -99,6 +99,9 @@ pub fn statement_ranges(source: &str) -> Vec<(usize, usize)> {
     if ranges.is_empty() && !source.trim().is_empty() {
         ranges.push((0, source.len()));
     }
+    // Filter out ranges that are just semicolons or whitespace (tree-sitter-sequel
+    // creates separate anonymous nodes for `;` delimiters between statements).
+    ranges.retain(|&(s, e)| !source[s..e].trim().is_empty() && source[s..e].trim() != ";");
     ranges
 }
 
@@ -119,6 +122,80 @@ pub fn statement_at_byte(source: &str, byte: usize) -> Option<(usize, usize)> {
         }
     }
     Some(*ranges.last().unwrap())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxError {
+    pub line: usize,
+    pub col: usize,
+    pub byte: usize,
+    pub message: String,
+}
+
+/// Parse `source` and return the first syntax error (line/col 1-based) with a
+/// human-readable message, or `None` if the SQL parses cleanly.
+pub fn first_syntax_error(source: &str) -> Option<SyntaxError> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_sequel::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(source, None)?;
+    let root = tree.root_node();
+    if !root.has_error() {
+        return None;
+    }
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.is_missing() {
+            let p = node.start_position();
+            let kind = node.kind();
+            let message = if kind.is_empty() {
+                "missing token".to_string()
+            } else {
+                format!("missing `{kind}`")
+            };
+            return Some(SyntaxError {
+                line: p.row + 1,
+                col: p.column + 1,
+                byte: node.start_byte(),
+                message,
+            });
+        }
+        if node.is_error() {
+            let p = node.start_position();
+            let snippet = source
+                .get(node.start_byte()..node.end_byte())
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim();
+            let message = if snippet.is_empty() {
+                "unexpected token".to_string()
+            } else {
+                let trimmed: String = snippet.chars().take(40).collect();
+                format!("unexpected `{trimmed}`")
+            };
+            return Some(SyntaxError {
+                line: p.row + 1,
+                col: p.column + 1,
+                byte: node.start_byte(),
+                message,
+            });
+        }
+        for child in node.children(&mut cursor) {
+            if child.has_error() || child.is_error() || child.is_missing() {
+                stack.push(child);
+            }
+        }
+    }
+    Some(SyntaxError {
+        line: 1,
+        col: 1,
+        byte: 0,
+        message: "parse error".to_string(),
+    })
 }
 
 impl Default for Highlighter {
@@ -251,6 +328,34 @@ fn collect_spans(node: Node, source: &[u8], spans: &mut Vec<HighlightSpan>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multi_statement_skips_semicolon_nodes() {
+        let src = "select * from foo;\nselect * from bar;";
+        let ranges = statement_ranges(src);
+        for (s, e) in &ranges {
+            let stmt = &src[*s..*e];
+            assert!(
+                stmt.trim() != ";",
+                "statement_ranges should not return semicolon-only ranges"
+            );
+            assert!(
+                !stmt.trim().is_empty(),
+                "statement_ranges should not return empty ranges"
+            );
+        }
+        // Each statement should parse cleanly
+        for (s, e) in &ranges {
+            let stmt = &src[*s..*e].trim();
+            let err = first_syntax_error(stmt);
+            assert!(
+                err.is_none(),
+                "expected no syntax error for {:?}, got: {:?}",
+                stmt,
+                err
+            );
+        }
+    }
 
     #[test]
     fn highlights_select_keyword() {

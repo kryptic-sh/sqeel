@@ -170,6 +170,16 @@ impl<'a> Editor<'a> {
         (doc_row, rel_col.min(line_len))
     }
 
+    /// Jump the cursor to the given 1-based line/column, clamped to the document.
+    pub fn jump_to(&mut self, line: usize, col: usize) {
+        let r = line.saturating_sub(1);
+        let max_row = self.textarea.lines().len().saturating_sub(1);
+        let r = r.min(max_row);
+        let line_len = self.textarea.lines()[r].chars().count();
+        let c = col.saturating_sub(1).min(line_len);
+        self.textarea.move_cursor(CursorMove::Jump(r, c));
+    }
+
     /// Jump cursor to the terminal-space mouse position; exits Visual modes if active.
     pub fn mouse_click(&mut self, area: Rect, col: u16, row: u16) {
         if matches!(self.mode, Mode::Visual | Mode::VisualLine) {

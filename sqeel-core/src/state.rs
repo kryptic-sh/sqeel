@@ -17,6 +17,9 @@ pub struct TabEntry {
     pub name: String,
     pub content: Option<String>,
     pub last_accessed: Option<Instant>,
+    /// Last-known editor cursor `(row, col)` (0-based). Restored on tab switch
+    /// and persisted in session.toml across restarts.
+    pub cursor: Option<(usize, usize)>,
 }
 
 impl TabEntry {
@@ -25,6 +28,7 @@ impl TabEntry {
             name,
             content: None,
             last_accessed: None,
+            cursor: None,
         }
     }
     fn open(name: String, content: String) -> Self {
@@ -32,6 +36,7 @@ impl TabEntry {
             name,
             content: Some(content),
             last_accessed: Some(Instant::now()),
+            cursor: None,
         }
     }
 }
@@ -97,12 +102,13 @@ impl QueryResult {
 pub enum ResultsPane {
     #[default]
     Empty,
+    Loading,
     Results(QueryResult),
     Error(String),
 }
 
 /// One entry in the results pane's tab bar — the query that produced it and
-/// either a result set or an error. `kind` is never `ResultsPane::Empty`.
+/// either a result set, an error, or a loading placeholder.
 #[derive(Debug, Clone)]
 pub struct ResultsTab {
     pub query: String,
@@ -116,8 +122,10 @@ pub struct ResultsTab {
 /// A query request sent over the executor channel — single statement or batch.
 #[derive(Debug, Clone)]
 pub enum QueryRequest {
-    Single(String),
-    Batch(Vec<String>),
+    /// Single query with the result tab index to update when done.
+    Single(String, usize),
+    /// Batch of queries with the starting result tab index to update sequentially.
+    Batch(Vec<String>, usize),
 }
 
 #[derive(Default)]
@@ -127,6 +135,9 @@ pub struct AppState {
     pub active_tab: usize,
     /// Set when the active tab changes; TUI drains this to reload the editor.
     pub tab_content_pending: Option<String>,
+    /// Set alongside `tab_content_pending` when switching tabs; TUI drains this
+    /// to restore the editor cursor. `(row, col)` 0-based.
+    pub tab_cursor_pending: Option<(usize, usize)>,
     pub keybinding_mode: KeybindingMode,
     pub vim_mode: VimMode,
     pub focus: Focus,
@@ -250,6 +261,36 @@ impl AppState {
             self.active_result_tab = self.result_tabs.len().saturating_sub(1);
         }
         self.editor_ratio = 0.5;
+    }
+
+    /// Push a loading placeholder tab immediately after syntax check passes.
+    /// Returns the index so the executor can replace it when done.
+    pub fn push_loading_tab(&mut self, query: String) -> usize {
+        let tab = ResultsTab {
+            query,
+            kind: ResultsPane::Loading,
+            scroll: 0,
+            col_scroll: 0,
+        };
+        self.result_tabs.push(tab);
+        let idx = self.result_tabs.len() - 1;
+        if !self.batch_in_progress && self.max_result_tabs > 0 {
+            while self.result_tabs.len() > self.max_result_tabs {
+                self.result_tabs.remove(0);
+            }
+            self.active_result_tab = self.result_tabs.len().saturating_sub(1);
+        } else {
+            self.active_result_tab = idx;
+        }
+        self.editor_ratio = 0.5;
+        idx
+    }
+
+    /// Replace a loading tab at `idx` with the final result or error.
+    pub fn finish_result_tab(&mut self, idx: usize, kind: ResultsPane) {
+        if let Some(tab) = self.result_tabs.get_mut(idx) {
+            tab.kind = kind;
+        }
     }
 
     /// Begin a run-all batch: returns the index where the first batch tab will land.
@@ -795,13 +836,13 @@ impl AppState {
     }
 
     /// Try to send a single query to the active executor. Returns false if not connected.
-    pub fn send_query(&self, query: String) -> bool {
-        self.send_query_request(QueryRequest::Single(query))
+    pub fn send_query(&self, query: String, tab_idx: usize) -> bool {
+        self.send_query_request(QueryRequest::Single(query, tab_idx))
     }
 
     /// Try to send a batch of queries to the active executor. Returns false if not connected.
-    pub fn send_batch(&self, queries: Vec<String>) -> bool {
-        self.send_query_request(QueryRequest::Batch(queries))
+    pub fn send_batch(&self, queries: Vec<String>, start_idx: usize) -> bool {
+        self.send_query_request(QueryRequest::Batch(queries, start_idx))
     }
 
     fn send_query_request(&self, req: QueryRequest) -> bool {
@@ -854,19 +895,54 @@ impl AppState {
         self.active_tab = idx;
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
-        let content = if let Some(tab) = self.tabs.get_mut(idx) {
+        let (content, cursor) = if let Some(tab) = self.tabs.get_mut(idx) {
             tab.last_accessed = Some(Instant::now());
-            if let Some(ref c) = tab.content {
+            let c = if let Some(ref c) = tab.content {
                 c.clone()
             } else {
                 let c = persistence::load_query(&slug, &tab.name).unwrap_or_default();
                 tab.content = Some(c.clone());
                 c
-            }
+            };
+            (c, tab.cursor)
         } else {
-            String::new()
+            (String::new(), None)
         };
         self.tab_content_pending = Some(content);
+        self.tab_cursor_pending = cursor;
+    }
+
+    /// Update the active tab's stored cursor `(row, col)` (0-based). Called
+    /// frequently from the TUI so the in-memory + persisted cursor stays fresh.
+    pub fn update_active_tab_cursor(&mut self, cursor: (usize, usize)) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.cursor = Some(cursor);
+        }
+    }
+
+    /// Snapshot of `(tab_name, row, col)` for every tab with a known cursor.
+    /// Used by the session writer.
+    pub fn tab_cursor_snapshot(&self) -> Vec<(String, usize, usize)> {
+        self.tabs
+            .iter()
+            .filter_map(|t| t.cursor.map(|(r, c)| (t.name.clone(), r, c)))
+            .collect()
+    }
+
+    /// Apply persisted cursors (from session.toml) onto matching tabs by name.
+    /// Also seeds `tab_cursor_pending` for the active tab so the editor jumps
+    /// to the saved position on startup.
+    pub fn apply_tab_cursors(&mut self, cursors: &[(String, usize, usize)]) {
+        for (name, r, c) in cursors {
+            if let Some(tab) = self.tabs.iter_mut().find(|t| &t.name == name) {
+                tab.cursor = Some((*r, *c));
+            }
+        }
+        if let Some(tab) = self.tabs.get(self.active_tab)
+            && let Some(cur) = tab.cursor
+        {
+            self.tab_cursor_pending = Some(cur);
+        }
     }
 
     pub fn next_tab(&mut self) {
