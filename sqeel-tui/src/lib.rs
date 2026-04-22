@@ -26,7 +26,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 use sqeel_core::{
     AppState, UiProvider,
@@ -2503,62 +2503,50 @@ fn draw_results(
                 format!("Results ({} rows)", r.rows.len())
             };
             let col_start = state.results_col_scroll();
-            let visible_cols: Vec<&String> = r.columns.iter().skip(col_start).collect();
             let sep_style = Style::default().fg(Color::DarkGray);
+            let header_style = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
 
-            // Interleave a 1-col `│` separator between data columns.
-            fn interleave_cells<'a>(cells: Vec<Cell<'a>>, sep_style: Style) -> Vec<Cell<'a>> {
-                let mut out: Vec<Cell<'a>> = Vec::with_capacity(cells.len() * 2);
-                let n = cells.len();
-                for (i, c) in cells.into_iter().enumerate() {
-                    out.push(c);
-                    if i + 1 < n {
-                        out.push(Cell::from("│").style(sep_style));
-                    }
-                }
-                out
-            }
-            let interleave_widths = |widths: Vec<Constraint>| -> Vec<Constraint> {
-                let mut out: Vec<Constraint> = Vec::with_capacity(widths.len() * 2);
-                let n = widths.len();
-                for (i, w) in widths.into_iter().enumerate() {
-                    out.push(w);
-                    if i + 1 < n {
-                        out.push(Constraint::Length(1));
-                    }
-                }
-                out
-            };
-
-            let header_cells: Vec<Cell> = visible_cols
-                .iter()
-                .map(|c| {
-                    Cell::from(c.as_str()).style(Style::default().add_modifier(Modifier::BOLD))
-                })
-                .collect();
-            let header = Row::new(interleave_cells(header_cells, sep_style))
-                .style(Style::default().fg(Color::Cyan));
-
-            let raw_widths: Vec<Constraint> = r
+            // Char offset into the full-width row string, derived from col_scroll.
+            // Each rendered column is padded to col_widths[i], separated by `│`.
+            let char_offset: u16 = r
                 .col_widths
                 .iter()
-                .skip(col_start)
-                .map(|&w| Constraint::Length(w))
-                .collect();
-            let col_widths = interleave_widths(raw_widths);
+                .take(col_start)
+                .map(|&w| w as u32 + 1)
+                .sum::<u32>() as u16;
 
-            let visible_rows: Vec<Row> = r
+            let build_header = || -> Line<'static> {
+                let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
+                for (i, c) in r.columns.iter().enumerate() {
+                    let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
+                    spans.push(Span::styled(format!("{:<w$}", c, w = w), header_style));
+                    if i + 1 < r.columns.len() {
+                        spans.push(Span::styled("│".to_string(), sep_style));
+                    }
+                }
+                Line::from(spans)
+            };
+
+            let build_row = |row: &Vec<String>| -> Line<'static> {
+                let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
+                for i in 0..r.columns.len() {
+                    let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
+                    let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+                    spans.push(Span::raw(format!("{:<w$}", cell, w = w)));
+                    if i + 1 < r.columns.len() {
+                        spans.push(Span::styled("│".to_string(), sep_style));
+                    }
+                }
+                Line::from(spans)
+            };
+
+            let body_lines: Vec<Line<'static>> = r
                 .rows
                 .iter()
                 .skip(state.results_scroll())
-                .map(|row| {
-                    let cells: Vec<Cell> = row
-                        .iter()
-                        .skip(col_start)
-                        .map(|c| Cell::from(c.as_str()))
-                        .collect();
-                    Row::new(interleave_cells(cells, sep_style))
-                })
+                .map(build_row)
                 .collect();
 
             // Split content_area: title (1) + header (1) + hr (1) + body (rest).
@@ -2573,12 +2561,16 @@ fn draw_results(
                 .split(content_area);
 
             f.render_widget(Paragraph::new(title).style(title_style), chunks[0]);
-            let header_table = Table::new(Vec::<Row>::new(), col_widths.clone()).header(header);
-            f.render_widget(header_table, chunks[1]);
+            f.render_widget(
+                Paragraph::new(build_header()).scroll((0, char_offset)),
+                chunks[1],
+            );
             let hr: String = "─".repeat(content_area.width as usize);
             f.render_widget(Paragraph::new(hr).style(sep_style), chunks[2]);
-            let body = Table::new(visible_rows, col_widths);
-            f.render_widget(body, chunks[3]);
+            f.render_widget(
+                Paragraph::new(body_lines).scroll((0, char_offset)),
+                chunks[3],
+            );
         }
         ResultsPane::Error(e) => {
             let title = if state.result_tabs.len() > 1 {
