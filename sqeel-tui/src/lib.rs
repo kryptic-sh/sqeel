@@ -2791,8 +2791,7 @@ fn highlight_query_line(query: &str) -> Line<'static> {
     let flatten = |b: &[u8]| -> String {
         std::str::from_utf8(b)
             .unwrap_or("")
-            .replace('\n', " ")
-            .replace('\r', " ")
+            .replace(['\n', '\r'], " ")
     };
 
     for s in &spans {
