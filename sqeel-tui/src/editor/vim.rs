@@ -2457,6 +2457,70 @@ mod tests {
     }
 
     #[test]
+    fn di_single_quote() {
+        let mut e = editor_with("say 'hello world' now");
+        e.textarea.move_cursor(CursorMove::Jump(0, 7));
+        run_keys(&mut e, "di'");
+        assert_eq!(e.textarea.lines()[0], "say '' now");
+    }
+
+    #[test]
+    fn da_single_quote() {
+        let mut e = editor_with("say 'hello' now");
+        e.textarea.move_cursor(CursorMove::Jump(0, 7));
+        run_keys(&mut e, "da'");
+        assert_eq!(e.textarea.lines()[0], "say  now");
+    }
+
+    #[test]
+    fn di_backtick() {
+        let mut e = editor_with("say `hi` now");
+        e.textarea.move_cursor(CursorMove::Jump(0, 5));
+        run_keys(&mut e, "di`");
+        assert_eq!(e.textarea.lines()[0], "say `` now");
+    }
+
+    #[test]
+    fn di_brace() {
+        let mut e = editor_with("fn { a; b; c }");
+        e.textarea.move_cursor(CursorMove::Jump(0, 7));
+        run_keys(&mut e, "di{");
+        assert_eq!(e.textarea.lines()[0], "fn {}");
+    }
+
+    #[test]
+    fn di_bracket() {
+        let mut e = editor_with("arr[1, 2, 3]");
+        e.textarea.move_cursor(CursorMove::Jump(0, 5));
+        run_keys(&mut e, "di[");
+        assert_eq!(e.textarea.lines()[0], "arr[]");
+    }
+
+    #[test]
+    fn dab_deletes_around_paren() {
+        let mut e = editor_with("fn(a, b) + 1");
+        e.textarea.move_cursor(CursorMove::Jump(0, 4));
+        run_keys(&mut e, "dab");
+        assert_eq!(e.textarea.lines()[0], "fn + 1");
+    }
+
+    #[test]
+    fn da_big_b_deletes_around_brace() {
+        let mut e = editor_with("x = {a: 1}");
+        e.textarea.move_cursor(CursorMove::Jump(0, 6));
+        run_keys(&mut e, "daB");
+        assert_eq!(e.textarea.lines()[0], "x = ");
+    }
+
+    #[test]
+    fn di_big_w_deletes_bigword() {
+        let mut e = editor_with("foo-bar baz");
+        e.textarea.move_cursor(CursorMove::Jump(0, 2));
+        run_keys(&mut e, "diW");
+        assert_eq!(e.textarea.lines()[0], " baz");
+    }
+
+    #[test]
     fn visual_select_inner_word() {
         let mut e = editor_with("hello world");
         e.textarea.move_cursor(CursorMove::Jump(0, 2));
