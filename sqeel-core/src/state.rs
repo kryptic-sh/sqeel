@@ -216,6 +216,12 @@ pub struct AppState {
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
     pub schema_loading: bool,
+    /// Total tables the current load expects to resolve columns for.
+    /// Bumped as each db's table list arrives. Zero when idle.
+    pub schema_loading_total: usize,
+    /// Tables whose columns have finished loading in the current run.
+    /// Zero when idle.
+    pub schema_loading_done: usize,
     /// Set by the executor when a query finishes; cleared by the run loop after redraw.
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,

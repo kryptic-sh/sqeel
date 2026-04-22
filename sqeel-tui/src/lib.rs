@@ -2385,18 +2385,21 @@ fn draw_schema(
     let searching = search.focused;
     let search_cursor = search.cursor;
     const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
-    let status = if state.schema_loading {
-        SPINNER[(tick as usize) % SPINNER.len()]
-    } else if !state.schema_nodes.is_empty() {
-        "✓"
-    } else {
-        ""
-    };
-    let title = if state.schema_loading || state.schema_nodes.is_empty() {
-        format!("Explorer {status}").trim_end().to_string()
+    let title = if state.schema_loading {
+        let spin = SPINNER[(tick as usize) % SPINNER.len()];
+        if state.schema_loading_total > 0 {
+            format!(
+                "Explorer {spin} {}/{}",
+                state.schema_loading_done, state.schema_loading_total
+            )
+        } else {
+            format!("Explorer {spin}")
+        }
+    } else if state.schema_nodes.is_empty() {
+        "Explorer".to_string()
     } else {
         let count = state.schema_nodes.len();
-        format!("Explorer ({count})")
+        format!("Explorer ✓ ({count})")
     };
 
     let border_style = if focused {

@@ -365,7 +365,12 @@ fn spawn_executor(
     // ── Schema loader task ───────────────────────────────────────────────────
     // Loads db shells → table shells → columns. Column fetches run with bounded
     // concurrency so large schemas don't serialize one roundtrip per table.
-    state.lock().unwrap().schema_loading = true;
+    {
+        let mut s = state.lock().unwrap();
+        s.schema_loading = true;
+        s.schema_loading_total = 0;
+        s.schema_loading_done = 0;
+    }
     let schema_conn = conn.clone();
     let schema_state = state.clone();
     let schema_url = conn.url.clone();
@@ -438,10 +443,11 @@ fn spawn_executor(
                     continue;
                 }
             };
-            schema_state
-                .lock()
-                .unwrap()
-                .set_db_tables(&db_name, &table_names);
+            {
+                let mut s = schema_state.lock().unwrap();
+                s.set_db_tables(&db_name, &table_names);
+                s.schema_loading_total += table_names.len();
+            }
             snapshot_and_save_schema(&schema_state, &schema_url);
 
             for table_name in table_names {
@@ -463,10 +469,9 @@ fn spawn_executor(
                             .collect(),
                         Err(_) => vec![],
                     };
-                    state
-                        .lock()
-                        .unwrap()
-                        .set_table_columns(&db, &table_name, col_nodes);
+                    let mut s = state.lock().unwrap();
+                    s.set_table_columns(&db, &table_name, col_nodes);
+                    s.schema_loading_done += 1;
                 });
             }
         }
@@ -477,6 +482,8 @@ fn spawn_executor(
         // made during the refresh. Only restore here when no cache existed.
         let mut s = schema_state.lock().unwrap();
         s.schema_loading = false;
+        s.schema_loading_total = 0;
+        s.schema_loading_done = 0;
         if !cache_restored {
             s.rebuild_schema_cache_if_dirty();
             s.restore_schema_expanded_paths(&session_schema_expanded_paths);
