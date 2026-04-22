@@ -863,6 +863,91 @@ impl AppState {
         }
     }
 
+    /// Merge a fresh db-name list into the existing tree without dropping
+    /// cached tables/columns. Databases in the new list that already exist are
+    /// left untouched; databases missing from the new list are removed.
+    /// Returns true if anything changed.
+    pub fn merge_db_list(&mut self, new_names: &[String]) -> bool {
+        use std::collections::HashSet;
+        let new_set: HashSet<&str> = new_names.iter().map(String::as_str).collect();
+
+        let before = self.schema_nodes.len();
+        self.schema_nodes
+            .retain(|n| matches!(n, SchemaNode::Database { name, .. } if new_set.contains(name.as_str())));
+        let mut changed = self.schema_nodes.len() != before;
+
+        let existing: HashSet<String> = self
+            .schema_nodes
+            .iter()
+            .filter_map(|n| match n {
+                SchemaNode::Database { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        for name in new_names {
+            if !existing.contains(name) {
+                self.schema_nodes.push(SchemaNode::Database {
+                    name: name.clone(),
+                    expanded: false,
+                    tables: vec![],
+                });
+                changed = true;
+            }
+        }
+
+        // Preserve new-list order.
+        self.schema_nodes.sort_by_key(|n| {
+            new_names
+                .iter()
+                .position(|x| x == n.name())
+                .unwrap_or(usize::MAX)
+        });
+
+        if changed {
+            self.mark_schema_cache_dirty();
+        }
+        changed
+    }
+
+    /// Replace the table list for a database with a fresh set of names, reusing
+    /// existing table nodes (with their columns + expansion state) when names
+    /// match. Tables not in `new_names` are dropped.
+    pub fn set_db_tables(&mut self, db_name: &str, new_names: &[String]) {
+        use std::collections::HashMap;
+        let mut changed = false;
+        for node in self.schema_nodes.iter_mut() {
+            if let SchemaNode::Database {
+                name, tables: t, ..
+            } = node
+                && name == db_name
+            {
+                let mut existing: HashMap<String, SchemaNode> = std::mem::take(t)
+                    .into_iter()
+                    .filter_map(|n| match &n {
+                        SchemaNode::Table { name, .. } => Some((name.clone(), n)),
+                        _ => None,
+                    })
+                    .collect();
+                let merged: Vec<SchemaNode> = new_names
+                    .iter()
+                    .map(|name| {
+                        existing.remove(name).unwrap_or_else(|| SchemaNode::Table {
+                            name: name.clone(),
+                            expanded: false,
+                            columns: vec![],
+                        })
+                    })
+                    .collect();
+                *t = merged;
+                changed = true;
+                break;
+            }
+        }
+        if changed {
+            self.mark_schema_cache_dirty();
+        }
+    }
+
     /// Set the columns for one specific table without touching anything else.
     pub fn set_table_columns(&mut self, db_name: &str, table_name: &str, columns: Vec<SchemaNode>) {
         let mut changed = false;

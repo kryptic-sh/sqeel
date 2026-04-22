@@ -387,12 +387,15 @@ fn spawn_executor(
             })
             .collect();
 
-        schema_state.lock().unwrap().refresh_schema_nodes(db_shells);
+        // Merge db list into existing tree, preserving any cached tables/columns
+        // for dbs that still exist. Missing dbs get empty shells; gone dbs are
+        // dropped.
+        schema_state.lock().unwrap().merge_db_list(&db_names);
+        // Ignore `db_shells` — we only used it to derive db_names; the fresh
+        // shells would have wiped cached children.
+        let _ = db_shells;
 
         // Step 2: table shells per database (sequential — one query per db).
-        // Phase 1: first 100 tables for every database so the UI sees something
-        // quickly. Phase 2: the long tail.
-        let mut overflow: Vec<(String, Vec<String>)> = Vec::new();
         let mut table_work: Vec<(String, String)> = Vec::new();
 
         for db_name in &db_names {
@@ -407,22 +410,13 @@ fn spawn_executor(
                 }
             };
 
-            let first = &table_names[..table_names.len().min(100)];
-            let rest = &table_names[first.len()..];
-
-            add_table_shells(&schema_state, db_name, first);
-            table_work.extend(first.iter().map(|t| (db_name.clone(), t.clone())));
-
-            if !rest.is_empty() {
-                overflow.push((db_name.clone(), rest.to_vec()));
-            }
-        }
-
-        for (db_name, remaining) in &overflow {
-            for batch in remaining.chunks(100) {
-                add_table_shells(&schema_state, db_name, batch);
-                table_work.extend(batch.iter().map(|t| (db_name.clone(), t.clone())));
-            }
+            // Merge fresh table names into the db node — reuses cached columns
+            // for tables that still exist, drops tables that are gone.
+            schema_state
+                .lock()
+                .unwrap()
+                .set_db_tables(db_name, &table_names);
+            table_work.extend(table_names.into_iter().map(|t| (db_name.clone(), t)));
         }
 
         // Step 3: columns — bounded concurrency.
@@ -584,19 +578,3 @@ fn spawn_executor(
     });
 }
 
-/// Add table shells (no columns yet) for a database.
-fn add_table_shells(
-    state: &Arc<std::sync::Mutex<AppState>>,
-    db_name: &str,
-    tables: &[String],
-) {
-    let shells: Vec<SchemaNode> = tables
-        .iter()
-        .map(|t| SchemaNode::Table {
-            name: t.clone(),
-            expanded: false,
-            columns: vec![],
-        })
-        .collect();
-    state.lock().unwrap().append_db_tables(db_name, shells);
-}
