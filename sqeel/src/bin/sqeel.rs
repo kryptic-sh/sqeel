@@ -412,6 +412,7 @@ fn spawn_executor(
                             s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
                         }
                     }
+                    s.results_dirty = true;
                 }
                 QueryRequest::Batch(queries, start_idx) => {
                     let (stop_on_error, batch_start) = {
@@ -435,6 +436,7 @@ fn spawn_executor(
                                     s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
                                 }
                             }
+                            s.results_dirty = true;
                         }
                         if is_err && stop_on_error {
                             break;

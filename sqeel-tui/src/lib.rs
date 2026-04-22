@@ -496,6 +496,15 @@ async fn run_loop(
         }
         last_schema_loading = schema_loading;
 
+        // Executor finished a query — redraw to show results/error.
+        {
+            let mut s = state.lock().unwrap();
+            if s.results_dirty {
+                needs_redraw = true;
+                s.results_dirty = false;
+            }
+        }
+
         if needs_redraw {
             tick = tick.wrapping_add(1);
             let tick_snap = tick;
@@ -1364,16 +1373,18 @@ async fn run_loop(
                         if stmt.is_empty() {
                             // nothing to run on empty/whitespace-only content
                         } else if let Some(err) = first_syntax_error(&stmt) {
+                            s.dismiss_results();
                             s.set_error(format!(
                                 "Syntax error at {}:{} — {}",
                                 err.line, err.col, err.message
                             ));
                         } else {
+                            s.dismiss_results();
                             let tab_idx = s.push_loading_tab(stmt.clone());
                             let sent = s.send_query(stmt.clone(), tab_idx);
                             if !sent {
                                 s.push_history(&stmt);
-                                s.close_active_result_tab();
+                                s.dismiss_results();
                                 s.set_error(
                                     "No DB connected. Use --url / --connection or <leader>c to switch."
                                         .into(),
@@ -1396,23 +1407,18 @@ async fn run_loop(
                         if stmts.is_empty() {
                             // nothing to run on empty/whitespace-only content
                         } else if let Some(err) = first_syntax_error(&content) {
+                            s.dismiss_results();
                             s.set_error(format!(
                                 "Syntax error at {}:{} — {}",
                                 err.line, err.col, err.message
                             ));
                         } else {
-                            let start_idx = s.result_tabs.len();
+                            s.dismiss_results();
                             for stmt in &stmts {
                                 s.push_loading_tab(stmt.clone());
                             }
-                            if !s.send_batch(stmts, start_idx) {
-                                // Remove the loading tabs we just pushed
-                                s.result_tabs.truncate(start_idx);
-                                if s.result_tabs.is_empty() {
-                                    s.editor_ratio = 1.0;
-                                } else {
-                                    s.active_result_tab = s.result_tabs.len() - 1;
-                                }
+                            if !s.send_batch(stmts, 0) {
+                                s.dismiss_results();
                                 s.set_error(
                                     "No DB connected. Use --url / --connection or <leader>c to switch."
                                         .into(),

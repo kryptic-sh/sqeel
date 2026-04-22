@@ -143,12 +143,9 @@ pub struct AppState {
     pub focus: Focus,
     pub result_tabs: Vec<ResultsTab>,
     pub active_result_tab: usize,
-    /// Soft cap for accumulated single-query result tabs. A run-all batch
-    /// may temporarily exceed this; the cap re-applies on the next single push.
-    pub max_result_tabs: usize,
     /// Whether a run-all batch should stop on the first query error.
     pub stop_on_error: bool,
-    /// Set while a run-all batch is in progress so cap enforcement is skipped.
+    /// Set while a run-all batch is in progress.
     pub batch_in_progress: bool,
     pub editor_ratio: f32,
     pub lsp_diagnostics: Vec<Diagnostic>,
@@ -161,6 +158,8 @@ pub struct AppState {
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
     pub schema_loading: bool,
+    /// Set by the executor when a query finishes; cleared by the run loop after redraw.
+    pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
     all_schema_items_cache: Vec<SchemaTreeItem>,
     pub query_history: Vec<String>,
@@ -199,14 +198,12 @@ impl AppState {
         Arc::new(Mutex::new(Self {
             editor_ratio: 1.0,
             sidebar_visible: false,
-            max_result_tabs: 10,
             stop_on_error: true,
             ..Default::default()
         }))
     }
 
     pub fn apply_editor_config(&mut self, cfg: &crate::config::EditorConfig) {
-        self.max_result_tabs = cfg.max_result_tabs;
         self.stop_on_error = cfg.stop_on_error;
     }
 
@@ -244,8 +241,7 @@ impl AppState {
         self.active_result().map(|t| t.col_scroll).unwrap_or(0)
     }
 
-    /// Append a new result tab. Single-query semantics (cap enforcement) when
-    /// `batch_in_progress` is false; batch pushes append unbounded.
+    /// Append a new result tab.
     pub fn push_result_tab(&mut self, query: String, kind: ResultsPane) {
         let tab = ResultsTab {
             query,
@@ -254,12 +250,7 @@ impl AppState {
             col_scroll: 0,
         };
         self.result_tabs.push(tab);
-        if !self.batch_in_progress && self.max_result_tabs > 0 {
-            while self.result_tabs.len() > self.max_result_tabs {
-                self.result_tabs.remove(0);
-            }
-            self.active_result_tab = self.result_tabs.len().saturating_sub(1);
-        }
+        self.active_result_tab = self.result_tabs.len() - 1;
         self.editor_ratio = 0.5;
     }
 
@@ -274,14 +265,7 @@ impl AppState {
         };
         self.result_tabs.push(tab);
         let idx = self.result_tabs.len() - 1;
-        if !self.batch_in_progress && self.max_result_tabs > 0 {
-            while self.result_tabs.len() > self.max_result_tabs {
-                self.result_tabs.remove(0);
-            }
-            self.active_result_tab = self.result_tabs.len().saturating_sub(1);
-        } else {
-            self.active_result_tab = idx;
-        }
+        self.active_result_tab = idx;
         self.editor_ratio = 0.5;
         idx
     }
@@ -1182,38 +1166,6 @@ mod tests {
         s.dismiss_results();
         assert_eq!(s.editor_ratio, 1.0);
         assert!(matches!(s.results(), ResultsPane::Empty));
-    }
-
-    #[test]
-    fn singles_accumulate_then_cap_evicts_fifo() {
-        let state = AppState::new();
-        let mut s = state.lock().unwrap();
-        s.max_result_tabs = 3;
-        for i in 0..5 {
-            s.push_result_tab(format!("q{i}"), ResultsPane::Error(format!("e{i}")));
-        }
-        assert_eq!(s.result_tabs.len(), 3);
-        assert_eq!(s.result_tabs[0].query, "q2");
-        assert_eq!(s.result_tabs[2].query, "q4");
-        assert_eq!(s.active_result_tab, 2);
-    }
-
-    #[test]
-    fn batch_bypasses_cap_then_single_reapplies() {
-        let state = AppState::new();
-        let mut s = state.lock().unwrap();
-        s.max_result_tabs = 3;
-        let start = s.start_batch();
-        for i in 0..5 {
-            s.push_result_tab(format!("b{i}"), ResultsPane::Error("e".into()));
-        }
-        assert_eq!(s.result_tabs.len(), 5);
-        s.end_batch(start);
-        assert_eq!(s.active_result_tab, 0);
-        // Next single push triggers cap re-application.
-        s.push_result_tab("after".into(), ResultsPane::Error("e".into()));
-        assert_eq!(s.result_tabs.len(), 3);
-        assert_eq!(s.result_tabs[2].query, "after");
     }
 
     #[test]
