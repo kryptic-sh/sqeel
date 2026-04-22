@@ -2526,25 +2526,13 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
 }
 
 /// Render a 1-row tab bar above the results pane: numbered tabs with the active
-/// one highlighted in cyan. Each tab shows a short snippet of its query.
+/// one highlighted in cyan.
 fn results_tab_bar(state: &AppState) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(state.result_tabs.len() * 2);
     for (i, tab) in state.result_tabs.iter().enumerate() {
         let is_err = matches!(tab.kind, ResultsPane::Error(_));
         let is_loading = matches!(tab.kind, ResultsPane::Loading);
-        let snippet: String = tab
-            .query
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(20)
-            .collect();
-        let label = if snippet.is_empty() {
-            format!(" {} ", i + 1)
-        } else {
-            format!(" {}:{} ", i + 1, snippet)
-        };
+        let label = format!(" {} ", i + 1);
         let style = if i == state.active_result_tab {
             Style::default()
                 .fg(Color::Black)
