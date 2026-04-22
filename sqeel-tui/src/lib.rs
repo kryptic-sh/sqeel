@@ -33,6 +33,7 @@ use sqeel_core::{
     config::load_main_config,
     highlight::{
         HighlightSpan, TokenKind, first_syntax_error, statement_at_byte, statement_ranges,
+        strip_sql_comments,
     },
     lsp::{LspClient, LspEvent},
     schema::{self, SchemaTreeItem},
@@ -633,7 +634,8 @@ async fn run_loop(
                                 let mut offset = 0usize;
                                 let mut found = None;
                                 for (i, _tab) in s.result_tabs.iter().enumerate() {
-                                    let w = 3 + if i + 1 < s.result_tabs.len() { 1 } else { 0 };
+                                    let label_w = format!(" {} ", i + 1).chars().count();
+                                    let w = label_w + if i + 1 < s.result_tabs.len() { 1 } else { 0 };
                                     if rel_x < offset + w {
                                         found = Some(i);
                                         break;
@@ -1337,14 +1339,6 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char('[')) if focus == Focus::Results => {
                         state.lock().unwrap().prev_result_tab();
                     }
-                    // Close active result tab
-                    (KeyModifiers::NONE, KeyCode::Char('x')) if focus == Focus::Results => {
-                        state.lock().unwrap().close_active_result_tab();
-                    }
-                    // Dismiss results
-                    (KeyModifiers::NONE, KeyCode::Esc) if focus == Focus::Results => {
-                        state.lock().unwrap().dismiss_results();
-                    }
                     // On error tab: Enter jumps editor cursor to the reported line:col
                     (KeyModifiers::NONE, KeyCode::Enter) if focus == Focus::Results => {
                         let jump = {
@@ -1370,7 +1364,7 @@ async fn run_loop(
                             .unwrap_or_else(|| content.trim().to_string());
                         let mut s = state.lock().unwrap();
                         s.dismiss_completions();
-                        if stmt.is_empty() {
+                        if strip_sql_comments(&stmt).trim().is_empty() {
                             // nothing to run on empty/whitespace-only content
                         } else if let Some(err) = first_syntax_error(&stmt) {
                             s.dismiss_results();
@@ -1401,6 +1395,7 @@ async fn run_loop(
                             .into_iter()
                             .map(|(s, e)| content[s..e].trim().to_string())
                             .filter(|s| !s.is_empty())
+                            .filter(|s| !strip_sql_comments(s).trim().is_empty())
                             .collect();
                         let mut s = state.lock().unwrap();
                         s.dismiss_completions();
@@ -2565,11 +2560,41 @@ fn draw_results(
             } else {
                 "Result".into()
             };
-            let block = Block::default().title(title).borders(Borders::NONE);
+            let query = state
+                .active_result()
+                .map(|t| t.query.clone())
+                .unwrap_or_default();
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            lines.push(Line::from(Span::styled(
+                title,
+                Style::default().fg(Color::Red),
+            )));
+            if !query.trim().is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Query:",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                for ql in query.lines() {
+                    lines.push(Line::from(Span::styled(
+                        ql.to_string(),
+                        Style::default().fg(Color::White),
+                    )));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Error:",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            for el in e.lines() {
+                lines.push(Line::from(Span::styled(
+                    el.to_string(),
+                    Style::default().fg(Color::Red),
+                )));
+            }
             f.render_widget(
-                Paragraph::new(e.as_str())
-                    .style(Style::default().fg(Color::Red))
-                    .block(block),
+                Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
                 content_area,
             );
         }
@@ -2643,8 +2668,10 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
             Style::default().fg(Color::Red)
         } else if is_loading {
             Style::default().fg(Color::Yellow)
-        } else {
+        } else if is_cancelled {
             Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Cyan)
         };
         spans.push(Span::styled(label, style));
         if i + 1 < state.result_tabs.len() {
@@ -3047,8 +3074,6 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
                 ("j / k", "Scroll down / up"),
                 ("h / l", "Scroll left / right"),
                 ("[ / ]", "Prev / next result tab"),
-                ("x", "Close active result tab"),
-                ("Esc", "Dismiss all results"),
             ],
         ),
         (

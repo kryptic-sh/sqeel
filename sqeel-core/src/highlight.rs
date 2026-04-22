@@ -198,6 +198,53 @@ pub fn first_syntax_error(source: &str) -> Option<SyntaxError> {
     })
 }
 
+/// Strip SQL comments (`-- …` line comments and `/* … */` block comments) from
+/// `source`, preserving comment-like content inside single-quoted, double-quoted,
+/// and backtick-quoted strings. Block comments collapse to a single space so
+/// adjacent tokens stay separated.
+pub fn strip_sql_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            b'\'' | b'"' | b'`' => {
+                out.push(c);
+                i += 1;
+                while i < bytes.len() {
+                    let d = bytes[i];
+                    out.push(d);
+                    i += 1;
+                    if d == c {
+                        break;
+                    }
+                }
+            }
+            b'-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 < bytes.len() {
+                    i += 2;
+                }
+                out.push(b' ');
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
 impl Default for Highlighter {
     fn default() -> Self {
         Self::new().expect("failed to initialize tree-sitter-sequel")
