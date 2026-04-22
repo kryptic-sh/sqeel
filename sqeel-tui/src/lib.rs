@@ -293,7 +293,7 @@ async fn run_loop(
     let mut file_picker: Option<FilePicker> = None;
     let mut delete_confirm: Option<String> = None;
     let mut schema_search = SchemaSearch::from_initial(state.lock().unwrap().schema_search_query.clone());
-    let mut editor_search: Option<String> = None;
+    let mut editor_search: Option<TextInput> = None;
     let mut last_editor_search: Option<String> = None;
 
     let mut toasts: Vec<(String, std::time::Instant)> = Vec::new();
@@ -370,6 +370,10 @@ async fn run_loop(
             }
             // Apply any completed highlight results from the background thread.
             if let Some(spans) = highlight_thread.try_recv() {
+                let row_count = editor.textarea.lines().len();
+                editor
+                    .textarea
+                    .set_syntax_spans(syntax_spans_by_row(&spans, row_count));
                 s.set_highlights(spans);
                 needs_redraw = true;
             }
@@ -470,6 +474,8 @@ async fn run_loop(
             let schema_search_snap = schema_search.clone();
             let editor_search_snap = editor_search.clone();
             let last_editor_search_snap = last_editor_search.clone();
+            let editor_search_text_snap: Option<String> =
+                editor_search_snap.as_ref().map(|t| t.text.clone());
             let toast_snap: Vec<String> = toasts.iter().map(|(msg, _)| msg.clone()).collect();
             terminal.draw(|f| {
                 let s = state.lock().unwrap();
@@ -483,7 +489,8 @@ async fn run_loop(
                     picker_snap.as_ref(),
                     delete_snap.as_deref(),
                     &schema_search_snap,
-                    editor_search_snap.as_deref(),
+                    editor_search_snap.as_ref(),
+                    editor_search_text_snap.as_deref(),
                     last_editor_search_snap.as_deref(),
                     &toast_snap,
                 );
@@ -756,6 +763,7 @@ async fn run_loop(
                     && rename_input.is_none()
                     && file_picker.is_none()
                     && delete_confirm.is_none()
+                    && editor_search.is_none()
                     && !show_switcher
                     && !show_add
                     && !show_help
@@ -1019,24 +1027,36 @@ async fn run_loop(
                 if editor_search.is_some() {
                     match (key.modifiers, key.code) {
                         (KeyModifiers::NONE, KeyCode::Esc) => {
-                            last_editor_search = editor_search.take();
+                            let q = editor_search.take().map(|t| t.text).unwrap_or_default();
+                            last_editor_search = if q.is_empty() { None } else { Some(q) };
+                        }
+                        (KeyModifiers::NONE, KeyCode::Enter) => {
+                            let q = editor_search.take().map(|t| t.text).unwrap_or_default();
+                            if !q.is_empty() {
+                                let _ = editor.textarea.set_search_pattern(&q);
+                                editor.textarea.search_forward(false);
+                                last_editor_search = Some(q);
+                            } else {
+                                last_editor_search = None;
+                            }
                         }
                         (KeyModifiers::NONE, KeyCode::Backspace) => {
                             if let Some(ref mut q) = editor_search {
-                                q.pop();
+                                q.backspace();
+                                let _ = editor.textarea.set_search_pattern(&q.text);
                             }
-                        }
-                        (KeyModifiers::NONE, KeyCode::Enter) => {
-                            editor.textarea.search_forward(false);
-                            last_editor_search = editor_search.take();
                         }
                         (KeyModifiers::NONE, KeyCode::Char(c)) => {
                             if let Some(ref mut q) = editor_search {
-                                q.push(c);
-                                let _ = editor.textarea.set_search_pattern(q.as_str());
+                                q.insert_char(c);
+                                let _ = editor.textarea.set_search_pattern(&q.text);
                             }
                         }
-                        _ => {}
+                        _ => {
+                            if let Some(ref mut q) = editor_search {
+                                q.handle_nav(key.code);
+                            }
+                        }
                     }
                     continue;
                 }
@@ -1316,7 +1336,7 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char('/'))
                         if focus == Focus::Editor && vim_mode == VimMode::Normal =>
                     {
-                        editor_search = Some(String::new());
+                        editor_search = Some(TextInput::default());
                         last_editor_search = None;
                         let _ = editor.textarea.set_search_pattern("");
                     }
@@ -1399,6 +1419,41 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
     }
 }
 
+/// Status-bar block showing `/<pat> <i>/<n>` when an editor search is active.
+/// `i` is the 1-based index of the match at-or-after the cursor; 0 means no
+/// match has been navigated to yet (cursor is past the last match).
+fn search_label(editor: &Editor) -> Option<Span<'static>> {
+    let re = editor.textarea.search_pattern()?;
+    let pat = re.as_str().to_string();
+    let lines = editor.textarea.lines();
+    let (cur_row, cur_col) = editor.textarea.cursor();
+    let mut total = 0usize;
+    let mut current = 0usize;
+    for (row, line) in lines.iter().enumerate() {
+        for m in re.find_iter(line) {
+            total += 1;
+            if current == 0 {
+                let on_or_after_cursor = row > cur_row
+                    || (row == cur_row && byte_to_char_col(line, m.start()) >= cur_col);
+                if on_or_after_cursor {
+                    current = total;
+                }
+            }
+        }
+    }
+    if total == 0 {
+        return Some(Span::raw(format!(" /{pat} 0/0 ")));
+    }
+    if current == 0 {
+        current = total;
+    }
+    Some(Span::raw(format!(" /{pat} {current}/{total} ")))
+}
+
+fn byte_to_char_col(line: &str, byte_idx: usize) -> usize {
+    line[..byte_idx.min(line.len())].chars().count()
+}
+
 /// Desired terminal cursor shape after a draw. The TUI uses a thin vertical bar
 /// for any text-input context (insert mode, dialogs, schema search) and a thick
 /// block for editor normal mode, so cursors look consistent across the app.
@@ -1434,7 +1489,8 @@ fn draw(
     file_picker: Option<&FilePicker>,
     delete_confirm: Option<&str>,
     schema_search: &SchemaSearch,
-    editor_search: Option<&str>,
+    editor_search: Option<&TextInput>,
+    editor_search_text: Option<&str>,
     last_editor_search: Option<&str>,
     toasts: &[String],
 ) -> DrawAreas {
@@ -1530,7 +1586,7 @@ fn draw(
         editor,
         right_chunks[0],
         editor_focused,
-        editor_search,
+        editor_search_text,
         last_editor_search,
     );
 
@@ -1583,6 +1639,11 @@ fn draw(
     // Rename prompt: same shape as command palette.
     if let Some(name) = rename_input {
         dialog_cursor = Some(draw_input_dialog(f, area, "> ", name));
+    }
+
+    // Editor `/` search: same shape as command palette.
+    if let Some(query) = editor_search {
+        dialog_cursor = Some(draw_input_dialog(f, area, "/ ", query));
     }
 
     // Delete confirmation: centered borderless dialog.
@@ -1791,7 +1852,10 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
     let diag = diag_label(state);
     let diag_width = diag.as_ref().map(|s| s.content.len() as u16).unwrap_or(0);
 
-    let right_width = cursor_width + diag_width;
+    let search = search_label(editor);
+    let search_width = search.as_ref().map(|s| s.content.len() as u16).unwrap_or(0);
+
+    let right_width = cursor_width + diag_width + search_width;
     let center_width = area.width.saturating_sub(mode_width + right_width);
 
     // Mode block (left)
@@ -1808,20 +1872,26 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
         width: center_width.min(area.width.saturating_sub(mode_width)),
         height: 1,
     };
-    // Right side (diag + cursor)
+    // Right side (search + diag + cursor)
     let right_x = area.x + mode_width + center_width;
-    let diag_area = Rect {
+    let search_area = Rect {
         x: right_x,
+        y: area.y,
+        width: search_width,
+        height: 1,
+    };
+    let diag_area = Rect {
+        x: right_x + search_width,
         y: area.y,
         width: diag_width,
         height: 1,
     };
     let cursor_area = Rect {
-        x: right_x + diag_width,
+        x: right_x + search_width + diag_width,
         y: area.y,
         width: cursor_width.min(
             area.width
-                .saturating_sub(mode_width + center_width + diag_width),
+                .saturating_sub(mode_width + center_width + search_width + diag_width),
         ),
         height: 1,
     };
@@ -1840,6 +1910,18 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
 
     // Center: connection > tab
     f.render_widget(Paragraph::new(center_text).style(bar_bg), center_area);
+
+    // Search match counter
+    if let Some(s) = search {
+        let style = Style::default()
+            .bg(Color::Rgb(80, 60, 20))
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(
+            Paragraph::new(Span::styled(s.content.to_string(), style)),
+            search_area,
+        );
+    }
 
     // Diagnostics
     if let Some(d) = diag {
@@ -2030,11 +2112,8 @@ fn draw_editor(
         .first()
         .map(|d| format!(" {}:{} {}", d.line + 1, d.col + 1, d.message));
 
-    // Split inner: textarea + optional search bar (1) + optional diag (1)
+    // Split inner: textarea + optional diag (1)
     let mut constraints = vec![Constraint::Min(1)];
-    if editor_search.is_some() {
-        constraints.push(Constraint::Length(1));
-    }
     if diag_line.is_some() {
         constraints.push(Constraint::Length(1));
     }
@@ -2083,41 +2162,24 @@ fn draw_editor(
     // Real terminal cursor handles all cursor rendering — hide the textarea's
     // cell-based cursor by blending it into the cursor-line background.
     editor.textarea.set_cursor_style(Style::default().bg(cursor_line_bg));
-    // In Visual mode tui-textarea's Search boundary (rank 2) overrides Select (rank 1),
-    // so syntax highlights would erase the selection color. Clear the pattern instead.
+    // Search pattern is dedicated to the user's `/` query (Visual mode clears
+    // it so selection color isn't overridden by Search rank).
     if state.vim_mode == VimMode::Visual || state.vim_mode == VimMode::VisualLine {
         let _ = editor.textarea.set_search_pattern("");
     } else if let Some(query) = editor_search.or(last_editor_search) {
-        let pattern = if query.is_empty() { "" } else { query };
-        let _ = editor.textarea.set_search_pattern(pattern);
+        let _ = editor.textarea.set_search_pattern(query);
         editor
             .textarea
             .set_search_style(Style::default().bg(Color::Rgb(80, 60, 20)).fg(Color::White));
     } else {
-        let _ = editor.textarea.set_search_pattern(
-            r"(?i)\b(select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|column|join|inner|outer|left|right|full|cross|on|and|or|not|null|is|in|like|between|order|by|group|having|limit|offset|union|all|distinct|as|case|when|then|else|end|if|exists|primary|foreign|key|references|unique|default|constraint|check|with|view|begin|commit|rollback|transaction|use|show|describe|explain|database|schema|index|procedure|function|returns|return|trigger|true|false)\b",
-        );
-        editor.textarea.set_search_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        let _ = editor.textarea.set_search_pattern("");
     }
     f.render_widget(&editor.textarea, chunks[1]);
-
-    let mut extra_idx = 2usize;
-    if let Some(query) = editor_search {
-        f.render_widget(
-            Paragraph::new(format!("/{query}")).style(Style::default().fg(Color::Yellow)),
-            chunks[extra_idx],
-        );
-        extra_idx += 1;
-    }
 
     if let Some(msg) = diag_line {
         f.render_widget(
             Paragraph::new(msg).style(Style::default().fg(Color::Red)),
-            chunks[extra_idx],
+            chunks[2],
         );
     }
 }
@@ -2211,6 +2273,67 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
         }
         ResultsPane::Empty => unreachable!(),
     }
+}
+
+fn token_kind_style(kind: TokenKind) -> Option<Style> {
+    match kind {
+        TokenKind::Keyword => Some(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        TokenKind::String => Some(Style::default().fg(Color::Green)),
+        TokenKind::Comment => Some(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ),
+        TokenKind::Number => Some(Style::default().fg(Color::Magenta)),
+        TokenKind::Operator => Some(Style::default().fg(Color::Yellow)),
+        TokenKind::Identifier | TokenKind::Plain => None,
+    }
+}
+
+/// Convert tree-sitter spans (row+col are byte offsets within the row) into
+/// the per-row `(start_byte, end_byte, style)` shape tui-textarea expects.
+/// Multi-row spans are split per row. Spans with no styling are skipped.
+fn syntax_spans_by_row(
+    spans: &[HighlightSpan],
+    row_count: usize,
+) -> Vec<Vec<(usize, usize, Style)>> {
+    let mut by_row: Vec<Vec<(usize, usize, Style)>> = vec![Vec::new(); row_count];
+    for s in spans {
+        let Some(style) = token_kind_style(s.kind) else { continue };
+        if s.start_row >= row_count {
+            continue;
+        }
+        if s.start_row == s.end_row {
+            if s.end_col > s.start_col {
+                by_row[s.start_row].push((s.start_col, s.end_col, style));
+            }
+        } else {
+            // Multi-row span: emit a segment per row. Use usize::MAX as "to
+            // end of line" — clamped in line_spans against actual line length.
+            by_row[s.start_row].push((s.start_col, usize::MAX, style));
+            for row_spans in by_row
+                .iter_mut()
+                .take(s.end_row.min(row_count))
+                .skip(s.start_row + 1)
+            {
+                row_spans.push((0, usize::MAX, style));
+            }
+            if s.end_row < row_count && s.end_col > 0 {
+                by_row[s.end_row].push((0, s.end_col, style));
+            }
+        }
+    }
+    // tree-sitter visits parents before children; child spans for an
+    // identifier/keyword often nest inside larger ones. Sort and de-overlap by
+    // taking the last (innermost) style for any byte range.
+    for row_spans in &mut by_row {
+        row_spans.sort_by_key(|&(s, _, _)| s);
+    }
+    by_row
 }
 
 /// Returns the word (alphanumeric + `_`) ending at `col` on `line`.
