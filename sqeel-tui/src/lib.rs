@@ -2576,6 +2576,15 @@ fn draw_results(
                 content_area,
             );
         }
+        ResultsPane::Cancelled => {
+            let block = Block::default().title("Results").borders(Borders::NONE);
+            f.render_widget(
+                Paragraph::new("Skipped (previous query failed)")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .block(block),
+                content_area,
+            );
+        }
         ResultsPane::Empty => unreachable!(),
     }
 }
@@ -2587,6 +2596,7 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
     for (i, tab) in state.result_tabs.iter().enumerate() {
         let is_err = matches!(tab.kind, ResultsPane::Error(_));
         let is_loading = matches!(tab.kind, ResultsPane::Loading);
+        let is_cancelled = matches!(tab.kind, ResultsPane::Cancelled);
         let label = format!(" {} ", i + 1);
         let style = if i == state.active_result_tab {
             Style::default()
@@ -2595,6 +2605,8 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
                     Color::Red
                 } else if is_loading {
                     Color::Yellow
+                } else if is_cancelled {
+                    Color::DarkGray
                 } else {
                     Color::Cyan
                 })
@@ -2603,6 +2615,8 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
             Style::default().fg(Color::Red)
         } else if is_loading {
             Style::default().fg(Color::Yellow)
+        } else if is_cancelled {
+            Style::default().fg(Color::DarkGray)
         } else {
             Style::default().fg(Color::DarkGray)
         };

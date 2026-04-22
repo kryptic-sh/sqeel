@@ -105,6 +105,7 @@ pub enum ResultsPane {
     Loading,
     Results(QueryResult),
     Error(String),
+    Cancelled,
 }
 
 /// One entry in the results pane's tab bar — the query that produced it and

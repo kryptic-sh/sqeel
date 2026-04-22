@@ -435,11 +435,12 @@ fn spawn_executor(
                         let mut s = state.lock().unwrap();
                         (s.stop_on_error, s.start_batch())
                     };
+                    let query_count = queries.len();
                     for (i, query) in queries.into_iter().enumerate() {
                         let tab_idx = start_idx + i;
                         let result = conn.execute(&query).await;
                         let is_err = result.is_err();
-                        {
+                        let stop = {
                             let mut s = state.lock().unwrap();
                             match result {
                                 Ok(mut r) => {
@@ -453,8 +454,16 @@ fn spawn_executor(
                                 }
                             }
                             s.results_dirty = true;
-                        }
-                        if is_err && stop_on_error {
+                            is_err && stop_on_error
+                        };
+                        if stop {
+                            // Mark remaining loading tabs as cancelled
+                            let mut s = state.lock().unwrap();
+                            for j in (i + 1)..query_count {
+                                let remaining_idx = start_idx + j;
+                                s.finish_result_tab(remaining_idx, ResultsPane::Cancelled);
+                            }
+                            s.results_dirty = true;
                             break;
                         }
                     }
