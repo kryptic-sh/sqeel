@@ -342,8 +342,10 @@ fn spawn_executor(
         sanitize_conn_slug(conn_name)
     };
 
-    // Show cached schema immediately with restored expansion + cursor, then refresh in background
-    if let Some(cached) = load_schema_cache(&conn.url) {
+    // Show cached schema immediately with restored expansion + cursor, then refresh in background.
+    // When a cache exists we restore here; the background loader then leaves
+    // cursor/expansion alone so user toggles made during the refresh survive.
+    let cache_restored = if let Some(cached) = load_schema_cache(&conn.url) {
         let mut s = state.lock().unwrap();
         s.set_schema_nodes(cached);
         s.restore_schema_expanded_paths(&session_schema_expanded_paths);
@@ -355,7 +357,10 @@ fn spawn_executor(
             let max = s.visible_schema_items().len().saturating_sub(1);
             s.schema_cursor = session_schema_cursor.min(max);
         }
-    }
+        true
+    } else {
+        false
+    };
 
     // ── Schema loader task ───────────────────────────────────────────────────
     // Loads db shells → table shells → columns. Column fetches run with bounded
@@ -466,18 +471,22 @@ fn spawn_executor(
         }
         while join_set.join_next().await.is_some() {}
 
-        // All columns loaded — restore expansion + cursor, save cache + session.
+        // All columns loaded — save cache + session. Expansion/cursor were
+        // restored up-front from cache (if present); don't stomp user toggles
+        // made during the refresh. Only restore here when no cache existed.
         let mut s = schema_state.lock().unwrap();
         s.schema_loading = false;
-        s.restore_schema_expanded_paths(&session_schema_expanded_paths);
-        let restored = session_schema_cursor_path
-            .as_deref()
-            .map(|p| s.restore_schema_cursor_by_path(p))
-            .unwrap_or(false);
-        if !restored {
+        if !cache_restored {
             s.rebuild_schema_cache_if_dirty();
-            let max = s.visible_schema_items().len().saturating_sub(1);
-            s.schema_cursor = session_schema_cursor.min(max);
+            s.restore_schema_expanded_paths(&session_schema_expanded_paths);
+            let restored = session_schema_cursor_path
+                .as_deref()
+                .map(|p| s.restore_schema_cursor_by_path(p))
+                .unwrap_or(false);
+            if !restored {
+                let max = s.visible_schema_items().len().saturating_sub(1);
+                s.schema_cursor = session_schema_cursor.min(max);
+            }
         }
         let nodes = s.schema_nodes.clone();
         let cursor = s.schema_cursor;
