@@ -642,7 +642,8 @@ async fn run_loop(
                                 let mut found = None;
                                 for (i, _tab) in s.result_tabs.iter().enumerate() {
                                     let label_w = format!(" {} ", i + 1).chars().count();
-                                    let w = label_w + if i + 1 < s.result_tabs.len() { 1 } else { 0 };
+                                    let w =
+                                        label_w + if i + 1 < s.result_tabs.len() { 1 } else { 0 };
                                     if rel_x < offset + w {
                                         found = Some(i);
                                         break;
