@@ -130,3 +130,110 @@
 
 - [ ] **build_tab_title per-frame format!** (`sqeel-tui/src/lib.rs:1490-1508`)
       `format!(" {} ", name)` allocated per tab per frame. Cache on TabEntry.
+
+## Refactors
+
+- [ ] **Unify clipboard access** (`sqeel-tui/src/lib.rs`,
+      `sqeel-tui/src/editor.rs`) Today the editor uses tui-textarea's internal
+      yank buffer and the results pane calls `arboard::Clipboard` directly at
+      multiple sites. Consolidate to a single `Clipboard` wrapper owned by the
+      run loop (or behind a `ClipboardSink` trait) so every yank path — editor
+      `y/yy/d/x`, results `y/yy`, results mouse click, command palette copy —
+      writes to the same instance.
+
+      The wrapper must target the **main system clipboard** (X11 `CLIPBOARD`
+      selection / Wayland / macOS pasteboard / Windows) and propagate over
+      SSH like tmux does: emit OSC 52 escape sequences (`\x1b]52;c;<base64>\x07`)
+      so the user's local terminal (iTerm2, WezTerm, Alacritty, kitty, recent
+      xterm) copies the payload into their laptop's clipboard when sqeel is
+      running on a remote host. Detect `$SSH_TTY`/`$SSH_CONNECTION` and fall
+      back to OSC 52 when `arboard` fails to connect to a local X/Wayland
+      display. Split the payload if it exceeds the terminal's OSC 52 size
+      cap (typically ~74KB for xterm without `--maximum-size`).
+
+      Steps:
+        1. Introduce `sqeel-tui/src/clipboard.rs` with a `Clipboard` struct
+           that holds the `arboard::Clipboard` handle + a bool for OSC 52
+           fallback.
+        2. `set_text(&mut self, text: &str)` tries arboard first; on error
+           or when `$SSH_TTY` is set, writes the OSC 52 escape to stdout
+           (bypassing ratatui — use `crossterm::execute!` with a raw write).
+        3. Replace every direct `arboard::Clipboard::new()` and every
+           `cb.set_text(...)` site with the wrapper. Remove the ad-hoc
+           `Clipboard::new()` call in the results `y` handler (already
+           reusing outer var now — verify no stragglers).
+        4. Thread a `&mut Clipboard` into `Editor` methods that currently
+           use tui-textarea's `.yank_text()` — or, easier, drain the
+           editor's internal yank into our wrapper after each operation.
+        5. Test on: local X11, local Wayland, SSH into a tmux session,
+           SSH without tmux. Paste target = another app's input field.
+
+- [ ] **Extract theme into TOML** (`sqeel-tui/src/lib.rs`,
+      `sqeel-tui/src/editor.rs`) Every `Color::Rgb(...)` / `Color::Cyan` literal
+      is scattered across draw code. Move them to a named theme loaded from
+      TOML.
+
+      Default theme: **Tokyo Night** — ship
+      `sqeel-tui/themes/tokyonight.toml` and `include_str!` it at build
+      time as the fallback, so the binary always works even if the user's
+      config dir is empty or corrupted.
+
+      Palette (Tokyo Night storm, matches folke/tokyonight.nvim):
+        - bg            `#24283b`
+        - bg_dark       `#1f2335`
+        - bg_highlight  `#292e42`
+        - fg            `#c0caf5`
+        - fg_dark       `#a9b1d6`
+        - comment       `#565f89`
+        - blue          `#7aa2f7`
+        - cyan          `#7dcfff`
+        - green         `#9ece6a`
+        - magenta       `#bb9af7`
+        - orange        `#ff9e64`
+        - purple        `#9d7cd8`
+        - red           `#f7768e`
+        - yellow        `#e0af68`
+
+      TOML shape:
+      ```toml
+      name = "Tokyo Night"
+
+      [palette]
+      bg           = "#24283b"
+      # ... etc
+
+      [ui]
+      editor_bg          = "bg"
+      editor_cursor_line = "bg_highlight"
+      results_bg         = "bg_dark"
+      results_col_bg     = "bg_highlight"
+      results_cursor_bg  = "blue"
+      schema_active      = "cyan"
+      status_bar_bg      = "bg_dark"
+      toast_info_bg      = "blue"
+      toast_error_bg     = "red"
+      sql_keyword        = "magenta"
+      sql_string         = "green"
+      sql_number         = "orange"
+      sql_comment        = "comment"
+      sql_ident          = "fg"
+      # ... one entry per semantic slot we currently draw
+      ```
+
+      Steps:
+        1. Enumerate every color literal in draw code; group into semantic
+           slots (editor_bg, results_cursor_bg, sql_keyword, diag_error,
+           toast_info_bg, etc.). Expect ~30-40 slots.
+        2. Define `struct Theme { name: String, palette: HashMap<String, Color>, ui: UiColors }` with a typed `UiColors` struct per slot.
+        3. Deserialize with serde + a custom `#[serde(deserialize_with)]`
+           that resolves `"bg"` → `palette["bg"]` and `"#24283b"` → literal.
+        4. Load order: `$XDG_CONFIG_HOME/sqeel/theme.toml` → fall back to
+           `include_str!("../themes/tokyonight.toml")`.
+        5. Replace every hard-coded color with `theme.ui.<slot>` (pass
+           `&Theme` alongside `&AppState` into draw functions, or stash it
+           in `AppState`).
+        6. Write `themes/tokyonight.toml` using the palette above and
+           commit it.
+        7. Smoke-test: delete user config, verify binary falls back to
+           bundled theme; add a broken `theme.toml`, verify error surfaces
+           as a toast without crashing.
