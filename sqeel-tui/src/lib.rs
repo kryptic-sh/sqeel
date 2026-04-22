@@ -2691,9 +2691,16 @@ fn draw_results(
                 chunks[5],
             );
             f.render_widget(Paragraph::new(hr).style(sep_style), chunks[6]);
+            let body_area = chunks[7];
+            state
+                .results_body_rows
+                .store(body_area.height, std::sync::atomic::Ordering::Relaxed);
+            state
+                .results_body_width
+                .store(body_area.width, std::sync::atomic::Ordering::Relaxed);
             f.render_widget(
                 Paragraph::new(body_lines).scroll((0, char_offset)),
-                chunks[7],
+                body_area,
             );
         }
         ResultsPane::Error(e) => {
@@ -2824,7 +2831,7 @@ fn render_framed_pane(
         chunks[1],
     );
     f.render_widget(Paragraph::new(hr.clone()).style(sep_style), chunks[2]);
-    if show_query {
+    let body_chunk = if show_query {
         let mut query_line = highlight_query_line(&query_text);
         let cursor = state.active_result().map(|t| t.cursor);
         if state.focus == Focus::Results && cursor == Some(ResultsCursor::Query) {
@@ -2841,16 +2848,23 @@ fn render_framed_pane(
         }
         f.render_widget(Paragraph::new(query_line), chunks[3]);
         f.render_widget(Paragraph::new(hr).style(sep_style), chunks[4]);
-        f.render_widget(
-            Paragraph::new(body).wrap(ratatui::widgets::Wrap { trim: false }),
-            chunks[5],
-        );
+        chunks[5]
     } else {
-        f.render_widget(
-            Paragraph::new(body).wrap(ratatui::widgets::Wrap { trim: false }),
-            chunks[3],
-        );
-    }
+        chunks[3]
+    };
+    state
+        .results_body_rows
+        .store(body_chunk.height, std::sync::atomic::Ordering::Relaxed);
+    state
+        .results_body_width
+        .store(body_chunk.width, std::sync::atomic::Ordering::Relaxed);
+    let scroll_y = state.active_result().map(|t| t.scroll as u16).unwrap_or(0);
+    f.render_widget(
+        Paragraph::new(body)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((scroll_y, 0)),
+        body_chunk,
+    );
 }
 
 /// Render a 1-row tab bar above the results pane: numbered tabs with the active

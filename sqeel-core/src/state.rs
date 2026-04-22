@@ -8,6 +8,7 @@ use crate::schema::{
     toggle_node,
 };
 use lsp_types::DiagnosticSeverity;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -142,6 +143,36 @@ pub enum ResultsCursor {
     MessageLine(usize),
 }
 
+/// Bump `col_scroll` so column `col` lies inside a viewport of width `width`
+/// cells, given the column widths baked into `r.col_widths` (plus the 1-cell
+/// `│` separator between columns). Leaves `col_scroll` unchanged if already
+/// visible.
+fn scroll_cols_into_view(r: &QueryResult, col_scroll: &mut usize, col: usize, width: u16) {
+    if col < *col_scroll {
+        *col_scroll = col;
+        return;
+    }
+    if width == 0 || r.col_widths.is_empty() {
+        return;
+    }
+    // Shrink col_scroll until the cursor column's right edge fits in the
+    // viewport. Each column contributes its width plus a 1-cell separator
+    // (except after the final column, but over-counting by 1 is safe).
+    loop {
+        let used: u32 = r
+            .col_widths
+            .iter()
+            .skip(*col_scroll)
+            .take(col + 1 - *col_scroll)
+            .map(|&w| w as u32 + 1)
+            .sum();
+        if used <= width as u32 || *col_scroll >= col {
+            break;
+        }
+        *col_scroll += 1;
+    }
+}
+
 /// A query request sent over the executor channel — single statement or batch.
 #[derive(Debug, Clone)]
 pub enum QueryRequest {
@@ -218,6 +249,12 @@ pub struct AppState {
     pub query_tx: Option<tokio::sync::mpsc::Sender<QueryRequest>>,
     /// Schema sidebar search query — persisted to session so it survives app restart.
     pub schema_search_query: Option<String>,
+    /// Last-rendered viewport size of the results body, written by the TUI on
+    /// each draw so cursor-nav helpers can scroll the viewport to follow the
+    /// cursor when it moves off-screen. Atomics so the draw path (which only
+    /// has a shared ref) can update them without taking a mutable lock.
+    pub results_body_rows: AtomicU16,
+    pub results_body_width: AtomicU16,
 }
 
 impl AppState {
@@ -454,29 +491,51 @@ impl AppState {
             | (ResultsPane::Empty | ResultsPane::Loading, _) => ResultsCursor::Query,
             (_, c) => c,
         };
-        Self::ensure_cursor_visible(tab);
+        let rows = self.results_body_rows.load(Ordering::Relaxed);
+        let width = self.results_body_width.load(Ordering::Relaxed);
+        if let Some(tab) = self.result_tabs.get_mut(self.active_result_tab) {
+            Self::ensure_cursor_visible(tab, rows, width);
+        }
     }
 
-    fn ensure_cursor_visible(tab: &mut ResultsTab) {
-        // Viewport size is written by the TUI on draw; fall back to 10 rows
-        // when we haven't rendered yet so early programmatic moves still work.
-        let rows = 10;
-        if let ResultsCursor::Cell { row, col } = tab.cursor {
-            if row < tab.scroll {
-                tab.scroll = row;
-            } else if row >= tab.scroll + rows {
-                tab.scroll = row + 1 - rows;
+    /// Scroll the body so the cursor is inside the rendered viewport. `rows`
+    /// is the visible row count, `width` is the body width in cells. Falls
+    /// back to safe defaults when the TUI hasn't rendered yet.
+    fn ensure_cursor_visible(tab: &mut ResultsTab, rows: u16, width: u16) {
+        let rows = if rows == 0 { 10 } else { rows as usize };
+        match tab.cursor {
+            ResultsCursor::Cell { row, col } => {
+                if row < tab.scroll {
+                    tab.scroll = row;
+                } else if row >= tab.scroll + rows {
+                    tab.scroll = row + 1 - rows;
+                }
+                if let ResultsPane::Results(r) = &tab.kind {
+                    scroll_cols_into_view(r, &mut tab.col_scroll, col, width);
+                }
             }
-            if col < tab.col_scroll {
-                tab.col_scroll = col;
+            ResultsCursor::Header(col) => {
+                if let ResultsPane::Results(r) = &tab.kind {
+                    scroll_cols_into_view(r, &mut tab.col_scroll, col, width);
+                }
             }
+            ResultsCursor::MessageLine(line) => {
+                if line < tab.scroll {
+                    tab.scroll = line;
+                } else if line >= tab.scroll + rows {
+                    tab.scroll = line + 1 - rows;
+                }
+            }
+            _ => {}
         }
     }
 
     fn with_active_tab<F: FnOnce(&mut ResultsTab)>(&mut self, f: F) {
+        let rows = self.results_body_rows.load(Ordering::Relaxed);
+        let width = self.results_body_width.load(Ordering::Relaxed);
         if let Some(t) = self.result_tabs.get_mut(self.active_result_tab) {
             f(t);
-            Self::ensure_cursor_visible(t);
+            Self::ensure_cursor_visible(t, rows, width);
         }
     }
 
