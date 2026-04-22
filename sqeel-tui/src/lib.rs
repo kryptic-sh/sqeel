@@ -50,7 +50,7 @@ use sqeel_core::{
         statement_ranges, strip_sql_comments,
     },
     lsp::{LspClient, LspEvent},
-    schema::{self, SchemaTreeItem},
+    schema::{self, SchemaItemKind, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
 use theme::ui;
@@ -2490,6 +2490,31 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
     );
 }
 
+fn schema_item_line(item: &SchemaTreeItem, u: &theme::UiColors) -> Line<'static> {
+    let indent = " ".repeat(1 + item.depth * 2);
+    let (icon, icon_color) = match &item.kind {
+        SchemaItemKind::Database => ("󰆼", u.schema_icon_db),
+        SchemaItemKind::Table => ("󰓫", u.schema_icon_table),
+        SchemaItemKind::Column { is_pk: true, .. } => ("󰌆", u.schema_icon_pk),
+        SchemaItemKind::Column { .. } => ("󱘚", u.schema_icon_column),
+    };
+    let mut spans = vec![
+        Span::raw(indent),
+        Span::styled(icon.to_string(), Style::default().fg(icon_color)),
+        Span::raw(format!(" {}", item.name)),
+    ];
+    if let SchemaItemKind::Column { type_name, .. } = &item.kind
+        && !type_name.is_empty()
+    {
+        spans.push(Span::raw(": "));
+        spans.push(Span::styled(
+            type_name.clone(),
+            Style::default().fg(u.schema_type_fg),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn draw_schema(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
@@ -2590,9 +2615,10 @@ fn draw_schema(
         return (list_area, 0, 0, has_filter, search_cursor_pos);
     }
 
+    let u = ui();
     let list_items: Vec<ListItem> = items
         .iter()
-        .map(|item| ListItem::new(item.label.as_str()))
+        .map(|item| ListItem::new(schema_item_line(item, u)))
         .collect();
 
     // When search box is actively focused, don't highlight the list.

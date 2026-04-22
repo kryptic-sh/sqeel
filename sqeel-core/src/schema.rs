@@ -65,12 +65,45 @@ impl SchemaNode {
     }
 }
 
+/// Classifies a tree item so renderers can style icon/type without parsing
+/// the label back apart.
+#[derive(Debug, Clone)]
+pub enum SchemaItemKind {
+    Database,
+    Table,
+    Column { type_name: String, is_pk: bool },
+}
+
 /// Flat list of visible tree items for rendering.
 #[derive(Debug, Clone)]
 pub struct SchemaTreeItem {
     pub label: String,
     pub depth: usize,
     pub node_path: Vec<usize>, // indices to reach this node from root
+    pub name: String,
+    pub kind: SchemaItemKind,
+}
+
+pub fn node_icon_char(node: &SchemaNode) -> &'static str {
+    match node {
+        SchemaNode::Database { .. } => "󰆼",
+        SchemaNode::Table { .. } => "󰓫",
+        SchemaNode::Column { is_pk: true, .. } => "󰌆",
+        SchemaNode::Column { .. } => "󱘚",
+    }
+}
+
+pub fn item_kind(node: &SchemaNode) -> SchemaItemKind {
+    match node {
+        SchemaNode::Database { .. } => SchemaItemKind::Database,
+        SchemaNode::Table { .. } => SchemaItemKind::Table,
+        SchemaNode::Column {
+            type_name, is_pk, ..
+        } => SchemaItemKind::Column {
+            type_name: type_name.clone(),
+            is_pk: *is_pk,
+        },
+    }
 }
 
 pub fn flatten_tree(nodes: &[SchemaNode]) -> Vec<SchemaTreeItem> {
@@ -97,7 +130,7 @@ fn flatten_nodes_all(
         let mut node_path = path.to_vec();
         node_path.push(i);
         let indent = " ".repeat(1 + depth * 2);
-        let icon = node_icon(node);
+        let icon = node_icon_char(node);
         let name = node.name();
         let extra = match node {
             SchemaNode::Column { type_name, .. } if !type_name.is_empty() => {
@@ -105,11 +138,13 @@ fn flatten_nodes_all(
             }
             _ => String::new(),
         };
-        let label = format!("{indent}{icon}{name}{extra}");
+        let label = format!("{indent}{icon} {name}{extra}");
         items.push(SchemaTreeItem {
             label,
             depth,
             node_path: node_path.clone(),
+            name: name.to_string(),
+            kind: item_kind(node),
         });
         match node {
             SchemaNode::Database { tables, .. } => {
@@ -120,15 +155,6 @@ fn flatten_nodes_all(
             }
             _ => {}
         }
-    }
-}
-
-fn node_icon(node: &SchemaNode) -> &'static str {
-    match node {
-        SchemaNode::Database { .. } => "󰆼 ",
-        SchemaNode::Table { .. } => "󰓫 ",
-        SchemaNode::Column { is_pk: true, .. } => "󰌆 ",
-        SchemaNode::Column { .. } => "󱘚 ",
     }
 }
 
@@ -144,7 +170,7 @@ fn flatten_nodes(
         node_path.push(i);
 
         let indent = " ".repeat(1 + depth * 2);
-        let icon = node_icon(node);
+        let icon = node_icon_char(node);
         let name = node.name();
         let extra = match node {
             SchemaNode::Column { type_name, .. } if !type_name.is_empty() => {
@@ -152,12 +178,14 @@ fn flatten_nodes(
             }
             _ => String::new(),
         };
-        let label = format!("{indent}{icon}{name}{extra}");
+        let label = format!("{indent}{icon} {name}{extra}");
 
         items.push(SchemaTreeItem {
             label,
             depth,
             node_path: node_path.clone(),
+            name: name.to_string(),
+            kind: item_kind(node),
         });
 
         let child_ancestor_is_last: Vec<bool> = Vec::new();

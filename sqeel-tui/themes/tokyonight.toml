@@ -39,6 +39,11 @@ schema_sel_active_bg   = "bg_highlight"
 schema_sel_inactive_bg = "bg_dark"
 schema_border_focus    = "yellow"
 schema_border_filter   = "cyan"
+schema_icon_db         = "blue"
+schema_icon_table      = "cyan"
+schema_icon_column     = "fg_dark"
+schema_icon_pk         = "yellow"
+schema_type_fg         = "magenta"
 
 # Results pane
 results_col_active_bg      = "bg_highlight"
