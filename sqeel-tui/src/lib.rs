@@ -380,6 +380,8 @@ async fn run_loop(
     let mut event_triggered_redraw = true;
     let mut last_terminal_size = terminal.size()?;
     let mut last_schema_loading = false;
+    // Pending first `g` for the schema-pane `gg` chord. Cleared by any other key.
+    let mut schema_g_pending = false;
     loop {
         let mut needs_redraw = event_triggered_redraw;
         event_triggered_redraw = false;
@@ -1359,6 +1361,10 @@ async fn run_loop(
                     }
                 }
 
+                // Any key other than a second `g` aborts the pending `gg` chord.
+                let keep_schema_g_pending = focus == Focus::Schema
+                    && key.modifiers == KeyModifiers::NONE
+                    && matches!(key.code, KeyCode::Char('g'));
                 match (key.modifiers, key.code) {
                     // Shift+H / Shift+L: prev / next tab. Active outside the
                     // editor or when in Vim Normal mode so it doesn't shadow
@@ -1425,6 +1431,21 @@ async fn run_loop(
                     }
                     (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Schema => {
                         state.lock().unwrap().schema_cursor_up();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('g')) if focus == Focus::Schema => {
+                        // `gg` → top. First `g` arms the chord; second `g`
+                        // (landing here with pending already set) fires it.
+                        if schema_g_pending {
+                            state.lock().unwrap().schema_cursor_top();
+                        } else {
+                            schema_g_pending = true;
+                        }
+                    }
+                    (KeyModifiers::SHIFT, KeyCode::Char('G'))
+                    | (KeyModifiers::NONE, KeyCode::Char('G'))
+                        if focus == Focus::Schema =>
+                    {
+                        state.lock().unwrap().schema_cursor_bottom();
                     }
                     (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char('l'))
                         if focus == Focus::Schema =>
@@ -1653,6 +1674,9 @@ async fn run_loop(
                         }
                     }
                     _ => {}
+                }
+                if !keep_schema_g_pending {
+                    schema_g_pending = false;
                 }
             } // Event::Key
             Event::Resize(_, _) => {

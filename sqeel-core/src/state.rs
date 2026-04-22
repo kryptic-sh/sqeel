@@ -840,6 +840,15 @@ impl AppState {
         self.schema_cursor = self.schema_cursor.saturating_sub(1);
     }
 
+    pub fn schema_cursor_top(&mut self) {
+        self.schema_cursor = 0;
+    }
+
+    pub fn schema_cursor_bottom(&mut self) {
+        self.rebuild_schema_cache_if_dirty();
+        self.schema_cursor = self.visible_schema_items().len().saturating_sub(1);
+    }
+
     pub fn schema_toggle_path(&mut self, path: &[usize]) {
         toggle_node(&mut self.schema_nodes, path);
         self.maybe_lazy_load(path);
