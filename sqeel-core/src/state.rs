@@ -122,6 +122,24 @@ pub struct ResultsTab {
     /// successful result is persisted. `None` for error/loading/cancelled tabs
     /// or until the result is saved.
     pub saved_filename: Option<String>,
+    /// Per-tab cursor position inside the results pane. Reset to `Query` on
+    /// creation; survives scroll + tab switches so returning users land where
+    /// they left off.
+    pub cursor: ResultsCursor,
+}
+
+/// What the results-pane cursor currently highlights. Shared across all three
+/// variants (Results/Error/Cancelled) so `y` can yank whatever is under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResultsCursor {
+    #[default]
+    Query,
+    /// Column name in the header row (Results pane only).
+    Header(usize),
+    /// Data cell in the body (Results pane only).
+    Cell { row: usize, col: usize },
+    /// Numbered line of the message body (Error / Cancelled panes).
+    MessageLine(usize),
 }
 
 /// A query request sent over the executor channel — single statement or batch.
@@ -258,6 +276,7 @@ impl AppState {
             scroll: 0,
             col_scroll: 0,
             saved_filename: None,
+            cursor: ResultsCursor::default(),
         };
         self.result_tabs.push(tab);
         self.active_result_tab = self.result_tabs.len() - 1;
@@ -273,6 +292,7 @@ impl AppState {
             scroll: 0,
             col_scroll: 0,
             saved_filename: None,
+            cursor: ResultsCursor::default(),
         };
         self.result_tabs.push(tab);
         let idx = self.result_tabs.len() - 1;
@@ -285,6 +305,7 @@ impl AppState {
     pub fn finish_result_tab(&mut self, idx: usize, kind: ResultsPane) {
         if let Some(tab) = self.result_tabs.get_mut(idx) {
             tab.kind = kind;
+            tab.cursor = ResultsCursor::Query;
         }
     }
 
@@ -310,6 +331,7 @@ impl AppState {
             return;
         }
         self.active_result_tab = (self.active_result_tab + 1) % self.result_tabs.len();
+        self.clamp_results_cursor();
     }
 
     pub fn prev_result_tab(&mut self) {
@@ -321,6 +343,7 @@ impl AppState {
         } else {
             self.active_result_tab - 1
         };
+        self.clamp_results_cursor();
     }
 
     pub fn close_active_result_tab(&mut self) {
@@ -385,6 +408,177 @@ impl AppState {
     pub fn scroll_results_left(&mut self) {
         if let Some(t) = self.active_result_mut() {
             t.col_scroll = t.col_scroll.saturating_sub(1);
+        }
+    }
+
+    /// Ensure the cursor is a legal position for the active tab (e.g. after
+    /// `finish_result_tab` swaps Loading → Error, or the pane kind changes).
+    pub fn clamp_results_cursor(&mut self) {
+        let Some(tab) = self.result_tabs.get_mut(self.active_result_tab) else {
+            return;
+        };
+        tab.cursor = match (&tab.kind, tab.cursor) {
+            (ResultsPane::Results(r), ResultsCursor::Header(c)) => {
+                if r.columns.is_empty() {
+                    ResultsCursor::Query
+                } else {
+                    ResultsCursor::Header(c.min(r.columns.len() - 1))
+                }
+            }
+            (ResultsPane::Results(r), ResultsCursor::Cell { row, col }) => {
+                if r.rows.is_empty() || r.columns.is_empty() {
+                    ResultsCursor::Query
+                } else {
+                    ResultsCursor::Cell {
+                        row: row.min(r.rows.len() - 1),
+                        col: col.min(r.columns.len() - 1),
+                    }
+                }
+            }
+            (ResultsPane::Error(e), ResultsCursor::MessageLine(i)) => {
+                let n = e.lines().count();
+                if n == 0 {
+                    ResultsCursor::Query
+                } else {
+                    ResultsCursor::MessageLine(i.min(n - 1))
+                }
+            }
+            (ResultsPane::Cancelled, ResultsCursor::MessageLine(_)) => {
+                ResultsCursor::MessageLine(0)
+            }
+            (ResultsPane::Results(_), ResultsCursor::MessageLine(_))
+            | (ResultsPane::Error(_), ResultsCursor::Header(_))
+            | (ResultsPane::Error(_), ResultsCursor::Cell { .. })
+            | (ResultsPane::Cancelled, ResultsCursor::Header(_))
+            | (ResultsPane::Cancelled, ResultsCursor::Cell { .. })
+            | (ResultsPane::Empty | ResultsPane::Loading, _) => ResultsCursor::Query,
+            (_, c) => c,
+        };
+        Self::ensure_cursor_visible(tab);
+    }
+
+    fn ensure_cursor_visible(tab: &mut ResultsTab) {
+        // Viewport size is written by the TUI on draw; fall back to 10 rows
+        // when we haven't rendered yet so early programmatic moves still work.
+        let rows = 10;
+        if let ResultsCursor::Cell { row, col } = tab.cursor {
+            if row < tab.scroll {
+                tab.scroll = row;
+            } else if row >= tab.scroll + rows {
+                tab.scroll = row + 1 - rows;
+            }
+            if col < tab.col_scroll {
+                tab.col_scroll = col;
+            }
+        }
+    }
+
+    fn with_active_tab<F: FnOnce(&mut ResultsTab)>(&mut self, f: F) {
+        if let Some(t) = self.result_tabs.get_mut(self.active_result_tab) {
+            f(t);
+            Self::ensure_cursor_visible(t);
+        }
+    }
+
+    pub fn results_cursor_down(&mut self) {
+        self.with_active_tab(|t| {
+            t.cursor = match (&t.kind, t.cursor) {
+                (ResultsPane::Results(r), ResultsCursor::Query) if !r.columns.is_empty() => {
+                    ResultsCursor::Header(0)
+                }
+                (ResultsPane::Results(r), ResultsCursor::Header(c)) if !r.rows.is_empty() => {
+                    ResultsCursor::Cell { row: 0, col: c }
+                }
+                (ResultsPane::Results(r), ResultsCursor::Cell { row, col })
+                    if row + 1 < r.rows.len() =>
+                {
+                    ResultsCursor::Cell { row: row + 1, col }
+                }
+                (ResultsPane::Error(e), ResultsCursor::Query) if e.lines().next().is_some() => {
+                    ResultsCursor::MessageLine(0)
+                }
+                (ResultsPane::Error(e), ResultsCursor::MessageLine(i))
+                    if i + 1 < e.lines().count() =>
+                {
+                    ResultsCursor::MessageLine(i + 1)
+                }
+                (ResultsPane::Cancelled, ResultsCursor::Query) => ResultsCursor::MessageLine(0),
+                (_, c) => c,
+            };
+        });
+    }
+
+    pub fn results_cursor_up(&mut self) {
+        self.with_active_tab(|t| {
+            t.cursor = match (&t.kind, t.cursor) {
+                (ResultsPane::Results(_), ResultsCursor::Header(_)) => ResultsCursor::Query,
+                (ResultsPane::Results(_), ResultsCursor::Cell { row: 0, col }) => {
+                    ResultsCursor::Header(col)
+                }
+                (ResultsPane::Results(_), ResultsCursor::Cell { row, col }) => {
+                    ResultsCursor::Cell { row: row - 1, col }
+                }
+                (ResultsPane::Error(_), ResultsCursor::MessageLine(0))
+                | (ResultsPane::Cancelled, ResultsCursor::MessageLine(_)) => ResultsCursor::Query,
+                (ResultsPane::Error(_), ResultsCursor::MessageLine(i)) => {
+                    ResultsCursor::MessageLine(i - 1)
+                }
+                (_, c) => c,
+            };
+        });
+    }
+
+    pub fn results_cursor_left(&mut self) {
+        self.with_active_tab(|t| {
+            t.cursor = match (&t.kind, t.cursor) {
+                (ResultsPane::Results(_), ResultsCursor::Header(c)) if c > 0 => {
+                    ResultsCursor::Header(c - 1)
+                }
+                (ResultsPane::Results(_), ResultsCursor::Cell { row, col }) if col > 0 => {
+                    ResultsCursor::Cell { row, col: col - 1 }
+                }
+                (_, c) => c,
+            };
+        });
+    }
+
+    pub fn results_cursor_right(&mut self) {
+        self.with_active_tab(|t| {
+            t.cursor = match (&t.kind, t.cursor) {
+                (ResultsPane::Results(r), ResultsCursor::Header(c)) if c + 1 < r.columns.len() => {
+                    ResultsCursor::Header(c + 1)
+                }
+                (ResultsPane::Results(r), ResultsCursor::Cell { row, col })
+                    if col + 1 < r.columns.len() =>
+                {
+                    ResultsCursor::Cell { row, col: col + 1 }
+                }
+                (_, c) => c,
+            };
+        });
+    }
+
+    /// Return the text currently under the results cursor + a short label used
+    /// in the toast ("Query", "Column", "Value", "Line").
+    pub fn results_cursor_yank(&self) -> Option<(String, &'static str)> {
+        let tab = self.active_result()?;
+        match (&tab.kind, tab.cursor) {
+            (_, ResultsCursor::Query) => Some((tab.query.clone(), "Query")),
+            (ResultsPane::Results(r), ResultsCursor::Header(c)) => {
+                r.columns.get(c).map(|s| (s.clone(), "Column"))
+            }
+            (ResultsPane::Results(r), ResultsCursor::Cell { row, col }) => r
+                .rows
+                .get(row)
+                .and_then(|r| r.get(col))
+                .map(|s| (s.clone(), "Value")),
+            (ResultsPane::Error(e), ResultsCursor::MessageLine(i)) => {
+                e.lines().nth(i).map(|s| (s.to_string(), "Line"))
+            }
+            (ResultsPane::Cancelled, ResultsCursor::MessageLine(_)) => {
+                Some(("Skipped after earlier error".to_string(), "Line"))
+            }
+            _ => None,
         }
     }
 

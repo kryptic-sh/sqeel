@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
                         scroll: r.scroll,
                         col_scroll: r.col_scroll,
                         saved_filename: r.filename.clone(),
+                        cursor: sqeel_core::state::ResultsCursor::default(),
                     })
                 })
                 .collect();

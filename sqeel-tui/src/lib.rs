@@ -37,7 +37,7 @@ use sqeel_core::{
     },
     lsp::{LspClient, LspEvent},
     schema::{self, SchemaTreeItem},
-    state::{AddConnectionField, Focus, KeybindingMode, ResultsPane, VimMode},
+    state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
 
 /// Bundle of schema-sidebar search state: query string, whether the input box has
@@ -1381,16 +1381,28 @@ async fn run_loop(
                     }
                     // Results pane navigation
                     (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Results => {
-                        state.lock().unwrap().scroll_results_down();
+                        state.lock().unwrap().results_cursor_down();
                     }
                     (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Results => {
-                        state.lock().unwrap().scroll_results_up();
+                        state.lock().unwrap().results_cursor_up();
                     }
                     (KeyModifiers::NONE, KeyCode::Char('l')) if focus == Focus::Results => {
-                        state.lock().unwrap().scroll_results_right();
+                        state.lock().unwrap().results_cursor_right();
                     }
                     (KeyModifiers::NONE, KeyCode::Char('h')) if focus == Focus::Results => {
-                        state.lock().unwrap().scroll_results_left();
+                        state.lock().unwrap().results_cursor_left();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('y')) if focus == Focus::Results => {
+                        let yanked = state.lock().unwrap().results_cursor_yank();
+                        if let Some((text, label)) = yanked
+                            && let Ok(mut cb) = Clipboard::new()
+                        {
+                            let _ = cb.set_text(text);
+                            state
+                                .lock()
+                                .unwrap()
+                                .set_status(format!("{label} yanked to clipboard"));
+                        }
                     }
                     // On error tab: Enter jumps editor cursor to the reported line:col
                     (KeyModifiers::NONE, KeyCode::Enter) if focus == Focus::Results => {
@@ -2582,15 +2594,19 @@ fn draw_results(
                 .map(|&w| w as u32 + 1)
                 .sum::<u32>() as u16;
 
+            let cursor = state.active_result().map(|t| t.cursor);
+            let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+
             let build_header = || -> Line<'static> {
                 let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
                 for (i, c) in r.columns.iter().enumerate() {
                     let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
                     let inner = w.saturating_sub(1);
-                    spans.push(Span::styled(
-                        format!(" {:<inner$}", c, inner = inner),
-                        header_style,
-                    ));
+                    let mut st = header_style;
+                    if focused && cursor == Some(ResultsCursor::Header(i)) {
+                        st = st.add_modifier(Modifier::REVERSED);
+                    }
+                    spans.push(Span::styled(format!(" {:<inner$}", c, inner = inner), st));
                     if i + 1 < r.columns.len() {
                         spans.push(Span::styled("│".to_string(), sep_style));
                     }
@@ -2598,13 +2614,24 @@ fn draw_results(
                 Line::from(spans)
             };
 
-            let build_row = |row: &Vec<String>| -> Line<'static> {
+            let build_row = |row_idx: usize, row: &Vec<String>| -> Line<'static> {
                 let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
                 for i in 0..r.columns.len() {
                     let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
                     let inner = w.saturating_sub(1);
                     let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
-                    spans.push(Span::raw(format!(" {:<inner$}", cell, inner = inner)));
+                    let text = format!(" {:<inner$}", cell, inner = inner);
+                    if focused
+                        && cursor
+                            == Some(ResultsCursor::Cell {
+                                row: row_idx,
+                                col: i,
+                            })
+                    {
+                        spans.push(Span::styled(text, cursor_style));
+                    } else {
+                        spans.push(Span::raw(text));
+                    }
                     if i + 1 < r.columns.len() {
                         spans.push(Span::styled("│".to_string(), sep_style));
                     }
@@ -2615,15 +2642,28 @@ fn draw_results(
             let body_lines: Vec<Line<'static>> = r
                 .rows
                 .iter()
+                .enumerate()
                 .skip(state.results_scroll())
-                .map(build_row)
+                .map(|(i, row)| build_row(i, row))
                 .collect();
 
             let query_text = state
                 .active_result()
                 .map(|t| t.query.clone())
                 .unwrap_or_default();
-            let query_line = highlight_query_line(&query_text);
+            let mut query_line = highlight_query_line(&query_text);
+            if focused && cursor == Some(ResultsCursor::Query) {
+                query_line = Line::from(
+                    query_line
+                        .spans
+                        .into_iter()
+                        .map(|s| {
+                            let st = s.style.add_modifier(Modifier::REVERSED);
+                            Span::styled(s.content, st)
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            }
 
             // Split content_area: hr (1) + title (1) + hr (1) + query (1) + hr (1) + header (1) + hr (1) + body (rest).
             let chunks = Layout::default()
@@ -2658,13 +2698,16 @@ fn draw_results(
         }
         ResultsPane::Error(e) => {
             let title_text = render_pos_title(state, "Result");
+            let cursor = state.active_result().map(|t| t.cursor);
             let body: Vec<Line<'static>> = e
                 .lines()
-                .map(|el| {
-                    Line::from(Span::styled(
-                        format!(" {}", el),
-                        Style::default().fg(Color::Red),
-                    ))
+                .enumerate()
+                .map(|(i, el)| {
+                    let mut st = Style::default().fg(Color::Red);
+                    if focused && cursor == Some(ResultsCursor::MessageLine(i)) {
+                        st = st.add_modifier(Modifier::REVERSED);
+                    }
+                    Line::from(Span::styled(format!(" {}", el), st))
                 })
                 .collect();
             let has_query = state
@@ -2701,9 +2744,14 @@ fn draw_results(
         }
         ResultsPane::Cancelled => {
             let title_text = render_pos_title(state, "Result");
+            let cursor = state.active_result().map(|t| t.cursor);
+            let mut st = Style::default().fg(Color::DarkGray);
+            if focused && matches!(cursor, Some(ResultsCursor::MessageLine(_))) {
+                st = st.add_modifier(Modifier::REVERSED);
+            }
             let body = vec![Line::from(Span::styled(
                 " Skipped (previous query failed)",
-                Style::default().fg(Color::DarkGray),
+                st,
             ))];
             let has_query = state
                 .active_result()
@@ -2777,7 +2825,21 @@ fn render_framed_pane(
     );
     f.render_widget(Paragraph::new(hr.clone()).style(sep_style), chunks[2]);
     if show_query {
-        f.render_widget(Paragraph::new(highlight_query_line(&query_text)), chunks[3]);
+        let mut query_line = highlight_query_line(&query_text);
+        let cursor = state.active_result().map(|t| t.cursor);
+        if state.focus == Focus::Results && cursor == Some(ResultsCursor::Query) {
+            query_line = Line::from(
+                query_line
+                    .spans
+                    .into_iter()
+                    .map(|s| {
+                        let st = s.style.add_modifier(Modifier::REVERSED);
+                        Span::styled(s.content, st)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        f.render_widget(Paragraph::new(query_line), chunks[3]);
         f.render_widget(Paragraph::new(hr).style(sep_style), chunks[4]);
         f.render_widget(
             Paragraph::new(body).wrap(ratatui::widgets::Wrap { trim: false }),
