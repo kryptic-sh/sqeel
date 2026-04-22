@@ -657,7 +657,13 @@ fn apply_motion_cursor(ed: &mut Editor<'_>, motion: &Motion, count: usize) {
         }
         Motion::LineStart => ed.textarea.move_cursor(CursorMove::Head),
         Motion::FirstNonBlank => move_first_non_whitespace(ed),
-        Motion::LineEnd => ed.textarea.move_cursor(CursorMove::End),
+        Motion::LineEnd => {
+            // Vim normal-mode `$` lands on the last char, not one past it.
+            let (row, _) = ed.textarea.cursor();
+            let len = ed.textarea.lines()[row].chars().count();
+            let col = len.saturating_sub(1);
+            ed.textarea.move_cursor(CursorMove::Jump(row, col));
+        }
         Motion::FileTop => {
             // `count G` / `count gg` jumps to line `count`.
             if count > 1 {
@@ -1366,6 +1372,8 @@ fn motion_kind(motion: &Motion) -> MotionKind {
         Motion::WordEnd | Motion::BigWordEnd => MotionKind::Inclusive,
         Motion::Find { .. } => MotionKind::Inclusive,
         Motion::MatchBracket => MotionKind::Inclusive,
+        // `$` now lands on the last char — operator ranges include it.
+        Motion::LineEnd => MotionKind::Inclusive,
         _ => MotionKind::Exclusive,
     }
 }
@@ -1480,6 +1488,27 @@ fn select_full_lines(ed: &mut Editor<'_>, top_row: usize, bot_row: usize) {
     }
 }
 
+/// Select the contents of rows `[top_row..=bot_row]` but stop at the end of
+/// `bot_row` without crossing its trailing newline. Used by `cc` / `Vc` so
+/// the cut removes line *contents* and leaves a blank line in place.
+fn select_line_contents_only(ed: &mut Editor<'_>, top_row: usize, bot_row: usize) {
+    ed.textarea.cancel_selection();
+    ed.textarea.move_cursor(CursorMove::Jump(top_row, 0));
+    ed.textarea.start_selection();
+    ed.textarea.move_cursor(CursorMove::Jump(bot_row, 0));
+    ed.textarea.move_cursor(CursorMove::End);
+}
+
+/// VisualLine finalize variant for the Change operator — preserves the
+/// trailing newline so an empty line remains after the cut.
+fn finalize_visual_line_selection_for_change(ed: &mut Editor<'_>) {
+    let (cursor_row, _) = ed.textarea.cursor();
+    let anchor_row = ed.vim.visual_line_anchor;
+    let top = cursor_row.min(anchor_row);
+    let bot = cursor_row.max(anchor_row);
+    select_line_contents_only(ed, top, bot);
+}
+
 // ─── dd/cc/yy ──────────────────────────────────────────────────────────────
 
 fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
@@ -1511,13 +1540,16 @@ fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
             ed.vim.mode = Mode::Normal;
         }
         Operator::Change => {
+            // `cc` / `3cc`: wipe contents of the covered lines but leave
+            // a single blank line so insert-mode opens on it.
             ed.push_undo();
-            select_full_lines(ed, row, end_row);
+            select_line_contents_only(ed, row, end_row);
             ed.vim.yank_linewise = true;
             ed.mutate(|t| t.cut());
             if let Some(y) = non_empty_yank(ed) {
                 ed.last_yank = Some(y);
             }
+            ed.textarea.move_cursor(CursorMove::Jump(row, 0));
             begin_insert_noundo(ed, 1, InsertReason::AfterChange);
         }
     }
@@ -1530,10 +1562,10 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
         Mode::VisualLine => {
             let (cursor_row, _) = ed.textarea.cursor();
             let top = cursor_row.min(ed.vim.visual_line_anchor);
-            finalize_visual_line_selection(ed);
             ed.vim.yank_linewise = true;
             match op {
                 Operator::Yank => {
+                    finalize_visual_line_selection(ed);
                     ed.textarea.copy();
                     if let Some(y) = non_empty_yank(ed) {
                         ed.last_yank = Some(y);
@@ -1544,6 +1576,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                 }
                 Operator::Delete => {
                     ed.push_undo();
+                    finalize_visual_line_selection(ed);
                     ed.mutate(|t| t.cut());
                     if let Some(y) = non_empty_yank(ed) {
                         ed.last_yank = Some(y);
@@ -1551,11 +1584,15 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     ed.vim.mode = Mode::Normal;
                 }
                 Operator::Change => {
+                    // Vim `Vc`: wipe the line contents but leave a blank
+                    // line in place so insert-mode starts on an empty row.
                     ed.push_undo();
+                    finalize_visual_line_selection_for_change(ed);
                     ed.mutate(|t| t.cut());
                     if let Some(y) = non_empty_yank(ed) {
                         ed.last_yank = Some(y);
                     }
+                    ed.textarea.move_cursor(CursorMove::Jump(top, 0));
                     begin_insert_noundo(ed, 1, InsertReason::AfterChange);
                 }
             }
@@ -2005,9 +2042,12 @@ fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
                 ed.textarea.move_cursor(CursorMove::Head);
             }
         } else if before {
-            ed.textarea.move_cursor(CursorMove::Back);
+            // P: paste at cursor, shifting existing char to the right.
             ed.mutate(|t| t.paste());
         } else {
+            // p: paste *after* cursor. Advance one before inserting so the
+            // first pasted char lands after the current char.
+            ed.textarea.move_cursor(CursorMove::Forward);
             ed.mutate(|t| t.paste());
         }
     }
@@ -2625,13 +2665,17 @@ mod tests {
     }
 
     #[test]
-    fn dollar_moves_to_line_end() {
-        // `$` uses tui-textarea's `End`, which lands one past the last
-        // char (insert-position semantic). That's the substrate's choice
-        // — we document it here so any future fix gets noticed by tests.
+    fn dollar_moves_to_last_char() {
         let mut e = editor_with("hello");
         run_keys(&mut e, "$");
-        assert_eq!(e.textarea.cursor().1, 5);
+        assert_eq!(e.textarea.cursor().1, 4);
+    }
+
+    #[test]
+    fn dollar_on_empty_line_stays_at_col_zero() {
+        let mut e = editor_with("");
+        run_keys(&mut e, "$");
+        assert_eq!(e.textarea.cursor().1, 0);
     }
 
     #[test]
@@ -2833,16 +2877,26 @@ mod tests {
     }
 
     #[test]
-    fn visual_line_change_enters_insert() {
+    fn visual_line_change_leaves_blank_line() {
         let mut e = editor_with("a\nb\nc");
         run_keys(&mut e, "Vjc");
         assert_eq!(e.vim_mode(), VimMode::Insert);
         run_keys(&mut e, "X<Esc>");
-        // Cuts rows 0-1, enters insert. Typing `X` lands at the top of
-        // what remains — `c`. (Vim leaves a blank line for `Vc`; the
-        // substrate's cut removes the newline, so the first line merges
-        // with the remainder. Documented divergence.)
-        assert_eq!(e.textarea.lines()[0], "Xc");
+        // `Vjc` wipes rows 0-1's contents and leaves a blank line in
+        // their place (vim convention). Typing `X` lands on that blank
+        // first line.
+        assert_eq!(e.textarea.lines(), &["X".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn cc_leaves_blank_line() {
+        let mut e = editor_with("a\nb\nc");
+        e.textarea.move_cursor(CursorMove::Jump(1, 0));
+        run_keys(&mut e, "ccX<Esc>");
+        assert_eq!(
+            e.textarea.lines(),
+            &["a".to_string(), "X".to_string(), "c".to_string()]
+        );
     }
 
     // ─── Scrolling ────────────────────────────────────────────────────────
