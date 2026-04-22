@@ -188,10 +188,10 @@ impl DbConnection {
                 Ok(rows
                     .iter()
                     .map(|r| ColumnInfo {
-                        name: r.try_get::<String, _>(0).unwrap_or_default(),
-                        type_name: r.try_get::<String, _>(1).unwrap_or_default(),
-                        nullable: r.try_get::<String, _>(2).unwrap_or_default() == "YES",
-                        is_pk: r.try_get::<String, _>(3).unwrap_or_default() == "PRI",
+                        name: mysql_string(r, 0),
+                        type_name: mysql_string(r, 1),
+                        nullable: mysql_string(r, 2) == "YES",
+                        is_pk: mysql_string(r, 3) == "PRI",
                     })
                     .collect())
             }

@@ -80,7 +80,9 @@ fn flatten_nodes_all(
         let icon = node_icon(node);
         let name = node.name();
         let extra = match node {
-            SchemaNode::Column { type_name, .. } => format!(": {type_name}"),
+            SchemaNode::Column { type_name, .. } if !type_name.is_empty() => {
+                format!(": {type_name}")
+            }
             _ => String::new(),
         };
         let label = format!("{indent}{icon}{name}{extra}");
@@ -125,7 +127,9 @@ fn flatten_nodes(
         let icon = node_icon(node);
         let name = node.name();
         let extra = match node {
-            SchemaNode::Column { type_name, .. } => format!(": {type_name}"),
+            SchemaNode::Column { type_name, .. } if !type_name.is_empty() => {
+                format!(": {type_name}")
+            }
             _ => String::new(),
         };
         let label = format!("{indent}{icon}{name}{extra}");
