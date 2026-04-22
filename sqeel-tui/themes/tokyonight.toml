@@ -1,0 +1,114 @@
+name = "Tokyo Night"
+
+[palette]
+bg           = "#24283b"
+bg_dark      = "#1a1b26"
+bg_highlight = "#292e42"
+fg           = "#c0caf5"
+fg_dark      = "#a9b1d6"
+comment      = "#565f89"
+blue         = "#7aa2f7"
+cyan         = "#7dcfff"
+green        = "#9ece6a"
+magenta      = "#bb9af7"
+orange       = "#ff9e64"
+purple       = "#9d7cd8"
+red          = "#f7768e"
+yellow       = "#e0af68"
+black        = "#15161e"
+white        = "#c0caf5"
+
+[ui]
+# Panes
+schema_pane_bg    = "bg_dark"
+editor_pane_bg    = "bg_dark"
+editor_tab_bar_bg = "bg"
+results_pane_bg   = "bg_dark"
+
+# Editor
+editor_cursor_line_active   = "bg_highlight"
+editor_cursor_line_inactive = "bg_dark"
+editor_line_num             = "comment"
+editor_search_bg            = "yellow"
+editor_search_fg            = "black"
+editor_error_fg             = "red"
+
+# Schema sidebar
+schema_sel_active_bg   = "bg_highlight"
+schema_sel_inactive_bg = "bg_dark"
+schema_border_focus    = "yellow"
+schema_border_filter   = "cyan"
+
+# Results pane
+results_col_active_bg      = "bg_highlight"
+results_col_inactive_bg    = "bg_dark"
+results_cursor_active_bg   = "blue"
+results_cursor_inactive_bg = "bg_highlight"
+results_sep                = "comment"
+results_header_active      = "cyan"
+results_row_num            = "comment"
+results_null               = "comment"
+results_title_active       = "yellow"
+results_title_inactive     = "green"
+results_error              = "red"
+results_loading            = "yellow"
+results_cancelled          = "comment"
+
+# Tabs
+tab_active_fg   = "black"
+tab_active_bg   = "cyan"
+tab_inactive_fg = "comment"
+tab_sep_fg      = "comment"
+tab_err_fg      = "red"
+tab_err_bg      = "red"
+tab_loading_fg  = "yellow"
+tab_loading_bg  = "yellow"
+tab_cancel_fg   = "comment"
+tab_cancel_bg   = "comment"
+
+# Status bar
+status_bar_bg       = "bg_dark"
+status_bar_fg       = "fg_dark"
+status_mode_fg      = "black"
+status_mode_normal  = "blue"
+status_mode_insert  = "green"
+status_mode_visual  = "magenta"
+status_diag_error   = "red"
+status_diag_warning = "yellow"
+status_search_bg    = "yellow"
+status_search_fg    = "black"
+status_hint_bg      = "blue"
+status_hint_fg      = "black"
+
+# LSP warning
+lsp_warn_fg = "yellow"
+lsp_warn_bg = "bg_dark"
+
+# Toasts
+toast_info_bg  = "blue"
+toast_info_fg  = "black"
+toast_error_bg = "red"
+toast_error_fg = "black"
+
+# Dialogs
+dialog_fg        = "fg"
+dialog_bg        = "bg_highlight"
+dialog_error_bg  = "red"
+dialog_error_fg  = "black"
+dialog_border    = "cyan"
+confirm_border   = "green"
+
+# Completion popup
+completion_border = "cyan"
+completion_bg     = "bg_highlight"
+completion_select = "blue"
+completion_key    = "yellow"
+
+# SQL highlight
+sql_keyword  = "cyan"
+sql_string   = "green"
+sql_number   = "magenta"
+sql_comment  = "comment"
+sql_operator = "yellow"
+sql_ident    = "fg"
+sql_plain    = "fg_dark"

@@ -12,3 +12,6 @@ tui-textarea = { version = "0.7.0", features = ["search"] }
 tokio = { version = "1.52.1", features = ["full"] }
 lsp-types = "0.97.0"
 arboard = "3"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+dirs = "6"

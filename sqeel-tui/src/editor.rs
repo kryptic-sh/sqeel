@@ -141,6 +141,14 @@ impl<'a> Editor<'a> {
         self.content_dirty = true;
     }
 
+    /// Install `text` as the pending yank buffer so the next `p`/`P` pastes
+    /// it. Linewise is inferred from a trailing newline, matching how `yy`/`dd`
+    /// shape their payload.
+    pub fn seed_yank(&mut self, text: String) {
+        self.yank_linewise = text.ends_with('\n');
+        self.textarea.set_yank_text(text);
+    }
+
     pub fn scroll_down(&mut self, rows: i16) {
         for _ in 0..rows {
             self.textarea.move_cursor(CursorMove::Down);

@@ -1,8 +1,10 @@
+mod clipboard;
 mod completion_thread;
 pub mod editor;
 mod highlight_thread;
+mod theme;
 
-use arboard::Clipboard;
+use clipboard::Clipboard;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,6 +41,7 @@ use sqeel_core::{
     schema::{self, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
+use theme::ui;
 
 /// Bundle of schema-sidebar search state: query string, whether the input box has
 /// focus (typing mode), and cursor position within the filtered list.
@@ -250,6 +253,7 @@ impl UiProvider for TuiProvider {
 }
 
 async fn async_run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
+    let theme_err = theme::load();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(
@@ -262,7 +266,7 @@ async fn async_run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let keybinding_mode = state.lock().unwrap().keybinding_mode;
-    let result = run_loop(&mut terminal, state, keybinding_mode).await;
+    let result = run_loop(&mut terminal, state, keybinding_mode, theme_err).await;
 
     disable_raw_mode()?;
     execute!(
@@ -280,6 +284,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: Arc<Mutex<AppState>>,
     keybinding_mode: KeybindingMode,
+    theme_error: Option<String>,
 ) -> anyhow::Result<()> {
     let mut editor = Editor::new(keybinding_mode);
     let highlight_thread = HighlightThread::spawn()?;
@@ -330,12 +335,15 @@ async fn run_loop(
     let mut last_editor_search: Option<String> = None;
 
     let mut toasts: Vec<(String, ToastKind, std::time::Instant)> = Vec::new();
+    if let Some(msg) = theme_error {
+        toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
+    }
     let mut last_esc_at: Option<std::time::Instant> = None;
     // Leader-key chord state. Set when the leader is pressed in an eligible
     // context; cleared when the next key resolves the chord or it times out.
     let mut leader_pending_at: Option<std::time::Instant> = None;
-    // Clipboard held alive for the session so the OS clipboard manager sees the content.
-    let mut clipboard = Clipboard::new().ok();
+    // Unified clipboard sink: native OS clipboard + OSC 52 fallback over SSH.
+    let mut clipboard = Clipboard::new();
     // Tracks an unfinished `y` in the results pane so a follow-up `y` within
     // 500ms yanks the whole row (vim `yy`).
     let mut pending_results_y: Option<std::time::Instant> = None;
@@ -740,8 +748,8 @@ async fn run_loop(
                                     }
                                     s.clamp_results_cursor();
                                 }
-                                if let Some(ref mut cb) = clipboard {
-                                    let _ = cb.set_text(text);
+                                {
+                                    clipboard.set_text(&text);
                                 }
                                 toasts.push((
                                     format!("{label} copied to clipboard"),
@@ -765,8 +773,8 @@ async fn run_loop(
                                 extract_results_row(mouse.column, mouse.row, &last_draw_areas, &s)
                             {
                                 drop(s);
-                                if let Some(ref mut cb) = clipboard {
-                                    let _ = cb.set_text(text);
+                                {
+                                    clipboard.set_text(&text);
                                 }
                                 toasts.push((
                                     "Row copied to clipboard".to_string(),
@@ -1416,8 +1424,8 @@ async fn run_loop(
                         };
                         pending_results_y = if is_yy { None } else { Some(now) };
                         if let Some((text, label)) = yanked {
-                            if let Some(ref mut cb) = clipboard {
-                                let _ = cb.set_text(text);
+                            {
+                                clipboard.set_text(&text);
                             }
                             toasts.push((
                                 format!("{label} copied to clipboard"),
@@ -1577,10 +1585,18 @@ async fn run_loop(
                         editor.textarea.search_back(false);
                     }
                     _ if focus == Focus::Editor => {
+                        if vim_mode == VimMode::Normal
+                            && (key.modifiers == KeyModifiers::NONE
+                                || key.modifiers == KeyModifiers::SHIFT)
+                            && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P'))
+                            && let Some(text) = clipboard.get_text()
+                        {
+                            editor.seed_yank(text);
+                        }
                         editor.handle_key(key);
                         if let Some(text) = editor.last_yank.take() {
-                            if let Some(ref mut cb) = clipboard {
-                                let _ = cb.set_text(text);
+                            {
+                                clipboard.set_text(&text);
                             }
                             toasts.push((
                                 "Yanked to clipboard".to_string(),
@@ -1615,11 +1631,12 @@ fn tmux_navigate(direction: char) {
 }
 
 fn mode_label(state: &AppState) -> Span<'static> {
+    let u = ui();
     match state.vim_mode {
-        VimMode::Normal => Span::styled(" NORMAL ", Style::default().fg(Color::Blue)),
-        VimMode::Insert => Span::styled(" INSERT ", Style::default().fg(Color::Green)),
-        VimMode::Visual => Span::styled(" VISUAL ", Style::default().fg(Color::Magenta)),
-        VimMode::VisualLine => Span::styled(" V-LINE ", Style::default().fg(Color::Magenta)),
+        VimMode::Normal => Span::styled(" NORMAL ", Style::default().fg(u.status_mode_normal)),
+        VimMode::Insert => Span::styled(" INSERT ", Style::default().fg(u.status_mode_insert)),
+        VimMode::Visual => Span::styled(" VISUAL ", Style::default().fg(u.status_mode_visual)),
+        VimMode::VisualLine => Span::styled(" V-LINE ", Style::default().fg(u.status_mode_visual)),
     }
 }
 
@@ -1637,12 +1654,12 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
     if errors > 0 {
         Some(Span::styled(
             format!(" ✖ {errors}E "),
-            Style::default().fg(Color::Red),
+            Style::default().fg(ui().status_diag_error),
         ))
     } else if warnings > 0 {
         Some(Span::styled(
             format!(" ⚠ {warnings}W "),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(ui().status_diag_warning),
         ))
     } else {
         None
@@ -1926,9 +1943,7 @@ fn draw(
     if let Some(warn_area) = lsp_warn_area {
         let msg = Paragraph::new(Span::styled(
             format!(" ⚠ LSP not available ({})", state.lsp_binary),
-            Style::default()
-                .fg(ratatui::style::Color::Yellow)
-                .bg(ratatui::style::Color::DarkGray),
+            Style::default().fg(ui().lsp_warn_fg).bg(ui().lsp_warn_bg),
         ));
         f.render_widget(msg, warn_area);
     }
@@ -1971,10 +1986,12 @@ fn draw(
     let mut y_off: u16 = 0;
     for (msg, kind) in toasts {
         let style = match kind {
-            ToastKind::Error => Style::default().fg(Color::White).bg(Color::Rgb(180, 0, 0)),
+            ToastKind::Error => Style::default()
+                .fg(ui().toast_error_fg)
+                .bg(ui().toast_error_bg),
             ToastKind::Info => Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(30, 90, 170)),
+                .fg(ui().toast_info_fg)
+                .bg(ui().toast_info_bg),
         };
         let width = (msg.len() as u16 + 4).min(area.width);
         let height = 3u16.min(area.height.saturating_sub(y_off));
@@ -2259,12 +2276,14 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
         height: 1,
     };
 
-    let bar_bg = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let bar_bg = Style::default()
+        .bg(ui().status_bar_bg)
+        .fg(ui().status_bar_fg);
 
     // Mode label (colored fg, same bg as status bar)
     let mode_style = Style::default()
-        .bg(mode.style.fg.unwrap_or(Color::Blue))
-        .fg(Color::Black)
+        .bg(mode.style.fg.unwrap_or(ui().status_mode_normal))
+        .fg(ui().status_mode_fg)
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Span::styled(mode.content.to_string(), mode_style)),
@@ -2277,8 +2296,8 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
     // Search match counter
     if let Some(s) = search {
         let style = Style::default()
-            .bg(Color::Rgb(80, 60, 20))
-            .fg(Color::White)
+            .bg(ui().status_search_bg)
+            .fg(ui().status_search_fg)
             .add_modifier(Modifier::BOLD);
         f.render_widget(
             Paragraph::new(Span::styled(s.content.to_string(), style)),
@@ -2289,8 +2308,8 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
     // Diagnostics
     if let Some(d) = diag {
         let diag_style = Style::default()
-            .bg(d.style.fg.unwrap_or(Color::Yellow))
-            .fg(Color::Black)
+            .bg(d.style.fg.unwrap_or(ui().status_diag_warning))
+            .fg(ui().status_mode_fg)
             .add_modifier(Modifier::BOLD);
         f.render_widget(
             Paragraph::new(Span::styled(d.content.to_string(), diag_style)),
@@ -2300,8 +2319,8 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
 
     // Cursor position (right-aligned, highlighted)
     let cursor_style = Style::default()
-        .bg(Color::Blue)
-        .fg(Color::Black)
+        .bg(ui().status_hint_bg)
+        .fg(ui().status_hint_fg)
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Span::styled(cursor_str, cursor_style)),
@@ -2335,14 +2354,14 @@ fn draw_schema(
     };
 
     let border_style = if focused {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(ui().schema_border_focus)
     } else {
         Style::default()
     };
 
     // Fill pane background (full area), then inset content by 1 on all sides.
     f.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(18, 20, 32))),
+        Block::default().style(Style::default().bg(ui().schema_pane_bg)),
         area,
     );
 
@@ -2378,9 +2397,9 @@ fn draw_schema(
         .title_style(Style::default().add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_style(if searching {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(ui().schema_border_focus)
         } else if has_filter {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(ui().schema_border_filter)
         } else {
             border_style
         });
@@ -2432,9 +2451,12 @@ fn draw_schema(
     let (highlight_style, selected) = if searching {
         (Style::default(), None)
     } else if focused {
-        (Style::default().bg(Color::Rgb(40, 40, 45)), Some(cursor))
+        (Style::default().bg(ui().schema_sel_active_bg), Some(cursor))
     } else {
-        (Style::default().bg(Color::Rgb(30, 32, 48)), Some(cursor))
+        (
+            Style::default().bg(ui().schema_sel_inactive_bg),
+            Some(cursor),
+        )
     };
 
     let list = List::new(list_items).highlight_style(highlight_style);
@@ -2460,7 +2482,7 @@ fn draw_editor(
 ) {
     // Fill pane background
     f.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(22, 22, 28))),
+        Block::default().style(Style::default().bg(ui().editor_pane_bg)),
         area,
     );
 
@@ -2504,16 +2526,16 @@ fn draw_editor(
     chunks.extend(body_chunks.iter().copied());
 
     f.render_widget(
-        Paragraph::new(build_tab_title(state)).style(Style::default().bg(Color::Rgb(30, 30, 38))),
+        Paragraph::new(build_tab_title(state)).style(Style::default().bg(ui().editor_tab_bar_bg)),
         chunks[0],
     );
 
     // Pre-render a full-width strip at the cursor line so trailing empty cells
     // also get the highlight background (tui-textarea only styles character cells).
     let cursor_line_bg = if focused {
-        Color::Rgb(40, 40, 45)
+        ui().editor_cursor_line_active
     } else {
-        Color::Rgb(30, 32, 48)
+        ui().editor_cursor_line_inactive
     };
     let textarea_area = chunks[1];
     let cursor_screen_row = editor.cursor_screen_row(textarea_area.height);
@@ -2532,7 +2554,7 @@ fn draw_editor(
 
     editor
         .textarea
-        .set_line_number_style(Style::default().fg(Color::DarkGray));
+        .set_line_number_style(Style::default().fg(ui().editor_line_num));
     editor
         .textarea
         .set_cursor_line_style(Style::default().bg(cursor_line_bg));
@@ -2547,9 +2569,11 @@ fn draw_editor(
         let _ = editor.textarea.set_search_pattern("");
     } else if let Some(query) = editor_search.or(last_editor_search) {
         let _ = editor.textarea.set_search_pattern(query);
-        editor
-            .textarea
-            .set_search_style(Style::default().bg(Color::Rgb(80, 60, 20)).fg(Color::White));
+        editor.textarea.set_search_style(
+            Style::default()
+                .bg(ui().editor_search_bg)
+                .fg(ui().editor_search_fg),
+        );
     } else {
         let _ = editor.textarea.set_search_pattern("");
     }
@@ -2557,7 +2581,7 @@ fn draw_editor(
 
     if let Some(msg) = diag_line {
         f.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(Color::Red)),
+            Paragraph::new(msg).style(Style::default().fg(ui().editor_error_fg)),
             chunks[2],
         );
     }
@@ -2569,15 +2593,15 @@ fn build_tab_title(state: &AppState) -> Line<'_> {
         let active = i == state.active_tab;
         let style = if active {
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(ui().tab_active_fg)
+                .bg(ui().tab_active_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(ui().tab_inactive_fg)
         };
         spans.push(Span::styled(format!(" {} ", tab.name), style));
         if i + 1 < state.tabs.len() {
-            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("│", Style::default().fg(ui().tab_sep_fg)));
         }
     }
     Line::from(spans)
@@ -2592,7 +2616,7 @@ fn draw_results(
 ) {
     // Fill pane background (full area), then inset content by 1 on all sides.
     f.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(18, 26, 20))),
+        Block::default().style(Style::default().bg(ui().results_pane_bg)),
         area,
     );
     let area = area.inner(ratatui::layout::Margin {
@@ -2602,7 +2626,7 @@ fn draw_results(
 
     // Split off a separator + 1-row tab bar at the top when there are multiple
     // result tabs. The separator sits above the tab strip.
-    let sep_style = Style::default().fg(Color::DarkGray);
+    let sep_style = Style::default().fg(ui().results_sep);
     let (tab_bar_area, content_area) = if state.result_tabs.len() > 1 && area.height > 2 {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -2626,9 +2650,9 @@ fn draw_results(
     match state.results() {
         ResultsPane::Results(r) => {
             let title_style = if focused {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(ui().results_title_active)
             } else {
-                Style::default().fg(Color::Green)
+                Style::default().fg(ui().results_title_inactive)
             };
             let title = if state.result_tabs.len() > 1 {
                 format!(
@@ -2641,9 +2665,9 @@ fn draw_results(
                 format!(" Results ({} rows)", r.rows.len())
             };
             let col_start = state.results_col_scroll();
-            let sep_style = Style::default().fg(Color::DarkGray);
+            let sep_style = Style::default().fg(ui().results_sep);
             let header_style = Style::default()
-                .fg(Color::Cyan)
+                .fg(ui().results_header_active)
                 .add_modifier(Modifier::BOLD);
 
             // Char offset into the full-width row string, derived from col_scroll.
@@ -2789,7 +2813,7 @@ fn draw_results(
                 .lines()
                 .enumerate()
                 .map(|(i, el)| {
-                    let mut st = Style::default().fg(Color::Red);
+                    let mut st = Style::default().fg(ui().results_error);
                     if cursor == Some(ResultsCursor::MessageLine(i)) {
                         st = st.bg(cursor_bg);
                     }
@@ -2804,7 +2828,7 @@ fn draw_results(
                 f,
                 content_area,
                 &title_text,
-                Style::default().fg(Color::Red),
+                Style::default().fg(ui().results_error),
                 state,
                 body,
                 has_query,
@@ -2816,13 +2840,13 @@ fn draw_results(
             let title_text = render_pos_title(state, "Result");
             let body = vec![Line::from(Span::styled(
                 format!(" {} Running query…", frame),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(ui().results_loading),
             ))];
             render_framed_pane(
                 f,
                 content_area,
                 &title_text,
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(ui().results_loading),
                 state,
                 body,
                 false,
@@ -2831,7 +2855,7 @@ fn draw_results(
         ResultsPane::Cancelled => {
             let title_text = render_pos_title(state, "Result");
             let cursor = state.active_result().map(|t| t.cursor);
-            let mut st = Style::default().fg(Color::DarkGray);
+            let mut st = Style::default().fg(ui().results_cancelled);
             if matches!(cursor, Some(ResultsCursor::MessageLine(_))) {
                 st = st.bg(results_cursor_bg(focused));
             }
@@ -2847,7 +2871,7 @@ fn draw_results(
                 f,
                 content_area,
                 &title_text,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(ui().results_cancelled),
                 state,
                 body,
                 has_query,
@@ -2861,9 +2885,9 @@ fn draw_results(
 /// mirrors the editor's `cursor_line_bg` so focus feels consistent.
 fn results_cursor_bg(focused: bool) -> Color {
     if focused {
-        Color::Rgb(40, 48, 40)
+        ui().results_col_active_bg
     } else {
-        Color::Rgb(28, 34, 28)
+        ui().results_col_inactive_bg
     }
 }
 
@@ -2871,9 +2895,9 @@ fn results_cursor_bg(focused: bool) -> Color {
 /// actually points at, sitting on top of the column-wide muted bg.
 fn results_cursor_bg_strong(focused: bool) -> Color {
     if focused {
-        Color::Rgb(70, 90, 60)
+        ui().results_cursor_active_bg
     } else {
-        Color::Rgb(45, 55, 40)
+        ui().results_cursor_inactive_bg
     }
 }
 
@@ -2901,7 +2925,7 @@ fn render_framed_pane(
     body: Vec<Line<'static>>,
     show_query: bool,
 ) {
-    let sep_style = Style::default().fg(Color::DarkGray);
+    let sep_style = Style::default().fg(ui().results_sep);
     let hr: String = "─".repeat(area.width as usize);
     let query_text = state
         .active_result()
@@ -2976,31 +3000,32 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
         let is_loading = matches!(tab.kind, ResultsPane::Loading);
         let is_cancelled = matches!(tab.kind, ResultsPane::Cancelled);
         let label = format!(" {} ", i + 1);
+        let u = ui();
         let style = if i == state.active_result_tab {
             Style::default()
-                .fg(Color::Black)
+                .fg(u.tab_active_fg)
                 .bg(if is_err {
-                    Color::Red
+                    u.tab_err_bg
                 } else if is_loading {
-                    Color::Yellow
+                    u.tab_loading_bg
                 } else if is_cancelled {
-                    Color::DarkGray
+                    u.tab_cancel_bg
                 } else {
-                    Color::Cyan
+                    u.tab_active_bg
                 })
                 .add_modifier(Modifier::BOLD)
         } else if is_err {
-            Style::default().fg(Color::Red)
+            Style::default().fg(u.tab_err_fg)
         } else if is_loading {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(u.tab_loading_fg)
         } else if is_cancelled {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(u.tab_cancel_fg)
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(u.results_header_active)
         };
         spans.push(Span::styled(label, style));
         if i + 1 < state.result_tabs.len() {
-            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("│", Style::default().fg(u.tab_sep_fg)));
         }
     }
     Line::from(spans)
@@ -3034,7 +3059,7 @@ fn highlight_query_line(query: &str) -> Line<'static> {
 
     let bytes = query.as_bytes();
     let mut out: Vec<Span<'static>> = vec![Span::raw(" ")];
-    let plain = Style::default().fg(Color::Gray);
+    let plain = Style::default().fg(ui().sql_plain);
     let mut cursor = 0usize;
     let flatten = |b: &[u8]| -> String {
         std::str::from_utf8(b)
@@ -3061,20 +3086,21 @@ fn highlight_query_line(query: &str) -> Line<'static> {
 }
 
 fn token_kind_style(kind: TokenKind) -> Option<Style> {
+    let u = ui();
     match kind {
         TokenKind::Keyword => Some(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(u.sql_keyword)
                 .add_modifier(Modifier::BOLD),
         ),
-        TokenKind::String => Some(Style::default().fg(Color::Green)),
+        TokenKind::String => Some(Style::default().fg(u.sql_string)),
         TokenKind::Comment => Some(
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(u.sql_comment)
                 .add_modifier(Modifier::ITALIC),
         ),
-        TokenKind::Number => Some(Style::default().fg(Color::Magenta)),
-        TokenKind::Operator => Some(Style::default().fg(Color::Yellow)),
+        TokenKind::Number => Some(Style::default().fg(u.sql_number)),
+        TokenKind::Operator => Some(Style::default().fg(u.sql_operator)),
         TokenKind::Identifier | TokenKind::Plain => None,
     }
 }
@@ -3195,7 +3221,7 @@ fn draw_completions(
         List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(ui().completion_border)),
         ),
         popup,
     );
@@ -3213,7 +3239,7 @@ fn draw_input_dialog(
     prefix: &str,
     input: &TextInput,
 ) -> (u16, u16) {
-    let bg = Style::default().fg(Color::White).bg(Color::Rgb(30, 30, 45));
+    let bg = Style::default().fg(ui().dialog_fg).bg(ui().dialog_bg);
     let content = format!("{prefix}{}", input.text);
     let inner_w = (content.chars().count() as u16 + 1).max(20);
     let width = (inner_w + 4).min(area.width.saturating_sub(4));
@@ -3241,7 +3267,9 @@ fn draw_input_dialog(
 
 /// Borderless centered confirmation dialog with a single message line.
 fn draw_confirm_dialog(f: &mut ratatui::Frame<'_>, area: Rect, message: &str) {
-    let bg = Style::default().fg(Color::White).bg(Color::Rgb(80, 30, 30));
+    let bg = Style::default()
+        .fg(ui().dialog_error_fg)
+        .bg(ui().dialog_error_bg);
     let inner_w = (message.chars().count() as u16).max(20);
     let width = (inner_w + 4).min(area.width.saturating_sub(4));
     let height = 3u16.min(area.height);
@@ -3270,7 +3298,7 @@ fn draw_file_picker(
     matched: &[&String],
     active_name: Option<&str>,
 ) -> (u16, u16) {
-    let bg = Style::default().fg(Color::White).bg(Color::Rgb(30, 30, 45));
+    let bg = Style::default().fg(ui().dialog_fg).bg(ui().dialog_bg);
     let width = 60u16.min(area.width.saturating_sub(4));
     let max_rows = 12u16;
     let list_rows = (matched.len() as u16).min(max_rows).max(1);
@@ -3336,7 +3364,7 @@ fn draw_file_picker(
 }
 
 fn draw_connection_switcher(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) {
-    let bg = Style::default().fg(Color::White).bg(Color::Rgb(30, 30, 45));
+    let bg = Style::default().fg(ui().dialog_fg).bg(ui().dialog_bg);
     let conns = &state.available_connections;
     let cursor = state.connection_switcher_cursor;
     let active_name = state.active_connection.as_deref();
@@ -3519,7 +3547,7 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
     let block = Block::default()
         .title(" Help  (Esc / q / ? to close) ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(ui().dialog_border));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
     let scroll = scroll.min(total_rows.saturating_sub(inner.height));
@@ -3529,13 +3557,13 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
         lines.push(ratatui::text::Line::from(Span::styled(
             format!(" {section}"),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(ui().dialog_border)
                 .add_modifier(Modifier::BOLD),
         )));
         for (key, desc) in *items {
             let pad = 20usize.saturating_sub(key.len());
             lines.push(ratatui::text::Line::from(vec![
-                Span::styled(format!("  {key}"), Style::default().fg(Color::Yellow)),
+                Span::styled(format!("  {key}"), Style::default().fg(ui().completion_key)),
                 Span::raw(" ".repeat(pad)),
                 Span::raw(*desc),
             ]));
@@ -3570,7 +3598,7 @@ fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect)
             " Add Connection (Tab switch, Enter save, Esc cancel) "
         })
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green));
+        .border_style(Style::default().fg(ui().confirm_border));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
@@ -3585,14 +3613,14 @@ fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect)
 
     let name_style = if state.add_connection_field == AddConnectionField::Name {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(ui().completion_key)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
     let url_style = if state.add_connection_field == AddConnectionField::Url {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(ui().completion_key)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
@@ -3610,7 +3638,7 @@ fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect)
     );
     f.render_widget(
         Paragraph::new("Only letters, digits, - and _ allowed in name")
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(ui().editor_line_num)),
         rows[2],
     );
     match state.add_connection_field {

@@ -133,7 +133,7 @@
 
 ## Refactors
 
-- [ ] **Unify clipboard access** (`sqeel-tui/src/lib.rs`,
+- [x] **Unify clipboard access** (`sqeel-tui/src/lib.rs`,
       `sqeel-tui/src/editor.rs`) Today the editor uses tui-textarea's internal
       yank buffer and the results pane calls `arboard::Clipboard` directly at
       multiple sites. Consolidate to a single `Clipboard` wrapper owned by the
@@ -168,7 +168,7 @@
         5. Test on: local X11, local Wayland, SSH into a tmux session,
            SSH without tmux. Paste target = another app's input field.
 
-- [ ] **Extract theme into TOML** (`sqeel-tui/src/lib.rs`,
+- [x] **Extract theme into TOML** (`sqeel-tui/src/lib.rs`,
       `sqeel-tui/src/editor.rs`) Every `Color::Rgb(...)` / `Color::Cyan` literal
       is scattered across draw code. Move them to a named theme loaded from
       TOML.
