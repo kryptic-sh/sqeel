@@ -2085,7 +2085,7 @@ fn block_replace(ed: &mut Editor<'_>, ch: char) {
         }
         let end = (right + 1).min(chars.len());
         let before: String = chars[..left].iter().collect();
-        let middle: String = std::iter::repeat(ch).take(end - left).collect();
+        let middle: String = std::iter::repeat_n(ch, end - left).collect();
         let after: String = chars[end..].iter().collect();
         lines[r] = format!("{before}{middle}{after}");
     }
