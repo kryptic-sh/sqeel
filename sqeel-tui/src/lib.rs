@@ -2347,13 +2347,33 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
             } else {
                 format!("Results ({} rows)", r.rows.len())
             };
-            let block = Block::default()
-                .title(title)
-                .title_style(title_style)
-                .borders(Borders::NONE);
-
             let col_start = state.results_col_scroll();
             let visible_cols: Vec<&String> = r.columns.iter().skip(col_start).collect();
+            let sep_style = Style::default().fg(Color::DarkGray);
+
+            // Interleave a 1-col `│` separator between data columns.
+            fn interleave_cells<'a>(cells: Vec<Cell<'a>>, sep_style: Style) -> Vec<Cell<'a>> {
+                let mut out: Vec<Cell<'a>> = Vec::with_capacity(cells.len() * 2);
+                let n = cells.len();
+                for (i, c) in cells.into_iter().enumerate() {
+                    out.push(c);
+                    if i + 1 < n {
+                        out.push(Cell::from("│").style(sep_style));
+                    }
+                }
+                out
+            }
+            let interleave_widths = |widths: Vec<Constraint>| -> Vec<Constraint> {
+                let mut out: Vec<Constraint> = Vec::with_capacity(widths.len() * 2);
+                let n = widths.len();
+                for (i, w) in widths.into_iter().enumerate() {
+                    out.push(w);
+                    if i + 1 < n {
+                        out.push(Constraint::Length(1));
+                    }
+                }
+                out
+            };
 
             let header_cells: Vec<Cell> = visible_cols
                 .iter()
@@ -2361,34 +2381,49 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                     Cell::from(c.as_str()).style(Style::default().add_modifier(Modifier::BOLD))
                 })
                 .collect();
-            let header = Row::new(header_cells).style(Style::default().fg(Color::Cyan));
+            let header = Row::new(interleave_cells(header_cells, sep_style))
+                .style(Style::default().fg(Color::Cyan));
 
-            let col_widths: Vec<Constraint> = r
+            let raw_widths: Vec<Constraint> = r
                 .col_widths
                 .iter()
                 .skip(col_start)
                 .map(|&w| Constraint::Min(w))
                 .collect();
+            let col_widths = interleave_widths(raw_widths);
 
             let visible_rows: Vec<Row> = r
                 .rows
                 .iter()
                 .skip(state.results_scroll())
                 .map(|row| {
-                    Row::new(
-                        row.iter()
-                            .skip(col_start)
-                            .map(|c| Cell::from(c.as_str()))
-                            .collect::<Vec<_>>(),
-                    )
+                    let cells: Vec<Cell> = row
+                        .iter()
+                        .skip(col_start)
+                        .map(|c| Cell::from(c.as_str()))
+                        .collect();
+                    Row::new(interleave_cells(cells, sep_style))
                 })
                 .collect();
 
-            let table = Table::new(visible_rows, col_widths)
-                .header(header)
-                .block(block);
+            // Split content_area: title (1) + header (1) + hr (1) + body (rest).
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(content_area);
 
-            f.render_widget(table, content_area);
+            f.render_widget(Paragraph::new(title).style(title_style), chunks[0]);
+            let header_table = Table::new(Vec::<Row>::new(), col_widths.clone()).header(header);
+            f.render_widget(header_table, chunks[1]);
+            let hr: String = "─".repeat(content_area.width as usize);
+            f.render_widget(Paragraph::new(hr).style(sep_style), chunks[2]);
+            let body = Table::new(visible_rows, col_widths);
+            f.render_widget(body, chunks[3]);
         }
         ResultsPane::Error(e) => {
             let block = Block::default().title("Error").borders(Borders::NONE);
