@@ -2582,4 +2582,287 @@ mod tests {
         run_keys(&mut e, "k");
         assert_eq!(e.textarea.cursor(), (1, 0));
     }
+
+    // ─── Basic motions ─────────────────────────────────────────────────────
+
+    #[test]
+    fn h_moves_left() {
+        let mut e = editor_with("hello");
+        e.textarea.move_cursor(CursorMove::Jump(0, 3));
+        run_keys(&mut e, "h");
+        assert_eq!(e.textarea.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn l_moves_right() {
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "l");
+        assert_eq!(e.textarea.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn k_moves_up() {
+        let mut e = editor_with("a\nb\nc");
+        e.textarea.move_cursor(CursorMove::Jump(2, 0));
+        run_keys(&mut e, "k");
+        assert_eq!(e.textarea.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn zero_moves_to_line_start() {
+        let mut e = editor_with("    hello");
+        run_keys(&mut e, "$");
+        run_keys(&mut e, "0");
+        assert_eq!(e.textarea.cursor().1, 0);
+    }
+
+    #[test]
+    fn caret_moves_to_first_non_blank() {
+        let mut e = editor_with("    hello");
+        run_keys(&mut e, "0");
+        run_keys(&mut e, "^");
+        assert_eq!(e.textarea.cursor().1, 4);
+    }
+
+    #[test]
+    fn dollar_moves_to_line_end() {
+        // `$` uses tui-textarea's `End`, which lands one past the last
+        // char (insert-position semantic). That's the substrate's choice
+        // — we document it here so any future fix gets noticed by tests.
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "$");
+        assert_eq!(e.textarea.cursor().1, 5);
+    }
+
+    #[test]
+    fn w_jumps_to_next_word() {
+        let mut e = editor_with("foo bar baz");
+        run_keys(&mut e, "w");
+        assert_eq!(e.textarea.cursor().1, 4);
+    }
+
+    #[test]
+    fn b_jumps_back_a_word() {
+        let mut e = editor_with("foo bar");
+        e.textarea.move_cursor(CursorMove::Jump(0, 6));
+        run_keys(&mut e, "b");
+        assert_eq!(e.textarea.cursor().1, 4);
+    }
+
+    #[test]
+    fn e_jumps_to_word_end() {
+        let mut e = editor_with("foo bar");
+        run_keys(&mut e, "e");
+        assert_eq!(e.textarea.cursor().1, 2);
+    }
+
+    // ─── Operators with line-edge and file-edge motions ───────────────────
+
+    #[test]
+    fn d_dollar_deletes_to_eol() {
+        let mut e = editor_with("hello world");
+        e.textarea.move_cursor(CursorMove::Jump(0, 5));
+        run_keys(&mut e, "d$");
+        assert_eq!(e.textarea.lines()[0], "hello");
+    }
+
+    #[test]
+    fn d_zero_deletes_to_line_start() {
+        let mut e = editor_with("hello world");
+        e.textarea.move_cursor(CursorMove::Jump(0, 6));
+        run_keys(&mut e, "d0");
+        assert_eq!(e.textarea.lines()[0], "world");
+    }
+
+    #[test]
+    fn d_caret_deletes_to_first_non_blank() {
+        let mut e = editor_with("    hello");
+        e.textarea.move_cursor(CursorMove::Jump(0, 6));
+        run_keys(&mut e, "d^");
+        assert_eq!(e.textarea.lines()[0], "    llo");
+    }
+
+    #[test]
+    fn d_capital_g_deletes_to_end_of_file() {
+        let mut e = editor_with("a\nb\nc\nd");
+        e.textarea.move_cursor(CursorMove::Jump(1, 0));
+        run_keys(&mut e, "dG");
+        assert_eq!(e.textarea.lines(), &["a".to_string()]);
+    }
+
+    #[test]
+    fn d_gg_deletes_to_start_of_file() {
+        let mut e = editor_with("a\nb\nc\nd");
+        e.textarea.move_cursor(CursorMove::Jump(2, 0));
+        run_keys(&mut e, "dgg");
+        assert_eq!(e.textarea.lines(), &["d".to_string()]);
+    }
+
+    #[test]
+    fn cw_is_ce_quirk() {
+        // `cw` on a non-blank word must NOT eat the trailing whitespace;
+        // it behaves like `ce` so the replacement lands before the space.
+        let mut e = editor_with("foo bar");
+        run_keys(&mut e, "cwxyz<Esc>");
+        assert_eq!(e.textarea.lines()[0], "xyz bar");
+    }
+
+    // ─── Single-char edits ────────────────────────────────────────────────
+
+    #[test]
+    fn big_d_deletes_to_eol() {
+        let mut e = editor_with("hello world");
+        e.textarea.move_cursor(CursorMove::Jump(0, 5));
+        run_keys(&mut e, "D");
+        assert_eq!(e.textarea.lines()[0], "hello");
+    }
+
+    #[test]
+    fn big_c_deletes_to_eol_and_inserts() {
+        let mut e = editor_with("hello world");
+        e.textarea.move_cursor(CursorMove::Jump(0, 5));
+        run_keys(&mut e, "C!<Esc>");
+        assert_eq!(e.textarea.lines()[0], "hello!");
+    }
+
+    #[test]
+    fn j_joins_next_line_with_space() {
+        let mut e = editor_with("hello\nworld");
+        run_keys(&mut e, "J");
+        assert_eq!(e.textarea.lines(), &["hello world".to_string()]);
+    }
+
+    #[test]
+    fn j_strips_leading_whitespace_on_join() {
+        let mut e = editor_with("hello\n    world");
+        run_keys(&mut e, "J");
+        assert_eq!(e.textarea.lines(), &["hello world".to_string()]);
+    }
+
+    #[test]
+    fn big_x_deletes_char_before_cursor() {
+        let mut e = editor_with("hello");
+        e.textarea.move_cursor(CursorMove::Jump(0, 3));
+        run_keys(&mut e, "X");
+        assert_eq!(e.textarea.lines()[0], "helo");
+    }
+
+    #[test]
+    fn s_substitutes_char_and_enters_insert() {
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "sX<Esc>");
+        assert_eq!(e.textarea.lines()[0], "Xello");
+    }
+
+    #[test]
+    fn count_x_deletes_many() {
+        let mut e = editor_with("abcdef");
+        run_keys(&mut e, "3x");
+        assert_eq!(e.textarea.lines()[0], "def");
+    }
+
+    // ─── Paste ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn p_pastes_charwise_after_cursor() {
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "yw");
+        run_keys(&mut e, "$p");
+        assert_eq!(e.textarea.lines()[0], "hellohello");
+    }
+
+    #[test]
+    fn capital_p_pastes_charwise_before_cursor() {
+        let mut e = editor_with("hello");
+        // Yank "he" (2 chars) then paste it before the cursor.
+        run_keys(&mut e, "v");
+        run_keys(&mut e, "l");
+        run_keys(&mut e, "y");
+        run_keys(&mut e, "$P");
+        // After yank cursor is at 0; $ goes to end (col 4), P pastes
+        // before cursor — "hell" + "he" + "o" = "hellheo".
+        assert_eq!(e.textarea.lines()[0], "hellheo");
+    }
+
+    #[test]
+    fn p_pastes_linewise_below() {
+        let mut e = editor_with("one\ntwo\nthree");
+        run_keys(&mut e, "yy");
+        run_keys(&mut e, "p");
+        assert_eq!(
+            e.textarea.lines(),
+            &[
+                "one".to_string(),
+                "one".to_string(),
+                "two".to_string(),
+                "three".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn capital_p_pastes_linewise_above() {
+        let mut e = editor_with("one\ntwo");
+        e.textarea.move_cursor(CursorMove::Jump(1, 0));
+        run_keys(&mut e, "yy");
+        run_keys(&mut e, "P");
+        assert_eq!(
+            e.textarea.lines(),
+            &["one".to_string(), "two".to_string(), "two".to_string()]
+        );
+    }
+
+    // ─── Reverse word search ──────────────────────────────────────────────
+
+    #[test]
+    fn hash_finds_previous_occurrence() {
+        let mut e = editor_with("foo bar foo baz foo");
+        // Move to the third 'foo' then #.
+        e.textarea.move_cursor(CursorMove::Jump(0, 16));
+        run_keys(&mut e, "#");
+        assert_eq!(e.textarea.cursor().1, 8);
+    }
+
+    // ─── VisualLine delete / change ───────────────────────────────────────
+
+    #[test]
+    fn visual_line_delete_removes_full_lines() {
+        let mut e = editor_with("a\nb\nc\nd");
+        run_keys(&mut e, "Vjd");
+        assert_eq!(e.textarea.lines(), &["c".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn visual_line_change_enters_insert() {
+        let mut e = editor_with("a\nb\nc");
+        run_keys(&mut e, "Vjc");
+        assert_eq!(e.vim_mode(), VimMode::Insert);
+        run_keys(&mut e, "X<Esc>");
+        // Cuts rows 0-1, enters insert. Typing `X` lands at the top of
+        // what remains — `c`. (Vim leaves a blank line for `Vc`; the
+        // substrate's cut removes the newline, so the first line merges
+        // with the remainder. Documented divergence.)
+        assert_eq!(e.textarea.lines()[0], "Xc");
+    }
+
+    // ─── Scrolling ────────────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_scroll_keys_do_not_panic() {
+        // Viewport-less test: just exercise the code paths so a regression
+        // in the scroll dispatch surfaces as a panic or assertion failure.
+        let mut e = editor_with(
+            (0..50)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .as_str(),
+        );
+        run_keys(&mut e, "<C-d>");
+        run_keys(&mut e, "<C-u>");
+        run_keys(&mut e, "<C-f>");
+        run_keys(&mut e, "<C-b>");
+        // No explicit assert beyond "didn't panic".
+        assert!(!e.textarea.lines().is_empty());
+    }
 }
