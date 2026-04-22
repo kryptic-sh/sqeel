@@ -182,6 +182,18 @@ pub enum QueryRequest {
     Batch(Vec<String>, usize),
 }
 
+/// Lazy-load request for the schema sidebar. Sent to the background loader
+/// when the user expands a node we haven't fetched yet.
+#[derive(Debug, Clone)]
+pub enum SchemaLoadRequest {
+    /// Fetch the database list and merge it into the tree.
+    Databases,
+    /// Fetch the table list for `db` and merge it into that db's table vec.
+    Tables { db: String },
+    /// Fetch column metadata for `db.table`.
+    Columns { db: String, table: String },
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub editor_content: Arc<String>,
@@ -216,12 +228,6 @@ pub struct AppState {
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
     pub schema_loading: bool,
-    /// Total tables the current load expects to resolve columns for.
-    /// Bumped as each db's table list arrives. Zero when idle.
-    pub schema_loading_total: usize,
-    /// Tables whose columns have finished loading in the current run.
-    /// Zero when idle.
-    pub schema_loading_done: usize,
     /// Set by the executor when a query finishes; cleared by the run loop after redraw.
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
@@ -258,6 +264,13 @@ pub struct AppState {
     pub lsp_binary: String,
     // Live query channel — set by the binary when connected
     pub query_tx: Option<tokio::sync::mpsc::Sender<QueryRequest>>,
+    /// Lazy schema-load channel — set by the binary when connected. Toggling a
+    /// sidebar node into an expanded state posts a request here so the loader
+    /// fetches tables/columns on demand instead of eagerly up front.
+    pub schema_load_tx: Option<tokio::sync::mpsc::UnboundedSender<SchemaLoadRequest>>,
+    /// In-flight lazy schema loads. Bumped on send, decremented by the loader
+    /// when each request finishes. Drives the sidebar spinner.
+    pub schema_pending_loads: usize,
     /// Schema sidebar search query — persisted to session so it survives app restart.
     pub schema_search_query: Option<String>,
     /// Last-rendered viewport size of the results body, written by the TUI on
@@ -829,6 +842,7 @@ impl AppState {
 
     pub fn schema_toggle_path(&mut self, path: &[usize]) {
         toggle_node(&mut self.schema_nodes, path);
+        self.maybe_lazy_load(path);
         self.rebuild_schema_cache();
     }
 
@@ -839,7 +853,77 @@ impl AppState {
             .map(|item| item.node_path.clone());
         if let Some(path) = path {
             toggle_node(&mut self.schema_nodes, &path);
+            self.maybe_lazy_load(&path);
             self.rebuild_schema_cache();
+        }
+    }
+
+    /// After toggling a node, decide whether we need to fetch its children.
+    /// Only fires when the node just expanded AND we haven't loaded that level
+    /// in this session yet.
+    fn maybe_lazy_load(&mut self, path: &[usize]) {
+        let Some(req) = self.lazy_load_request_for_path(path) else {
+            return;
+        };
+        self.request_schema_load(req);
+    }
+
+    fn lazy_load_request_for_path(&self, path: &[usize]) -> Option<SchemaLoadRequest> {
+        match path.len() {
+            1 => {
+                let node = self.schema_nodes.get(path[0])?;
+                if let SchemaNode::Database {
+                    name,
+                    expanded: true,
+                    tables_loaded: false,
+                    ..
+                } = node
+                {
+                    return Some(SchemaLoadRequest::Tables { db: name.clone() });
+                }
+                None
+            }
+            2 => {
+                let db_node = self.schema_nodes.get(path[0])?;
+                let (db_name, tables) = match db_node {
+                    SchemaNode::Database { name, tables, .. } => (name, tables),
+                    _ => return None,
+                };
+                let table = tables.get(path[1])?;
+                if let SchemaNode::Table {
+                    name,
+                    expanded: true,
+                    columns_loaded: false,
+                    ..
+                } = table
+                {
+                    return Some(SchemaLoadRequest::Columns {
+                        db: db_name.clone(),
+                        table: name.clone(),
+                    });
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Send a lazy-load request. Bumps `schema_pending_loads` so the sidebar
+    /// shows a spinner until the loader reports back.
+    pub fn request_schema_load(&mut self, req: SchemaLoadRequest) {
+        if let Some(tx) = &self.schema_load_tx
+            && tx.send(req).is_ok()
+        {
+            self.schema_pending_loads += 1;
+            self.schema_loading = true;
+        }
+    }
+
+    /// Called by the loader task after each request finishes.
+    pub fn finish_schema_load(&mut self) {
+        self.schema_pending_loads = self.schema_pending_loads.saturating_sub(1);
+        if self.schema_pending_loads == 0 {
+            self.schema_loading = false;
         }
     }
 
@@ -897,6 +981,7 @@ impl AppState {
                     name: name.clone(),
                     expanded: false,
                     tables: vec![],
+                    tables_loaded: false,
                 });
                 changed = true;
             }
@@ -924,7 +1009,10 @@ impl AppState {
         let mut changed = false;
         for node in self.schema_nodes.iter_mut() {
             if let SchemaNode::Database {
-                name, tables: t, ..
+                name,
+                tables: t,
+                tables_loaded,
+                ..
             } = node
                 && name == db_name
             {
@@ -942,10 +1030,12 @@ impl AppState {
                             name: name.clone(),
                             expanded: false,
                             columns: vec![],
+                            columns_loaded: false,
                         })
                     })
                     .collect();
                 *t = merged;
+                *tables_loaded = true;
                 changed = true;
                 break;
             }
@@ -964,11 +1054,15 @@ impl AppState {
             {
                 for table in tables.iter_mut() {
                     if let SchemaNode::Table {
-                        name, columns: c, ..
+                        name,
+                        columns: c,
+                        columns_loaded,
+                        ..
                     } = table
                         && name == table_name
                     {
                         *c = columns;
+                        *columns_loaded = true;
                         changed = true;
                         break 'outer;
                     }

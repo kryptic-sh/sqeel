@@ -45,6 +45,7 @@ impl DbConnection {
                 name: "main".into(),
                 expanded: true,
                 tables: vec![],
+                tables_loaded: false,
             }]);
         }
         let databases = self.list_databases().await?;
@@ -54,6 +55,7 @@ impl DbConnection {
                 name,
                 expanded: false,
                 tables: vec![],
+                tables_loaded: false,
             })
             .collect())
     }
@@ -258,12 +260,14 @@ impl DbConnection {
                     name: t,
                     expanded: false,
                     columns: vec![],
+                    columns_loaded: false,
                 })
                 .collect();
             return Ok(vec![SchemaNode::Database {
                 name: "main".into(),
                 expanded: true,
                 tables: table_nodes,
+                tables_loaded: true,
             }]);
         }
 
@@ -277,12 +281,14 @@ impl DbConnection {
                     name: t,
                     expanded: false,
                     columns: vec![],
+                    columns_loaded: false,
                 })
                 .collect();
             nodes.push(SchemaNode::Database {
                 name: db,
                 expanded: false,
                 tables: table_nodes,
+                tables_loaded: true,
             });
         }
         Ok(nodes)

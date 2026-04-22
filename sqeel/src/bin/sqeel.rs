@@ -10,7 +10,7 @@ use sqeel_core::{
         save_schema_cache,
     },
     schema::SchemaNode,
-    state::{QueryRequest, ResultsPane, ResultsTab},
+    state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest},
 };
 use sqeel_tui::TuiProvider;
 
@@ -362,178 +362,41 @@ fn spawn_executor(
         false
     };
 
-    // ── Schema loader task ───────────────────────────────────────────────────
-    // Loads db shells → table shells → columns. Column fetches run with bounded
-    // concurrency so large schemas don't serialize one roundtrip per table.
+    // ── Lazy schema loader ───────────────────────────────────────────────────
+    // Bounded-concurrency worker that handles one SchemaLoadRequest at a time:
+    // Databases (initial) → Tables(db) when a db is expanded → Columns(db,table)
+    // when a table is expanded. Nothing is fetched unless the user opens that
+    // level of the sidebar.
+    let (load_tx, load_rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
     {
         let mut s = state.lock().unwrap();
-        s.schema_loading = true;
-        s.schema_loading_total = 0;
-        s.schema_loading_done = 0;
+        s.schema_load_tx = Some(load_tx.clone());
+        // Kick off the initial db list; toggles after that drive further loads.
+        s.request_schema_load(SchemaLoadRequest::Databases);
+
+        // If the session restored expanded db/table nodes from cache, fire
+        // lazy loads for them so the user sees fresh data for whatever was
+        // open last time. Collect first so we don't hold the lock across sends.
+        let pending: Vec<SchemaLoadRequest> = collect_expanded_load_requests(&s.schema_nodes);
+        for req in pending {
+            s.request_schema_load(req);
+        }
     }
+
     let schema_conn = conn.clone();
     let schema_state = state.clone();
     let schema_url = conn.url.clone();
-    tokio::spawn(async move {
-        // Step 1: database shells.
-        let db_shells = match schema_conn.load_schema_databases().await {
-            Ok(n) => n,
-            Err(e) => {
-                let mut s = schema_state.lock().unwrap();
-                s.set_status(format!("Schema load failed: {e}"));
-                s.schema_loading = false;
-                return;
-            }
-        };
-
-        let db_names: Vec<String> = db_shells
-            .iter()
-            .filter_map(|n| {
-                if let SchemaNode::Database { name, .. } = n {
-                    Some(name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Merge db list into existing tree, preserving any cached tables/columns
-        // for dbs that still exist. Missing dbs get empty shells; gone dbs are
-        // dropped.
-        schema_state.lock().unwrap().merge_db_list(&db_names);
-        // Ignore `db_shells` — we only used it to derive db_names; the fresh
-        // shells would have wiped cached children.
-        let _ = db_shells;
-        snapshot_and_save_schema(&schema_state, &schema_url);
-
-        // Steps 2 + 3: table shells per database + columns per table. Both
-        // fan out with bounded concurrency. Column tasks are spawned as each
-        // db's table list arrives — avoids buffering every (db,table) pair
-        // before column fetching begins.
-        const TABLE_LIST_CONCURRENCY: usize = 8;
-        const COLUMN_CONCURRENCY: usize = 8;
-        let table_sem = Arc::new(tokio::sync::Semaphore::new(TABLE_LIST_CONCURRENCY));
-        let column_sem = Arc::new(tokio::sync::Semaphore::new(COLUMN_CONCURRENCY));
-        let mut table_set: tokio::task::JoinSet<(Arc<str>, anyhow::Result<Vec<String>>)> =
-            tokio::task::JoinSet::new();
-        let db_names_arc: Vec<Arc<str>> = db_names
-            .iter()
-            .map(|n| Arc::<str>::from(n.as_str()))
-            .collect();
-        for db in &db_names_arc {
-            let permit = table_sem.clone().acquire_owned().await.unwrap();
-            let conn = schema_conn.clone();
-            let db = Arc::clone(db);
-            table_set.spawn(async move {
-                let _permit = permit;
-                let r = retry_once(|| conn.list_tables(&db)).await;
-                (db, r)
-            });
-        }
-
-        let mut column_set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-        while let Some(joined) = table_set.join_next().await {
-            let (db_name, result) = match joined {
-                Ok(pair) => pair,
-                Err(_) => continue,
-            };
-            let table_names = match result {
-                Ok(t) => t,
-                Err(e) => {
-                    schema_state
-                        .lock()
-                        .unwrap()
-                        .set_status(format!("Tables load failed ({db_name}): {e}"));
-                    continue;
-                }
-            };
-            {
-                let mut s = schema_state.lock().unwrap();
-                s.set_db_tables(&db_name, &table_names);
-                s.schema_loading_total += table_names.len();
-            }
-            snapshot_and_save_schema(&schema_state, &schema_url);
-
-            for table_name in table_names {
-                let permit = column_sem.clone().acquire_owned().await.unwrap();
-                let conn = schema_conn.clone();
-                let state = schema_state.clone();
-                let db = Arc::clone(&db_name);
-                column_set.spawn(async move {
-                    let _permit = permit;
-                    let col_nodes = match retry_once(|| conn.list_columns(&db, &table_name)).await {
-                        Ok(cols) => cols
-                            .into_iter()
-                            .map(|c| SchemaNode::Column {
-                                name: c.name,
-                                type_name: c.type_name,
-                                nullable: c.nullable,
-                                is_pk: c.is_pk,
-                            })
-                            .collect(),
-                        Err(_) => vec![],
-                    };
-                    let mut s = state.lock().unwrap();
-                    s.set_table_columns(&db, &table_name, col_nodes);
-                    s.schema_loading_done += 1;
-                });
-            }
-        }
-        while column_set.join_next().await.is_some() {}
-
-        // All columns loaded — save cache + session. Expansion/cursor were
-        // restored up-front from cache (if present); don't stomp user toggles
-        // made during the refresh. Only restore here when no cache existed.
-        let mut s = schema_state.lock().unwrap();
-        s.schema_loading = false;
-        s.schema_loading_total = 0;
-        s.schema_loading_done = 0;
-        if !cache_restored {
-            s.rebuild_schema_cache_if_dirty();
-            s.restore_schema_expanded_paths(&session_schema_expanded_paths);
-            let restored = session_schema_cursor_path
-                .as_deref()
-                .map(|p| s.restore_schema_cursor_by_path(p))
-                .unwrap_or(false);
-            if !restored {
-                let max = s.visible_schema_items().len().saturating_sub(1);
-                s.schema_cursor = session_schema_cursor.min(max);
-            }
-        }
-        let nodes = s.schema_nodes.clone();
-        let cursor = s.schema_cursor;
-        let cursor_path = s.schema_cursor_path_string();
-        let expanded_paths = s.schema_expanded_paths();
-        let focus = s.focus;
-        let search_query = s.schema_search_query.clone();
-        let tab_cursors: Vec<sqeel_core::config::TabCursor> = s
-            .tab_cursor_snapshot()
-            .into_iter()
-            .map(|(name, row, col)| sqeel_core::config::TabCursor { name, row, col })
-            .collect();
-        let active_tab = s.active_tab;
-        let result_tabs: Vec<sqeel_core::config::SavedResultRef> = s
-            .result_tabs
-            .iter()
-            .filter_map(saved_ref_from_tab)
-            .collect();
-        let active_result_tab = s.active_result_tab;
-        let _ = save_schema_cache(&schema_url, &nodes);
-        if let Some(ref name) = s.active_connection.clone() {
-            let _ = save_session(
-                name,
-                cursor,
-                cursor_path,
-                expanded_paths,
-                focus,
-                search_query,
-                tab_cursors,
-                active_tab,
-                result_tabs,
-                active_result_tab,
-            );
-        }
-    });
+    tokio::spawn(schema_loader_task(
+        schema_conn,
+        schema_state,
+        schema_url,
+        load_rx,
+        load_tx,
+        cache_restored,
+        session_schema_cursor,
+        session_schema_cursor_path,
+        session_schema_expanded_paths,
+    ));
 
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
@@ -638,4 +501,194 @@ where
 fn snapshot_and_save_schema(state: &Arc<std::sync::Mutex<AppState>>, url: &str) {
     let nodes = state.lock().unwrap().schema_nodes.clone();
     let _ = save_schema_cache(url, &nodes);
+}
+
+/// Walk the tree and emit a load request for every expanded node whose
+/// children haven't been fetched this session. Called at startup so cached
+/// nodes the user had open last time refresh automatically.
+fn collect_expanded_load_requests(nodes: &[SchemaNode]) -> Vec<SchemaLoadRequest> {
+    let mut out = Vec::new();
+    for db in nodes {
+        if let SchemaNode::Database {
+            name: db_name,
+            expanded: true,
+            tables,
+            tables_loaded: false,
+            ..
+        } = db
+        {
+            out.push(SchemaLoadRequest::Tables {
+                db: db_name.clone(),
+            });
+            // Tables aren't loaded yet, so we can't queue Columns requests
+            // here — they fire when set_db_tables completes and the user's
+            // saved expansion is re-applied.
+            let _ = tables;
+            continue;
+        }
+        if let SchemaNode::Database {
+            name: db_name,
+            tables,
+            ..
+        } = db
+        {
+            for table in tables {
+                if let SchemaNode::Table {
+                    name: tname,
+                    expanded: true,
+                    columns_loaded: false,
+                    ..
+                } = table
+                {
+                    out.push(SchemaLoadRequest::Columns {
+                        db: db_name.clone(),
+                        table: tname.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Long-lived task that services lazy-load requests from the sidebar. Runs
+/// each request inside a Semaphore-gated spawn so opening many nodes in a
+/// row doesn't hammer the connection pool.
+#[allow(clippy::too_many_arguments)]
+async fn schema_loader_task(
+    conn: Arc<DbConnection>,
+    state: Arc<std::sync::Mutex<AppState>>,
+    schema_url: String,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<SchemaLoadRequest>,
+    tx: tokio::sync::mpsc::UnboundedSender<SchemaLoadRequest>,
+    cache_restored: bool,
+    session_schema_cursor: usize,
+    session_schema_cursor_path: Option<String>,
+    session_schema_expanded_paths: Vec<String>,
+) {
+    const LOAD_CONCURRENCY: usize = 8;
+    let sem = Arc::new(tokio::sync::Semaphore::new(LOAD_CONCURRENCY));
+    // On the first Databases response we also re-apply the user's saved
+    // expansion (if any) so lazy fetches fire for nodes they had open.
+    let mut databases_loaded = false;
+
+    while let Some(req) = rx.recv().await {
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let conn = conn.clone();
+        let state = state.clone();
+        let schema_url = schema_url.clone();
+        let req_tx = tx.clone();
+        let apply_saved_expansion =
+            !databases_loaded && matches!(req, SchemaLoadRequest::Databases);
+        if matches!(req, SchemaLoadRequest::Databases) {
+            databases_loaded = true;
+        }
+        let session_expanded = session_schema_expanded_paths.clone();
+        let session_cursor_path = session_schema_cursor_path.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            match req {
+                SchemaLoadRequest::Databases => {
+                    match retry_once(|| conn.load_schema_databases()).await {
+                        Ok(db_shells) => {
+                            let names: Vec<String> = db_shells
+                                .iter()
+                                .filter_map(|n| match n {
+                                    SchemaNode::Database { name, .. } => Some(name.clone()),
+                                    _ => None,
+                                })
+                                .collect();
+                            {
+                                let mut s = state.lock().unwrap();
+                                s.merge_db_list(&names);
+                                if apply_saved_expansion {
+                                    if !cache_restored {
+                                        s.restore_schema_expanded_paths(&session_expanded);
+                                        let restored = session_cursor_path
+                                            .as_deref()
+                                            .map(|p| s.restore_schema_cursor_by_path(p))
+                                            .unwrap_or(false);
+                                        if !restored {
+                                            s.rebuild_schema_cache_if_dirty();
+                                            let max =
+                                                s.visible_schema_items().len().saturating_sub(1);
+                                            s.schema_cursor = session_schema_cursor.min(max);
+                                        }
+                                    }
+                                    // Queue follow-up Tables requests for any
+                                    // db that's currently expanded.
+                                    let follow_ups =
+                                        collect_expanded_load_requests(&s.schema_nodes);
+                                    for f in follow_ups {
+                                        let _ = req_tx.send(f);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            state
+                                .lock()
+                                .unwrap()
+                                .set_status(format!("Schema load failed: {e}"));
+                        }
+                    }
+                }
+                SchemaLoadRequest::Tables { db } => {
+                    match retry_once(|| conn.list_tables(&db)).await {
+                        Ok(table_names) => {
+                            // set_db_tables may reuse existing Table nodes; we
+                            // then need to queue Columns for any of those that
+                            // the user already had expanded.
+                            let follow_ups: Vec<SchemaLoadRequest> = {
+                                let mut s = state.lock().unwrap();
+                                s.set_db_tables(&db, &table_names);
+                                collect_expanded_load_requests(&s.schema_nodes)
+                                    .into_iter()
+                                    .filter(|r| match r {
+                                        SchemaLoadRequest::Columns { db: rd, .. } => rd == &db,
+                                        _ => false,
+                                    })
+                                    .collect()
+                            };
+                            for f in follow_ups {
+                                let _ = req_tx.send(f);
+                            }
+                        }
+                        Err(e) => {
+                            state
+                                .lock()
+                                .unwrap()
+                                .set_status(format!("Tables load failed ({db}): {e}"));
+                        }
+                    }
+                }
+                SchemaLoadRequest::Columns { db, table } => {
+                    let col_nodes = match retry_once(|| conn.list_columns(&db, &table)).await {
+                        Ok(cols) => cols
+                            .into_iter()
+                            .map(|c| SchemaNode::Column {
+                                name: c.name,
+                                type_name: c.type_name,
+                                nullable: c.nullable,
+                                is_pk: c.is_pk,
+                            })
+                            .collect(),
+                        Err(e) => {
+                            state
+                                .lock()
+                                .unwrap()
+                                .set_status(format!("Columns load failed ({db}.{table}): {e}"));
+                            vec![]
+                        }
+                    };
+                    state
+                        .lock()
+                        .unwrap()
+                        .set_table_columns(&db, &table, col_nodes);
+                }
+            }
+            snapshot_and_save_schema(&state, &schema_url);
+            state.lock().unwrap().finish_schema_load();
+        });
+    }
 }

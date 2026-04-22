@@ -1,15 +1,24 @@
 /// Schema tree node for the schema browser panel.
+///
+/// `tables_loaded` / `columns_loaded` track whether the current session has
+/// fetched that subtree from the server. They're `#[serde(skip)]` so cached
+/// trees always load as "not yet fetched", forcing a refresh the next time
+/// the user expands a node.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SchemaNode {
     Database {
         name: String,
         expanded: bool,
         tables: Vec<SchemaNode>,
+        #[serde(skip)]
+        tables_loaded: bool,
     },
     Table {
         name: String,
         expanded: bool,
         columns: Vec<SchemaNode>,
+        #[serde(skip)]
+        columns_loaded: bool,
     },
     Column {
         name: String,
@@ -284,6 +293,7 @@ pub fn expand_path(nodes: &mut [SchemaNode], path_str: &str) {
             name,
             expanded,
             tables,
+            ..
         } = node
             && name == parts[0]
         {
@@ -315,6 +325,7 @@ pub fn collect_expanded_paths(nodes: &[SchemaNode]) -> Vec<String> {
             name,
             expanded: true,
             tables,
+            ..
         } = node
         {
             paths.push(name.clone());
@@ -410,7 +421,9 @@ mod tests {
                     nullable: false,
                     is_pk: true,
                 }],
+                columns_loaded: true,
             }],
+            tables_loaded: true,
         }]
     }
 

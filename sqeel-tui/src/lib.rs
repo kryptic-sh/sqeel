@@ -2390,15 +2390,7 @@ fn draw_schema(
     let searching = search.focused;
     let search_cursor = search.cursor;
     let title = if state.schema_loading {
-        let spin = spinner_frame();
-        if state.schema_loading_total > 0 {
-            format!(
-                "Explorer {spin} {}/{}",
-                state.schema_loading_done, state.schema_loading_total
-            )
-        } else {
-            format!("Explorer {spin}")
-        }
+        format!("Explorer {}", spinner_frame())
     } else if state.schema_nodes.is_empty() {
         "Explorer".to_string()
     } else {
