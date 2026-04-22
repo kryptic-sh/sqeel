@@ -1,3 +1,4 @@
+pub mod completion_ctx;
 pub mod config;
 pub mod db;
 pub mod highlight;

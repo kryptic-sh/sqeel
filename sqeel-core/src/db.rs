@@ -45,7 +45,7 @@ impl DbConnection {
                 name: "main".into(),
                 expanded: true,
                 tables: vec![],
-                tables_loaded: false,
+                tables_loaded_at: None,
             }]);
         }
         let databases = self.list_databases().await?;
@@ -55,7 +55,7 @@ impl DbConnection {
                 name,
                 expanded: false,
                 tables: vec![],
-                tables_loaded: false,
+                tables_loaded_at: None,
             })
             .collect())
     }
@@ -260,14 +260,14 @@ impl DbConnection {
                     name: t,
                     expanded: false,
                     columns: vec![],
-                    columns_loaded: false,
+                    columns_loaded_at: None,
                 })
                 .collect();
             return Ok(vec![SchemaNode::Database {
                 name: "main".into(),
                 expanded: true,
                 tables: table_nodes,
-                tables_loaded: true,
+                tables_loaded_at: Some(std::time::Instant::now()),
             }]);
         }
 
@@ -281,14 +281,14 @@ impl DbConnection {
                     name: t,
                     expanded: false,
                     columns: vec![],
-                    columns_loaded: false,
+                    columns_loaded_at: None,
                 })
                 .collect();
             nodes.push(SchemaNode::Database {
                 name: db,
                 expanded: false,
                 tables: table_nodes,
-                tables_loaded: true,
+                tables_loaded_at: Some(std::time::Instant::now()),
             });
         }
         Ok(nodes)

@@ -1,3 +1,4 @@
+use crate::completion_ctx::CompletionCtx;
 use crate::config::ConnectionConfig;
 use crate::highlight::HighlightSpan;
 use crate::lsp::Diagnostic;
@@ -8,6 +9,7 @@ use crate::schema::{
     toggle_node,
 };
 use lsp_types::DiagnosticSeverity;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -184,7 +186,7 @@ pub enum QueryRequest {
 
 /// Lazy-load request for the schema sidebar. Sent to the background loader
 /// when the user expands a node we haven't fetched yet.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SchemaLoadRequest {
     /// Fetch the database list and merge it into the tree.
     Databases,
@@ -271,6 +273,17 @@ pub struct AppState {
     /// In-flight lazy schema loads. Bumped on send, decremented by the loader
     /// when each request finishes. Drives the sidebar spinner.
     pub schema_pending_loads: usize,
+    /// Currently-in-flight load requests. Entries are added on send and
+    /// removed when the loader calls `finish_schema_load(&req)`. Used to
+    /// dedup bursts of requests (e.g. typing `db.` fires every keystroke)
+    /// without blocking future refreshes once a load completes.
+    pub schema_loads_inflight: HashSet<SchemaLoadRequest>,
+    /// When the top-level database list was last loaded this session. `None`
+    /// means not yet loaded. Used alongside `schema_ttl` to drive periodic
+    /// refreshes of the sidebar root.
+    pub databases_loaded_at: Option<Instant>,
+    /// Cached schema TTL. `Duration::ZERO` disables automatic refreshes.
+    pub schema_ttl: std::time::Duration,
     /// Schema sidebar search query — persisted to session so it survives app restart.
     pub schema_search_query: Option<String>,
     /// Last-rendered viewport size of the results body, written by the TUI on
@@ -299,6 +312,7 @@ impl AppState {
 
     pub fn apply_editor_config(&mut self, cfg: &crate::config::EditorConfig) {
         self.stop_on_error = cfg.stop_on_error;
+        self.schema_ttl = std::time::Duration::from_secs(cfg.schema_ttl_secs);
     }
 
     fn rebuild_schema_cache(&mut self) {
@@ -773,6 +787,182 @@ impl AppState {
         Arc::clone(&self.schema_identifier_cache)
     }
 
+    /// Context-aware completion candidates. Returns names matching `prefix`
+    /// (case-insensitive), scoped to what `ctx` says makes sense at the cursor.
+    ///
+    /// - `Qualified { parent }` — children of the named db or table.
+    /// - `Table` — table names across all databases.
+    /// - `Column { tables }` — columns of those tables (all columns if empty).
+    /// - `Any` — every identifier in the tree (original behavior).
+    pub fn completions_for_context(&self, ctx: &CompletionCtx, prefix: &str) -> Vec<String> {
+        let p = prefix.to_lowercase();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out: Vec<String> = Vec::new();
+        let push = |name: &str, out: &mut Vec<String>, seen: &mut HashSet<String>| {
+            if name.to_lowercase().starts_with(&p) && seen.insert(name.to_owned()) {
+                out.push(name.to_owned());
+            }
+        };
+        match ctx {
+            CompletionCtx::Qualified { parent } => {
+                for node in &self.schema_nodes {
+                    if let SchemaNode::Database { name, tables, .. } = node {
+                        if name.eq_ignore_ascii_case(parent) {
+                            for t in tables {
+                                push(t.name(), &mut out, &mut seen);
+                            }
+                        }
+                        // `parent` might also be a bare table name (no db qualifier).
+                        for t in tables {
+                            if let SchemaNode::Table {
+                                name: tn, columns, ..
+                            } = t
+                                && tn.eq_ignore_ascii_case(parent)
+                            {
+                                for c in columns {
+                                    push(c.name(), &mut out, &mut seen);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            CompletionCtx::Table => {
+                for node in &self.schema_nodes {
+                    if let SchemaNode::Database { tables, .. } = node {
+                        for t in tables {
+                            push(t.name(), &mut out, &mut seen);
+                        }
+                    }
+                }
+            }
+            CompletionCtx::Column { tables } => {
+                if tables.is_empty() {
+                    for node in &self.schema_nodes {
+                        if let SchemaNode::Database { tables: ts, .. } = node {
+                            for t in ts {
+                                if let SchemaNode::Table { columns, .. } = t {
+                                    for c in columns {
+                                        push(c.name(), &mut out, &mut seen);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let wanted: HashSet<String> =
+                        tables.iter().map(|t| t.to_lowercase()).collect();
+                    for node in &self.schema_nodes {
+                        if let SchemaNode::Database { tables: ts, .. } = node {
+                            for t in ts {
+                                if let SchemaNode::Table { name, columns, .. } = t
+                                    && wanted.contains(&name.to_lowercase())
+                                {
+                                    for c in columns {
+                                        push(c.name(), &mut out, &mut seen);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            CompletionCtx::Any => {
+                for name in self.schema_identifier_cache.iter() {
+                    push(name, &mut out, &mut seen);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Fire any lazy-load requests implied by `ctx` so the completion pool
+    /// can fill in on the next tick. Treats stale caches (past the schema
+    /// TTL) the same as missing, so long-lived sessions still see fresh
+    /// data. Dedup'd via `request_schema_load`.
+    pub fn lazy_load_for_context(&mut self, ctx: &CompletionCtx) {
+        let ttl = self.schema_ttl;
+        match ctx {
+            CompletionCtx::Qualified { parent } => {
+                // Parent as Database with stale / missing tables.
+                let req = self.schema_nodes.iter().find_map(|n| match n {
+                    SchemaNode::Database {
+                        name,
+                        tables_loaded_at,
+                        ..
+                    } if name.eq_ignore_ascii_case(parent)
+                        && !crate::schema::is_fresh(*tables_loaded_at, ttl) =>
+                    {
+                        Some(SchemaLoadRequest::Tables { db: name.clone() })
+                    }
+                    _ => None,
+                });
+                if let Some(req) = req {
+                    self.request_schema_load(req);
+                    return;
+                }
+                // Parent as Table with stale / missing columns (bare table reference).
+                let req = self.schema_nodes.iter().find_map(|n| match n {
+                    SchemaNode::Database {
+                        name: db, tables, ..
+                    } => tables.iter().find_map(|t| match t {
+                        SchemaNode::Table {
+                            name,
+                            columns_loaded_at,
+                            ..
+                        } if name.eq_ignore_ascii_case(parent)
+                            && !crate::schema::is_fresh(*columns_loaded_at, ttl) =>
+                        {
+                            Some(SchemaLoadRequest::Columns {
+                                db: db.clone(),
+                                table: name.clone(),
+                            })
+                        }
+                        _ => None,
+                    }),
+                    _ => None,
+                });
+                if let Some(req) = req {
+                    self.request_schema_load(req);
+                }
+            }
+            CompletionCtx::Column { tables } => {
+                let reqs: Vec<SchemaLoadRequest> = self
+                    .schema_nodes
+                    .iter()
+                    .flat_map(|n| match n {
+                        SchemaNode::Database {
+                            name: db, tables: ts, ..
+                        } => ts
+                            .iter()
+                            .filter_map(|t| match t {
+                                SchemaNode::Table {
+                                    name,
+                                    columns_loaded_at,
+                                    ..
+                                } if tables.iter().any(|w| w.eq_ignore_ascii_case(name))
+                                    && !crate::schema::is_fresh(*columns_loaded_at, ttl) =>
+                                {
+                                    Some(SchemaLoadRequest::Columns {
+                                        db: db.clone(),
+                                        table: name.clone(),
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>(),
+                        _ => vec![],
+                    })
+                    .collect();
+                for req in reqs {
+                    self.request_schema_load(req);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Collect all identifier names from the schema tree (databases, tables, columns),
     /// filter by case-insensitive prefix, deduplicate, and return sorted.
     pub fn schema_identifier_completions(&self, prefix: &str) -> Vec<String> {
@@ -921,15 +1111,17 @@ impl AppState {
     }
 
     fn lazy_load_request_for_path(&self, path: &[usize]) -> Option<SchemaLoadRequest> {
+        let ttl = self.schema_ttl;
         match path.len() {
             1 => {
                 let node = self.schema_nodes.get(path[0])?;
                 if let SchemaNode::Database {
                     name,
                     expanded: true,
-                    tables_loaded: false,
+                    tables_loaded_at,
                     ..
                 } = node
+                    && !crate::schema::is_fresh(*tables_loaded_at, ttl)
                 {
                     return Some(SchemaLoadRequest::Tables { db: name.clone() });
                 }
@@ -945,9 +1137,10 @@ impl AppState {
                 if let SchemaNode::Table {
                     name,
                     expanded: true,
-                    columns_loaded: false,
+                    columns_loaded_at,
                     ..
                 } = table
+                    && !crate::schema::is_fresh(*columns_loaded_at, ttl)
                 {
                     return Some(SchemaLoadRequest::Columns {
                         db: db_name.clone(),
@@ -961,27 +1154,90 @@ impl AppState {
     }
 
     /// Send a lazy-load request. Bumps `schema_pending_loads` so the sidebar
-    /// shows a spinner until the loader reports back.
+    /// shows a spinner until the loader reports back. Dedupes against
+    /// `schema_loads_inflight` so bursts of identical requests (autocomplete
+    /// hot path) collapse to a single fetch; once the loader finishes the
+    /// request is eligible to fire again when data goes stale.
     pub fn request_schema_load(&mut self, req: SchemaLoadRequest) {
+        if self.schema_loads_inflight.contains(&req) {
+            return;
+        }
         if let Some(tx) = &self.schema_load_tx
-            && tx.send(req).is_ok()
+            && tx.send(req.clone()).is_ok()
         {
+            self.schema_loads_inflight.insert(req);
             self.schema_pending_loads += 1;
             self.schema_loading = true;
         }
     }
 
-    /// Called by the loader task after each request finishes.
-    pub fn finish_schema_load(&mut self) {
+    /// Called by the loader task after each request finishes. Removes the
+    /// request from the in-flight set so later TTL-driven refreshes can
+    /// re-fire it.
+    pub fn finish_schema_load(&mut self, req: &SchemaLoadRequest) {
+        self.schema_loads_inflight.remove(req);
         self.schema_pending_loads = self.schema_pending_loads.saturating_sub(1);
         if self.schema_pending_loads == 0 {
             self.schema_loading = false;
         }
     }
 
+    /// Fire refresh requests for any cached schema state that has gone past
+    /// its TTL. Called periodically from the TUI tick. Cheap enough to run
+    /// every second — walks the tree once, only sends for stale + not
+    /// already-in-flight nodes.
+    pub fn refresh_stale_schema(&mut self) {
+        let ttl = self.schema_ttl;
+        if ttl.is_zero() {
+            return;
+        }
+        // Root database list — fetch if never loaded or stale.
+        if !crate::schema::is_fresh(self.databases_loaded_at, ttl) {
+            self.request_schema_load(SchemaLoadRequest::Databases);
+        }
+        // For nested data, only refresh what was previously fetched. Never
+        // pre-fetch tables for a db the user hasn't expanded, or columns for
+        // a table we've never loaded.
+        let mut reqs: Vec<SchemaLoadRequest> = Vec::new();
+        for node in &self.schema_nodes {
+            if let SchemaNode::Database {
+                name: db,
+                tables_loaded_at,
+                tables,
+                ..
+            } = node
+            {
+                if tables_loaded_at.is_some()
+                    && !crate::schema::is_fresh(*tables_loaded_at, ttl)
+                {
+                    reqs.push(SchemaLoadRequest::Tables { db: db.clone() });
+                }
+                for t in tables {
+                    if let SchemaNode::Table {
+                        name: tn,
+                        columns_loaded_at,
+                        ..
+                    } = t
+                        && columns_loaded_at.is_some()
+                        && !crate::schema::is_fresh(*columns_loaded_at, ttl)
+                    {
+                        reqs.push(SchemaLoadRequest::Columns {
+                            db: db.clone(),
+                            table: tn.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        for req in reqs {
+            self.request_schema_load(req);
+        }
+    }
+
     pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
         self.schema_nodes = nodes;
         self.schema_cursor = 0;
+        self.databases_loaded_at = Some(Instant::now());
         self.rebuild_schema_cache();
     }
 
@@ -1033,7 +1289,7 @@ impl AppState {
                     name: name.clone(),
                     expanded: false,
                     tables: vec![],
-                    tables_loaded: false,
+                    tables_loaded_at: None,
                 });
                 changed = true;
             }
@@ -1050,6 +1306,7 @@ impl AppState {
         if changed {
             self.mark_schema_cache_dirty();
         }
+        self.databases_loaded_at = Some(Instant::now());
         changed
     }
 
@@ -1063,7 +1320,7 @@ impl AppState {
             if let SchemaNode::Database {
                 name,
                 tables: t,
-                tables_loaded,
+                tables_loaded_at,
                 ..
             } = node
                 && name == db_name
@@ -1082,12 +1339,12 @@ impl AppState {
                             name: name.clone(),
                             expanded: false,
                             columns: vec![],
-                            columns_loaded: false,
+                            columns_loaded_at: None,
                         })
                     })
                     .collect();
                 *t = merged;
-                *tables_loaded = true;
+                *tables_loaded_at = Some(Instant::now());
                 changed = true;
                 break;
             }
@@ -1108,13 +1365,13 @@ impl AppState {
                     if let SchemaNode::Table {
                         name,
                         columns: c,
-                        columns_loaded,
+                        columns_loaded_at,
                         ..
                     } = table
                         && name == table_name
                     {
                         *c = columns;
-                        *columns_loaded = true;
+                        *columns_loaded_at = Some(Instant::now());
                         changed = true;
                         break 'outer;
                     }
@@ -1774,5 +2031,347 @@ mod tests {
             s.push_history(&format!("SELECT {i}"));
         }
         assert_eq!(s.query_history.len(), 100);
+    }
+
+    fn sample_schema() -> Vec<SchemaNode> {
+        vec![
+            SchemaNode::Database {
+                name: "deepci_maindb".into(),
+                expanded: false,
+                tables_loaded_at: Some(std::time::Instant::now()),
+                tables: vec![
+                    SchemaNode::Table {
+                        name: "users".into(),
+                        expanded: false,
+                        columns_loaded_at: Some(std::time::Instant::now()),
+                        columns: vec![
+                            SchemaNode::Column {
+                                name: "id".into(),
+                                type_name: "INT".into(),
+                                nullable: false,
+                                is_pk: true,
+                            },
+                            SchemaNode::Column {
+                                name: "email".into(),
+                                type_name: "TEXT".into(),
+                                nullable: false,
+                                is_pk: false,
+                            },
+                        ],
+                    },
+                    SchemaNode::Table {
+                        name: "orders".into(),
+                        expanded: false,
+                        columns_loaded_at: None,
+                        columns: vec![],
+                    },
+                ],
+            },
+            SchemaNode::Database {
+                name: "analytics".into(),
+                expanded: false,
+                tables_loaded_at: None,
+                tables: vec![],
+            },
+        ]
+    }
+
+    #[test]
+    fn completions_qualified_by_database() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Qualified {
+            parent: "deepci_maindb".into(),
+        };
+        let items = s.completions_for_context(&ctx, "");
+        assert_eq!(items, vec!["orders".to_string(), "users".to_string()]);
+    }
+
+    #[test]
+    fn completions_qualified_by_database_case_insensitive() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Qualified {
+            parent: "DEEPCI_MAINDB".into(),
+        };
+        let items = s.completions_for_context(&ctx, "use");
+        assert_eq!(items, vec!["users".to_string()]);
+    }
+
+    #[test]
+    fn completions_qualified_by_table() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Qualified {
+            parent: "users".into(),
+        };
+        let items = s.completions_for_context(&ctx, "");
+        assert_eq!(items, vec!["email".to_string(), "id".to_string()]);
+    }
+
+    #[test]
+    fn completions_table_context_lists_all_tables() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Table;
+        let items = s.completions_for_context(&ctx, "");
+        assert_eq!(items, vec!["orders".to_string(), "users".to_string()]);
+    }
+
+    #[test]
+    fn completions_column_context_scopes_to_tables() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Column {
+            tables: vec!["users".into()],
+        };
+        let items = s.completions_for_context(&ctx, "");
+        assert_eq!(items, vec!["email".to_string(), "id".to_string()]);
+    }
+
+    #[test]
+    fn completions_column_context_empty_tables_returns_all_columns() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Column { tables: vec![] };
+        let items = s.completions_for_context(&ctx, "");
+        assert_eq!(items, vec!["email".to_string(), "id".to_string()]);
+    }
+
+    #[test]
+    fn completions_any_context_returns_everything() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Any;
+        let items = s.completions_for_context(&ctx, "");
+        // Databases, tables, and columns — all deduped + sorted.
+        assert!(items.contains(&"deepci_maindb".to_string()));
+        assert!(items.contains(&"analytics".to_string()));
+        assert!(items.contains(&"users".to_string()));
+        assert!(items.contains(&"email".to_string()));
+    }
+
+    #[test]
+    fn completions_prefix_filter_case_insensitive() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Table;
+        let items = s.completions_for_context(&ctx, "OR");
+        assert_eq!(items, vec!["orders".to_string()]);
+    }
+
+    #[test]
+    fn lazy_load_fires_tables_for_unloaded_database() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        s.schema_load_tx = Some(tx);
+
+        let ctx = CompletionCtx::Qualified {
+            parent: "analytics".into(),
+        };
+        s.lazy_load_for_context(&ctx);
+
+        let req = rx.try_recv().expect("expected Tables request");
+        assert_eq!(
+            req,
+            SchemaLoadRequest::Tables {
+                db: "analytics".into()
+            }
+        );
+    }
+
+    #[test]
+    fn lazy_load_skips_loaded_database() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        s.schema_load_tx = Some(tx);
+
+        let ctx = CompletionCtx::Qualified {
+            parent: "deepci_maindb".into(),
+        };
+        s.lazy_load_for_context(&ctx);
+
+        assert!(rx.try_recv().is_err(), "should not load already-loaded db");
+    }
+
+    #[test]
+    fn lazy_load_fires_columns_for_unloaded_table() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        s.schema_load_tx = Some(tx);
+
+        let ctx = CompletionCtx::Qualified {
+            parent: "orders".into(),
+        };
+        s.lazy_load_for_context(&ctx);
+
+        let req = rx.try_recv().expect("expected Columns request");
+        assert_eq!(
+            req,
+            SchemaLoadRequest::Columns {
+                db: "deepci_maindb".into(),
+                table: "orders".into()
+            }
+        );
+    }
+
+    #[test]
+    fn lazy_load_column_ctx_fires_for_referenced_tables() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        s.schema_load_tx = Some(tx);
+
+        let ctx = CompletionCtx::Column {
+            tables: vec!["orders".into(), "users".into()],
+        };
+        s.lazy_load_for_context(&ctx);
+
+        // Only `orders` is unloaded — users already has columns.
+        let req = rx.try_recv().expect("expected Columns request");
+        assert_eq!(
+            req,
+            SchemaLoadRequest::Columns {
+                db: "deepci_maindb".into(),
+                table: "orders".into()
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn request_schema_load_dedupes_inflight() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_load_tx = Some(tx);
+
+        let req = SchemaLoadRequest::Tables {
+            db: "foo".into(),
+        };
+        s.request_schema_load(req.clone());
+        s.request_schema_load(req.clone());
+        s.request_schema_load(req.clone());
+
+        assert!(rx.try_recv().is_ok());
+        assert!(
+            rx.try_recv().is_err(),
+            "in-flight duplicates must be suppressed"
+        );
+        assert_eq!(s.schema_pending_loads, 1);
+
+        // After the loader finishes, the same request is eligible again.
+        s.finish_schema_load(&req);
+        assert_eq!(s.schema_pending_loads, 0);
+        s.request_schema_load(req);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn refresh_stale_schema_skips_fresh_entries() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_ttl = std::time::Duration::from_secs(300);
+        s.schema_load_tx = Some(tx);
+        s.set_schema_nodes(sample_schema()); // stamps databases_loaded_at = now
+        // Drain the dedup set so nothing is falsely blocked.
+        s.schema_loads_inflight.clear();
+        s.schema_pending_loads = 0;
+
+        s.refresh_stale_schema();
+        assert!(
+            rx.try_recv().is_err(),
+            "fresh caches must not trigger refreshes"
+        );
+    }
+
+    #[test]
+    fn refresh_stale_schema_refetches_expired_tables() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_ttl = std::time::Duration::from_millis(1);
+        s.schema_load_tx = Some(tx);
+        s.set_schema_nodes(sample_schema());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.schema_loads_inflight.clear();
+        s.schema_pending_loads = 0;
+
+        s.refresh_stale_schema();
+
+        let mut got = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            got.push(req);
+        }
+        // Expect at least a Databases refresh plus Tables for deepci_maindb.
+        assert!(got.contains(&SchemaLoadRequest::Databases));
+        assert!(got.contains(&SchemaLoadRequest::Tables {
+            db: "deepci_maindb".into()
+        }));
+        // `users` had columns_loaded_at set — it should refetch. `orders`
+        // never loaded columns, so we must NOT preemptively fetch them.
+        assert!(got.contains(&SchemaLoadRequest::Columns {
+            db: "deepci_maindb".into(),
+            table: "users".into()
+        }));
+        assert!(!got.contains(&SchemaLoadRequest::Columns {
+            db: "deepci_maindb".into(),
+            table: "orders".into()
+        }));
+    }
+
+    #[test]
+    fn refresh_stale_schema_noop_when_ttl_is_zero() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_ttl = std::time::Duration::ZERO;
+        s.schema_load_tx = Some(tx);
+        s.set_schema_nodes(sample_schema());
+
+        s.refresh_stale_schema();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn lazy_load_for_context_honors_ttl() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SchemaLoadRequest>();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_ttl = std::time::Duration::from_millis(1);
+        s.schema_load_tx = Some(tx);
+        s.set_schema_nodes(sample_schema());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.schema_loads_inflight.clear();
+        s.schema_pending_loads = 0;
+
+        // `deepci_maindb` is loaded but stale → must re-fire Tables.
+        let ctx = CompletionCtx::Qualified {
+            parent: "deepci_maindb".into(),
+        };
+        s.lazy_load_for_context(&ctx);
+        let req = rx.try_recv().expect("expected stale Tables refresh");
+        assert_eq!(
+            req,
+            SchemaLoadRequest::Tables {
+                db: "deepci_maindb".into()
+            }
+        );
     }
 }

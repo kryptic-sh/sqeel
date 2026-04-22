@@ -19,6 +19,10 @@ pub struct EditorConfig {
     /// Whether `Ctrl+Shift+Enter` (run-all) stops on the first query error.
     #[serde(default = "default_stop_on_error")]
     pub stop_on_error: bool,
+    /// Seconds before cached schema data (databases / tables / columns) is
+    /// considered stale and re-fetched in the background. `0` disables TTL.
+    #[serde(default = "default_schema_ttl_secs")]
+    pub schema_ttl_secs: u64,
 }
 
 fn default_mouse_scroll_lines() -> usize {
@@ -33,6 +37,10 @@ fn default_stop_on_error() -> bool {
     true
 }
 
+fn default_schema_ttl_secs() -> u64 {
+    300
+}
+
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
@@ -41,6 +49,7 @@ impl Default for EditorConfig {
             mouse_scroll_lines: default_mouse_scroll_lines(),
             leader_key: default_leader_key(),
             stop_on_error: default_stop_on_error(),
+            schema_ttl_secs: default_schema_ttl_secs(),
         }
     }
 }
@@ -158,6 +167,10 @@ leader_key = " "
 
 # Stop running a Ctrl+Shift+Enter batch on the first query error.
 stop_on_error = true
+
+# Seconds before cached schema (databases / tables / columns) is considered
+# stale and silently re-fetched. 0 disables TTL.
+schema_ttl_secs = 300
 "#;
 
 pub fn load_main_config() -> anyhow::Result<MainConfig> {

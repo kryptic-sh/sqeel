@@ -1,9 +1,10 @@
 /// Schema tree node for the schema browser panel.
 ///
-/// `tables_loaded` / `columns_loaded` track whether the current session has
-/// fetched that subtree from the server. They're `#[serde(skip)]` so cached
-/// trees always load as "not yet fetched", forcing a refresh the next time
-/// the user expands a node.
+/// `tables_loaded_at` / `columns_loaded_at` record when the current session
+/// last fetched that subtree from the server. `None` means not-yet-loaded;
+/// a stale `Some` (older than the configured TTL) triggers a silent refresh
+/// on next access. Both fields are `#[serde(skip)]` so cached trees always
+/// load as "not yet fetched", forcing an initial refresh.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SchemaNode {
     Database {
@@ -11,14 +12,14 @@ pub enum SchemaNode {
         expanded: bool,
         tables: Vec<SchemaNode>,
         #[serde(skip)]
-        tables_loaded: bool,
+        tables_loaded_at: Option<std::time::Instant>,
     },
     Table {
         name: String,
         expanded: bool,
         columns: Vec<SchemaNode>,
         #[serde(skip)]
-        columns_loaded: bool,
+        columns_loaded_at: Option<std::time::Instant>,
     },
     Column {
         name: String,
@@ -26,6 +27,16 @@ pub enum SchemaNode {
         nullable: bool,
         is_pk: bool,
     },
+}
+
+/// Returns true if `at` is set and no older than `ttl`. `ttl == 0` means
+/// "never expire".
+pub fn is_fresh(at: Option<std::time::Instant>, ttl: std::time::Duration) -> bool {
+    match at {
+        Some(_) if ttl.is_zero() => true,
+        Some(t) => t.elapsed() < ttl,
+        None => false,
+    }
 }
 
 impl SchemaNode {
@@ -421,9 +432,9 @@ mod tests {
                     nullable: false,
                     is_pk: true,
                 }],
-                columns_loaded: true,
+                columns_loaded_at: Some(std::time::Instant::now()),
             }],
-            tables_loaded: true,
+            tables_loaded_at: Some(std::time::Instant::now()),
         }]
     }
 

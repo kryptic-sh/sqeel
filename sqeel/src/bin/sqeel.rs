@@ -513,7 +513,7 @@ fn collect_expanded_load_requests(nodes: &[SchemaNode]) -> Vec<SchemaLoadRequest
             name: db_name,
             expanded: true,
             tables,
-            tables_loaded: false,
+            tables_loaded_at: None,
             ..
         } = db
         {
@@ -536,7 +536,7 @@ fn collect_expanded_load_requests(nodes: &[SchemaNode]) -> Vec<SchemaLoadRequest
                 if let SchemaNode::Table {
                     name: tname,
                     expanded: true,
-                    columns_loaded: false,
+                    columns_loaded_at: None,
                     ..
                 } = table
                 {
@@ -587,6 +587,7 @@ async fn schema_loader_task(
         let session_cursor_path = session_schema_cursor_path.clone();
         tokio::spawn(async move {
             let _permit = permit;
+            let finish_req = req.clone();
             match req {
                 SchemaLoadRequest::Databases => {
                     match retry_once(|| conn.load_schema_databases()).await {
@@ -688,7 +689,7 @@ async fn schema_loader_task(
                 }
             }
             snapshot_and_save_schema(&state, &schema_url);
-            state.lock().unwrap().finish_schema_load();
+            state.lock().unwrap().finish_schema_load(&finish_req);
         });
     }
 }

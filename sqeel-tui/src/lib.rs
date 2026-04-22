@@ -43,6 +43,7 @@ use ratatui::{
 };
 use sqeel_core::{
     AppState, UiProvider,
+    completion_ctx::{self, CompletionCtx},
     config::load_main_config,
     highlight::{
         HighlightSpan, Highlighter, TokenKind, first_syntax_error, statement_at_byte,
@@ -350,6 +351,10 @@ async fn run_loop(
     let mut doc_version: i32 = 0;
     let mut last_completion_id: Option<i64> = None;
     let mut last_schema_completions: Vec<String> = Vec::new();
+    // Last completion context + prefix, stashed so we can re-run the query
+    // once a lazy schema load fills in tables/columns for that context.
+    let mut last_completion_ctx: Option<(CompletionCtx, String)> = None;
+    let mut last_pending_loads: usize = 0;
     let mut command_input: Option<TextInput> = None;
     let mut rename_input: Option<TextInput> = None;
     let mut file_picker: Option<FilePicker> = None;
@@ -378,6 +383,9 @@ async fn run_loop(
     let mut mouse_did_drag = false;
     // Force redraw on first iteration and after every event.
     let mut event_triggered_redraw = true;
+    // Last time we ran the schema-freshness sweep. Rate-limited to once a
+    // second so we don't walk the tree every tick.
+    let mut last_stale_check = Instant::now();
     let mut last_terminal_size = terminal.size()?;
     let mut last_schema_loading = false;
     // Pending first `g` for the schema-pane `gg` chord. Cleared by any other key.
@@ -485,10 +493,22 @@ async fn run_loop(
             if suppress {
                 state.lock().unwrap().dismiss_completions();
                 last_completion_id = None;
+                last_completion_ctx = None;
             } else {
                 let prefix = word_prefix_at(editor.textarea.lines(), row, col);
-                let identifiers = state.lock().unwrap().schema_identifier_names();
-                completion_thread.submit(prefix, identifiers);
+                let byte_offset = row_col_to_byte(editor.textarea.lines(), row, col);
+                let ctx = completion_ctx::parse_context(content, byte_offset);
+
+                // Context-scoped pool (unfiltered) fed to the prefix-filter
+                // thread; empty prefix returns the full sorted pool.
+                let (pool, _) = {
+                    let mut s = state.lock().unwrap();
+                    s.lazy_load_for_context(&ctx);
+                    let pool = s.completions_for_context(&ctx, "");
+                    (pool, ())
+                };
+                last_completion_ctx = Some((ctx, prefix.clone()));
+                completion_thread.submit(prefix, Arc::new(pool));
 
                 if let Some(ref mut client) = lsp {
                     let _ = client
@@ -540,11 +560,32 @@ async fn run_loop(
 
         // Spinner needs periodic redraws while schema is loading, plus one final
         // redraw on the loading→idle transition so the spinner is replaced by the ✓.
-        let schema_loading = state.lock().unwrap().schema_loading;
+        let (schema_loading, pending_loads) = {
+            let s = state.lock().unwrap();
+            (s.schema_loading, s.schema_pending_loads)
+        };
         if schema_loading || last_schema_loading != schema_loading {
             needs_redraw = true;
         }
         last_schema_loading = schema_loading;
+
+        // Periodic schema-freshness sweep. Fires TTL-driven refreshes for
+        // the db list and any tables/columns we've already fetched.
+        if last_stale_check.elapsed() >= Duration::from_secs(1) {
+            state.lock().unwrap().refresh_stale_schema();
+            last_stale_check = Instant::now();
+        }
+
+        // Lazy schema loads just drained — re-run the stashed completion
+        // query so the popup picks up newly fetched tables/columns.
+        if last_pending_loads > 0
+            && pending_loads < last_pending_loads
+            && let Some((ctx, prefix)) = last_completion_ctx.clone()
+        {
+            let pool = state.lock().unwrap().completions_for_context(&ctx, "");
+            completion_thread.submit(prefix, Arc::new(pool));
+        }
+        last_pending_loads = pending_loads;
 
         // Executor finished a query — redraw to show results/error.
         {
@@ -3229,6 +3270,25 @@ fn syntax_spans_by_row(
         row_spans.sort_by_key(|&(s, _, _)| s);
     }
     by_row
+}
+
+/// Convert a `(row, col)` character position into a byte offset in the
+/// joined source (`\n` between lines). Used to feed cursor position into
+/// `completion_ctx::parse_context`, which operates on a single string.
+fn row_col_to_byte(lines: &[String], row: usize, col: usize) -> usize {
+    let mut offset = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if i == row {
+            for (char_count, (b, _)) in line.char_indices().enumerate() {
+                if char_count == col {
+                    return offset + b;
+                }
+            }
+            return offset + line.len();
+        }
+        offset += line.len() + 1; // `\n`
+    }
+    offset
 }
 
 /// Returns the word (alphanumeric + `_`) ending at `col` on `line`.
