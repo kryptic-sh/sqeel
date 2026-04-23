@@ -1167,6 +1167,7 @@ async fn run_loop(
                             let failed = {
                                 let mut s = state.lock().unwrap();
                                 s.editor_content = Arc::new(editor.content());
+                                s.editor_content_synced = true;
                                 s.mark_active_dirty();
                                 s.save_all_dirty()
                             };
@@ -1201,11 +1202,16 @@ async fn run_loop(
                             let trimmed = cmd_str.trim();
                             match editor::ex::run(&mut editor, trimmed) {
                                 editor::ex::ExEffect::Quit { force, save } => {
+                                    let local_dirty = editor_dirty;
                                     let any_dirty = {
                                         let mut s = state.lock().unwrap();
                                         s.editor_content = Arc::new(editor.content());
+                                        s.editor_content_synced = true;
                                         editor_dirty = false;
-                                        s.any_dirty()
+                                        if local_dirty {
+                                            s.mark_active_dirty();
+                                        }
+                                        local_dirty || s.any_dirty()
                                     };
                                     if force {
                                         break;
@@ -3774,7 +3780,8 @@ fn apply_window_spans(
         let line = &textarea.lines()[row];
         let on_cursor_line = row == cursor_row;
         let comments: Vec<CommentBody> = comment_body_from_line(line).into_iter().collect();
-        active_color = apply_marker_overlay(row_spans, line, &comments, active_color, on_cursor_line);
+        active_color =
+            apply_marker_overlay(row_spans, line, &comments, active_color, on_cursor_line);
     }
     // Sort each touched row so `line_spans` sees them in start-byte order.
     for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
@@ -4741,13 +4748,8 @@ mod tests {
         let line = "-- this is a warning";
         let comments: Vec<CommentBody> = comment_body_from_line(line).into_iter().collect();
         let u = super::theme::ui();
-        let new = super::apply_marker_overlay(
-            &mut row,
-            line,
-            &comments,
-            Some(u.sql_marker_warn),
-            false,
-        );
+        let new =
+            super::apply_marker_overlay(&mut row, line, &comments, Some(u.sql_marker_warn), false);
         assert_eq!(new, Some(u.sql_marker_warn));
         let tinted = row
             .iter()
