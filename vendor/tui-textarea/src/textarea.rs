@@ -250,6 +250,14 @@ impl<'a> TextArea<'a> {
         self.syntax_spans.clear();
     }
 
+    /// Move the syntax span storage out of the textarea, leaving an empty
+    /// `Vec` behind.  Paired with [`set_syntax_spans`] for in-place
+    /// mutation: the caller takes ownership, edits the rows it needs, and
+    /// writes it back without allocating a new outer vec.
+    pub fn take_syntax_spans(&mut self) -> Vec<Vec<(usize, usize, Style)>> {
+        std::mem::take(&mut self.syntax_spans)
+    }
+
     /// Handle a key input with default key mappings. For default key mappings, see the table in
     /// [the module document](./index.html).
     /// `crossterm`, `termion`, and `termwiz` features enable conversion from their own key event types into

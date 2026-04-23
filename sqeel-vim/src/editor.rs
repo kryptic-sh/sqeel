@@ -55,6 +55,11 @@ impl<'a> Editor<'a> {
         self.viewport_height.store(height, Ordering::Relaxed);
     }
 
+    /// Last height published by `set_viewport_height` (in rows).
+    pub fn viewport_height_value(&self) -> u16 {
+        self.viewport_height.load(Ordering::Relaxed)
+    }
+
     /// Calls `f` on the textarea and marks the content dirty.
     pub(super) fn mutate<R>(&mut self, f: impl FnOnce(&mut TextArea<'a>) -> R) -> R {
         self.content_dirty = true;

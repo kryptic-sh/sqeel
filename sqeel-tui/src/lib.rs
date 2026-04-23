@@ -26,7 +26,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use highlight_thread::HighlightThread;
+use highlight_thread::{HighlightResult, HighlightThread};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -40,8 +40,8 @@ use sqeel_core::{
     completion_ctx::{self, CompletionCtx},
     config::load_main_config,
     highlight::{
-        HighlightSpan, Highlighter, TokenKind, first_syntax_error, is_show_create,
-        statement_at_byte, statement_ranges, strip_sql_comments,
+        Highlighter, TokenKind, first_syntax_error, is_show_create, statement_at_byte,
+        statement_ranges, strip_sql_comments,
     },
     lsp::{LspClient, LspEvent},
     schema::{self, SchemaItemKind, SchemaTreeItem},
@@ -349,6 +349,10 @@ async fn run_loop(
     // the editor flags a change, cleared on publish.  On huge files this
     // collapses a burst of keystrokes into a single pipeline run.
     let mut content_dirty_since: Option<Instant> = None;
+    // Last viewport top row we submitted to the highlight thread.  Seeded
+    // to `usize::MAX` so the first iteration always triggers an initial
+    // window highlight.
+    let mut last_highlight_top: usize = usize::MAX;
     let mut doc_version: i32 = 0;
     // Buffers larger than this are not streamed to the LSP — sqls (and most
     // SQL LSPs) re-parse the whole document on every `didChange` and balloon
@@ -500,18 +504,45 @@ async fn run_loop(
                 s.editor_content = c.clone();
                 s.editor_content_synced = true;
             }
-            // Apply any completed highlight results from the background thread.
-            if let Some(spans) = highlight_thread.try_recv() {
+            // Apply any completed highlight results from the background
+            // thread.  The thread parses a viewport-sized slice; splice
+            // those spans into the existing row table in place so we
+            // never allocate a fresh outer `Vec<Vec<…>>` the size of the
+            // whole buffer on the main thread.
+            if let Some(result) = highlight_thread.try_recv() {
                 let row_count = editor.textarea.lines().len();
-                editor
-                    .textarea
-                    .set_syntax_spans(syntax_spans_by_row(&spans, row_count));
-                s.set_highlights(spans);
+                apply_window_spans(&mut editor.textarea, &result, row_count);
+                s.set_highlights(result.spans);
                 needs_redraw = true;
             }
         }
-        if let Some(ref c) = content {
-            highlight_thread.submit(c.clone());
+        // Highlight the viewport window (with margin) rather than the
+        // whole buffer.  Triggered on any content publish or when the
+        // viewport has scrolled past half the margin since last submit —
+        // keeps highlighting responsive during pure scrolling with zero
+        // typing.
+        const HIGHLIGHT_WINDOW_MARGIN: usize = 500;
+        let viewport_top = editor.textarea.viewport_top_row();
+        let viewport_height = editor.viewport_height_value() as usize;
+        let viewport_scrolled = last_highlight_top == usize::MAX
+            || viewport_top.abs_diff(last_highlight_top) >= HIGHLIGHT_WINDOW_MARGIN / 2;
+        if (content.is_some() || viewport_scrolled) && viewport_height > 0 {
+            let lines = editor.textarea.lines();
+            if !lines.is_empty() {
+                let start = viewport_top.saturating_sub(HIGHLIGHT_WINDOW_MARGIN);
+                let end =
+                    (viewport_top + viewport_height + HIGHLIGHT_WINDOW_MARGIN).min(lines.len());
+                let slice = &lines[start..end];
+                let mut src = String::with_capacity(slice.iter().map(|l| l.len() + 1).sum());
+                for (i, l) in slice.iter().enumerate() {
+                    if i > 0 {
+                        src.push('\n');
+                    }
+                    src.push_str(l);
+                }
+                highlight_thread.submit(Arc::new(src), start, slice.len());
+                last_highlight_top = viewport_top;
+            }
         }
 
         // Auto-complete: on every content change, submit a schema completion query to the
@@ -3650,48 +3681,56 @@ fn token_kind_style(kind: TokenKind) -> Option<Style> {
     }
 }
 
-/// Convert tree-sitter spans (row+col are byte offsets within the row) into
-/// the per-row `(start_byte, end_byte, style)` shape tui-textarea expects.
-/// Multi-row spans are split per row. Spans with no styling are skipped.
-fn syntax_spans_by_row(
-    spans: &[HighlightSpan],
-    row_count: usize,
-) -> Vec<Vec<(usize, usize, Style)>> {
-    let mut by_row: Vec<Vec<(usize, usize, Style)>> = vec![Vec::new(); row_count];
-    for s in spans {
+/// Splice a window of tree-sitter spans into the textarea's existing
+/// per-row syntax span table.  Spans in the result are slice-local —
+/// rows are rebased by `result.start_row` before being written.
+///
+/// Avoids the 700k-row `vec![Vec::new(); row_count]` allocation the old
+/// `syntax_spans_by_row` paid on the main thread every time a highlight
+/// result arrived: we `take` the existing outer `Vec`, mutate only the
+/// rows inside the window, and put it back.
+fn apply_window_spans(
+    textarea: &mut tui_textarea::TextArea<'_>,
+    result: &HighlightResult,
+    buffer_rows: usize,
+) {
+    let mut by_row = textarea.take_syntax_spans();
+    if by_row.len() < buffer_rows {
+        by_row.resize_with(buffer_rows, Vec::new);
+    }
+    let window_start = result.start_row;
+    let window_end = (window_start + result.row_count).min(buffer_rows);
+    for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
+        row_spans.clear();
+    }
+    for s in &result.spans {
         let Some(style) = token_kind_style(s.kind) else {
             continue;
         };
-        if s.start_row >= row_count {
+        let sr = s.start_row + window_start;
+        let er = s.end_row + window_start;
+        if sr >= buffer_rows {
             continue;
         }
-        if s.start_row == s.end_row {
+        if sr == er {
             if s.end_col > s.start_col {
-                by_row[s.start_row].push((s.start_col, s.end_col, style));
+                by_row[sr].push((s.start_col, s.end_col, style));
             }
         } else {
-            // Multi-row span: emit a segment per row. Use usize::MAX as "to
-            // end of line" — clamped in line_spans against actual line length.
-            by_row[s.start_row].push((s.start_col, usize::MAX, style));
-            for row_spans in by_row
-                .iter_mut()
-                .take(s.end_row.min(row_count))
-                .skip(s.start_row + 1)
-            {
+            by_row[sr].push((s.start_col, usize::MAX, style));
+            for row_spans in by_row.iter_mut().take(er.min(buffer_rows)).skip(sr + 1) {
                 row_spans.push((0, usize::MAX, style));
             }
-            if s.end_row < row_count && s.end_col > 0 {
-                by_row[s.end_row].push((0, s.end_col, style));
+            if er < buffer_rows && s.end_col > 0 {
+                by_row[er].push((0, s.end_col, style));
             }
         }
     }
-    // tree-sitter visits parents before children; child spans for an
-    // identifier/keyword often nest inside larger ones. Sort and de-overlap by
-    // taking the last (innermost) style for any byte range.
-    for row_spans in &mut by_row {
+    // Sort each touched row so `line_spans` sees them in start-byte order.
+    for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
         row_spans.sort_by_key(|&(s, _, _)| s);
     }
-    by_row
+    textarea.set_syntax_spans(by_row);
 }
 
 /// Convert a `(row, col)` character position into a byte offset in the
