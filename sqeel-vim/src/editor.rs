@@ -89,6 +89,18 @@ impl<'a> Editor<'a> {
     /// Bounds of the active visual-block rectangle as
     /// `(top_row, bot_row, left_col, right_col)` — all inclusive.
     /// `None` when we're not in VisualBlock mode.
+    /// Read-only view of the live `/` or `?` prompt. `None` outside
+    /// search-prompt mode.
+    pub fn search_prompt(&self) -> Option<&crate::vim::SearchPrompt> {
+        self.vim.search_prompt.as_ref()
+    }
+
+    /// Most recent committed search pattern (persists across `n` / `N`
+    /// and across prompt exits). `None` before the first search.
+    pub fn last_search(&self) -> Option<&str> {
+        self.vim.last_search.as_deref()
+    }
+
     /// Start/end `(row, col)` of the active char-wise Visual selection
     /// (inclusive on both ends, positionally ordered). `None` when not
     /// in Visual mode.

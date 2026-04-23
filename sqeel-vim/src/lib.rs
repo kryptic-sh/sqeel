@@ -23,6 +23,7 @@ mod vim;
 
 pub use editor::Editor;
 pub use render::{paint_block_overlay, paint_char_overlay, paint_line_overlay};
+pub use vim::SearchPrompt;
 
 /// Which keyboard discipline the editor uses. Currently vim-only, but
 /// kept as an enum so future emacs / plain bindings can slot in without

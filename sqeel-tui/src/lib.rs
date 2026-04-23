@@ -364,8 +364,6 @@ async fn run_loop(
     let mut delete_confirm: Option<String> = None;
     let mut schema_search =
         SchemaSearch::from_initial(state.lock().unwrap().schema_search_query.clone());
-    let mut editor_search: Option<TextInput> = None;
-    let mut last_editor_search: Option<String> = None;
 
     let mut toasts: Vec<(String, ToastKind, std::time::Instant)> = Vec::new();
     if let Some(msg) = theme_error {
@@ -609,10 +607,9 @@ async fn run_loop(
             let picker_snap = file_picker.clone();
             let delete_snap = delete_confirm.clone();
             let schema_search_snap = schema_search.clone();
-            let editor_search_snap = editor_search.clone();
-            let last_editor_search_snap = last_editor_search.clone();
             let editor_search_text_snap: Option<String> =
-                editor_search_snap.as_ref().map(|t| t.text.clone());
+                editor.search_prompt().map(|p| p.text.clone());
+            let last_editor_search_snap = editor.last_search().map(str::to_owned);
             let toast_snap: Vec<(String, ToastKind)> = toasts
                 .iter()
                 .map(|(msg, kind, _)| (msg.clone(), *kind))
@@ -628,7 +625,6 @@ async fn run_loop(
                     picker_snap.as_ref(),
                     delete_snap.as_deref(),
                     &schema_search_snap,
-                    editor_search_snap.as_ref(),
                     editor_search_text_snap.as_deref(),
                     last_editor_search_snap.as_deref(),
                     &toast_snap,
@@ -974,7 +970,7 @@ async fn run_loop(
                     && rename_input.is_none()
                     && file_picker.is_none()
                     && delete_confirm.is_none()
-                    && editor_search.is_none()
+                    && editor.search_prompt().is_none()
                     && !show_switcher
                     && !show_add
                     && !show_help
@@ -1274,41 +1270,10 @@ async fn run_loop(
                     continue;
                 }
 
-                // ── Editor search input ──────────────────────────────────────────
-                if editor_search.is_some() {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::NONE, KeyCode::Esc) => {
-                            let q = editor_search.take().map(|t| t.text).unwrap_or_default();
-                            last_editor_search = if q.is_empty() { None } else { Some(q) };
-                        }
-                        (KeyModifiers::NONE, KeyCode::Enter) => {
-                            let q = editor_search.take().map(|t| t.text).unwrap_or_default();
-                            if !q.is_empty() {
-                                let _ = editor.textarea.set_search_pattern(&q);
-                                editor.textarea.search_forward(false);
-                                last_editor_search = Some(q);
-                            } else {
-                                last_editor_search = None;
-                            }
-                        }
-                        (KeyModifiers::NONE, KeyCode::Backspace) => {
-                            if let Some(ref mut q) = editor_search {
-                                q.backspace();
-                                let _ = editor.textarea.set_search_pattern(&q.text);
-                            }
-                        }
-                        (KeyModifiers::NONE, KeyCode::Char(c)) => {
-                            if let Some(ref mut q) = editor_search {
-                                q.insert_char(c);
-                                let _ = editor.textarea.set_search_pattern(&q.text);
-                            }
-                        }
-                        _ => {
-                            if let Some(ref mut q) = editor_search {
-                                q.handle_nav(key.code);
-                            }
-                        }
-                    }
+                // The `/` / `?` search prompt is owned by the editor now;
+                // just forward the key and let sqeel-vim handle it.
+                if editor.search_prompt().is_some() {
+                    editor.handle_key(key);
                     continue;
                 }
 
@@ -1731,30 +1696,7 @@ async fn run_loop(
                             state.lock().unwrap().focus = Focus::Editor;
                         }
                     }
-                    // Editor vim search: / in Normal mode
-                    (KeyModifiers::NONE, KeyCode::Char('/'))
-                        if focus == Focus::Editor && vim_mode == VimMode::Normal =>
-                    {
-                        editor_search = Some(TextInput::default());
-                        last_editor_search = None;
-                        let _ = editor.textarea.set_search_pattern("");
-                    }
-                    // n / N — navigate search matches
-                    (KeyModifiers::NONE, KeyCode::Char('n'))
-                        if focus == Focus::Editor
-                            && vim_mode == VimMode::Normal
-                            && last_editor_search.is_some() =>
-                    {
-                        editor.textarea.search_forward(false);
-                    }
-                    (KeyModifiers::SHIFT, KeyCode::Char('N'))
-                    | (KeyModifiers::NONE, KeyCode::Char('N'))
-                        if focus == Focus::Editor
-                            && vim_mode == VimMode::Normal
-                            && last_editor_search.is_some() =>
-                    {
-                        editor.textarea.search_back(false);
-                    }
+                    // `/`, `?`, `n`, `N` — all handled in the vim engine.
                     _ if focus == Focus::Editor => {
                         if vim_mode == VimMode::Normal
                             && (key.modifiers == KeyModifiers::NONE
@@ -1972,7 +1914,6 @@ fn draw(
     file_picker: Option<&FilePicker>,
     delete_confirm: Option<&str>,
     schema_search: &SchemaSearch,
-    editor_search: Option<&TextInput>,
     editor_search_text: Option<&str>,
     last_editor_search: Option<&str>,
     toasts: &[(String, ToastKind)],
@@ -2150,9 +2091,16 @@ fn draw(
         dialog_cursor = Some(draw_input_dialog(f, area, "> ", name));
     }
 
-    // Editor `/` search: same shape as command palette.
-    if let Some(query) = editor_search {
-        dialog_cursor = Some(draw_input_dialog(f, area, "/ ", query));
+    // Editor `/` / `?` search: same shape as command palette. The
+    // editor owns the prompt state; we read it for render via
+    // `editor.search_prompt()`.
+    if let Some(prompt) = editor.search_prompt() {
+        let prefix = if prompt.forward { "/ " } else { "? " };
+        let input = TextInput {
+            text: prompt.text.clone(),
+            cursor: prompt.cursor,
+        };
+        dialog_cursor = Some(draw_input_dialog(f, area, prefix, &input));
     }
 
     // Delete confirmation: centered borderless dialog.

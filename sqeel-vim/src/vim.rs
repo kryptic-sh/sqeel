@@ -289,6 +289,21 @@ pub struct VimState {
     /// Entered Normal from Insert via `Ctrl-o`; after the next complete
     /// normal-mode command we return to Insert.
     one_shot_normal: bool,
+    /// Live `/` or `?` prompt. `None` outside search-prompt mode.
+    pub(super) search_prompt: Option<SearchPrompt>,
+    /// Most recent committed search pattern. Surfaced to host apps via
+    /// [`Editor::last_search`] so their status line can render a hint
+    /// and so `n` / `N` have something to repeat.
+    pub(super) last_search: Option<String>,
+}
+
+/// Active `/` or `?` search prompt. Text mutations drive the textarea's
+/// live search pattern so matches highlight as the user types.
+#[derive(Debug, Clone)]
+pub struct SearchPrompt {
+    pub text: String,
+    pub cursor: usize,
+    pub forward: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -355,7 +370,74 @@ impl VimState {
 
 // ─── Entry point ───────────────────────────────────────────────────────────
 
+/// Open the `/` (forward) or `?` (backward) search prompt. Clears any
+/// live search highlight until the user commits a query.
+fn enter_search(ed: &mut Editor<'_>, forward: bool) {
+    ed.vim.search_prompt = Some(SearchPrompt {
+        text: String::new(),
+        cursor: 0,
+        forward,
+    });
+    ed.vim.last_search = None;
+    let _ = ed.textarea.set_search_pattern("");
+}
+
+fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
+    match input.key {
+        Key::Esc => {
+            // Cancel. Drop the prompt but keep the highlighted matches
+            // so `n` / `N` can repeat whatever was typed.
+            let text = ed
+                .vim
+                .search_prompt
+                .take()
+                .map(|p| p.text)
+                .unwrap_or_default();
+            if !text.is_empty() {
+                ed.vim.last_search = Some(text);
+            }
+        }
+        Key::Enter => {
+            let prompt = ed.vim.search_prompt.take();
+            if let Some(p) = prompt {
+                if !p.text.is_empty() {
+                    let _ = ed.textarea.set_search_pattern(&p.text);
+                    if p.forward {
+                        ed.textarea.search_forward(false);
+                    } else {
+                        ed.textarea.search_back(false);
+                    }
+                    ed.vim.last_search = Some(p.text);
+                } else {
+                    ed.vim.last_search = None;
+                }
+            }
+        }
+        Key::Backspace => {
+            if let Some(p) = ed.vim.search_prompt.as_mut() {
+                if p.text.pop().is_some() {
+                    p.cursor = p.text.chars().count();
+                    let _ = ed.textarea.set_search_pattern(&p.text);
+                }
+            }
+        }
+        Key::Char(c) => {
+            if let Some(p) = ed.vim.search_prompt.as_mut() {
+                p.text.push(c);
+                p.cursor = p.text.chars().count();
+                let _ = ed.textarea.set_search_pattern(&p.text);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
+    // Search prompt eats all keys until Enter / Esc.
+    if ed.vim.search_prompt.is_some() {
+        return step_search_prompt(ed, input);
+    }
     let was_insert = ed.vim.mode == Mode::Insert;
     let consumed = match ed.vim.mode {
         Mode::Insert => step_insert(ed, input),
@@ -1803,6 +1885,14 @@ fn handle_normal_only(ed: &mut Editor<'_>, input: &Input, count: usize) -> bool 
         Key::Char('r') => {
             ed.vim.count = count;
             ed.vim.pending = Pending::Replace;
+            true
+        }
+        Key::Char('/') => {
+            enter_search(ed, true);
+            true
+        }
+        Key::Char('?') => {
+            enter_search(ed, false);
             true
         }
         Key::Char('.') => {
@@ -4021,6 +4111,79 @@ mod tests {
             e.textarea.lines(),
             &["f!oo".to_string(), "b!ar".to_string(), "b!az".to_string()]
         );
+    }
+
+    // ─── `/` / `?` search prompt ─────────────────────────────────────────
+
+    #[test]
+    fn slash_opens_forward_search_prompt() {
+        let mut e = editor_with("hello world");
+        run_keys(&mut e, "/");
+        let p = e.search_prompt().expect("prompt should be active");
+        assert!(p.text.is_empty());
+        assert!(p.forward);
+    }
+
+    #[test]
+    fn question_opens_backward_search_prompt() {
+        let mut e = editor_with("hello world");
+        run_keys(&mut e, "?");
+        let p = e.search_prompt().expect("prompt should be active");
+        assert!(!p.forward);
+    }
+
+    #[test]
+    fn search_prompt_typing_updates_pattern_live() {
+        let mut e = editor_with("foo bar\nbaz");
+        run_keys(&mut e, "/bar");
+        assert_eq!(e.search_prompt().unwrap().text, "bar");
+        // Pattern set on textarea for live highlight.
+        assert!(e.textarea.search_pattern().is_some());
+    }
+
+    #[test]
+    fn search_prompt_backspace_and_enter() {
+        let mut e = editor_with("hello world\nagain");
+        run_keys(&mut e, "/worlx");
+        e.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(e.search_prompt().unwrap().text, "worl");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Prompt closed, last_search set, cursor advanced to match.
+        assert!(e.search_prompt().is_none());
+        assert_eq!(e.last_search(), Some("worl"));
+        assert_eq!(e.textarea.cursor(), (0, 6));
+    }
+
+    #[test]
+    fn search_prompt_esc_cancels_but_keeps_last_search() {
+        let mut e = editor_with("foo bar\nbaz");
+        run_keys(&mut e, "/bar");
+        e.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(e.search_prompt().is_none());
+        assert_eq!(e.last_search(), Some("bar"));
+    }
+
+    #[test]
+    fn search_then_n_and_shift_n_navigate() {
+        let mut e = editor_with("foo bar foo baz foo");
+        run_keys(&mut e, "/foo");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // `/foo` + Enter jumps forward; we land on the next match after col 0.
+        assert_eq!(e.textarea.cursor().1, 8);
+        run_keys(&mut e, "n");
+        assert_eq!(e.textarea.cursor().1, 16);
+        run_keys(&mut e, "N");
+        assert_eq!(e.textarea.cursor().1, 8);
+    }
+
+    #[test]
+    fn question_mark_searches_backward_on_enter() {
+        let mut e = editor_with("foo bar foo baz");
+        e.textarea.move_cursor(CursorMove::Jump(0, 10));
+        run_keys(&mut e, "?foo");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Cursor jumps backward to the closest match before col 10.
+        assert_eq!(e.textarea.cursor(), (0, 8));
     }
 
     // ─── P6 quick wins (Y, gJ, ge / gE) ──────────────────────────────────
