@@ -2092,9 +2092,10 @@ impl AppState {
         }
     }
 
-    /// Sync the live editor buffer into the active tab's in-memory cache
-    /// and mark the tab dirty. Called whenever the editor content changes
-    /// so tab switches don't lose work in memory.
+    /// Mark the active tab as having unsaved changes.  The live buffer
+    /// lives in `editor_content`; we don't duplicate it into `tab.content`
+    /// on every keystroke — `switch_to_tab` / `save_active_tab` pull from
+    /// `editor_content` when the cached copy is actually needed.
     pub fn mark_active_dirty(&mut self) {
         if !self.editor_content_synced {
             return;
@@ -2106,15 +2107,14 @@ impl AppState {
             let Ok(name) = persistence::next_scratch_name(&slug) else {
                 return;
             };
-            let content = (*self.editor_content).clone();
-            let mut entry = TabEntry::open(name, content);
+            let mut entry = TabEntry::open(name, String::new());
+            entry.content = None;
             entry.dirty = true;
             self.tabs.push(entry);
             self.active_tab = 0;
             return;
         }
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content = Some((*self.editor_content).clone());
             tab.last_accessed = Some(Instant::now());
             tab.dirty = true;
         }

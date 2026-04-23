@@ -45,14 +45,27 @@ pub fn parse_context(source: &str, byte_offset: usize) -> CompletionCtx {
 }
 
 /// Byte offset of the start of the statement containing `offset`.
-/// Walks back to the last unquoted `;` (or to 0 if none).
+/// Walks back to the last unquoted `;` (or to the scan floor if none).
+///
+/// Scan is capped at the last 64 KB before `offset` so typing in a huge
+/// file doesn't re-scan megabytes on every keystroke.  A SQL statement
+/// spanning more than 64 KB is vanishingly rare; in that case the
+/// heuristic falls back to "this is the start of the statement".
 fn statement_start(source: &str, offset: usize) -> usize {
+    const MAX_SCAN: usize = 64 * 1024;
     let bytes = source.as_bytes();
-    let mut last = 0usize;
+    let end = offset.min(bytes.len());
+    // Align the scan floor to a UTF-8 char boundary so the &str slice
+    // later in `parse_context` stays valid.
+    let mut floor = end.saturating_sub(MAX_SCAN);
+    while floor > 0 && !source.is_char_boundary(floor) {
+        floor -= 1;
+    }
+    let mut last = floor;
     let mut in_single = false;
     let mut in_double = false;
-    let mut i = 0;
-    while i < offset && i < bytes.len() {
+    let mut i = floor;
+    while i < end {
         let b = bytes[i];
         match b {
             b'\'' if !in_double => in_single = !in_single,
