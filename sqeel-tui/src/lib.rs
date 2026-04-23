@@ -1412,7 +1412,10 @@ async fn run_loop(
                         (KeyModifiers::NONE, KeyCode::Esc) => {
                             state.lock().unwrap().dismiss_completions();
                             if keybinding_mode == KeybindingMode::Vim {
-                                editor.force_normal();
+                                // Route through the editor so the regular
+                                // insert-Esc handling (back-one + sticky col
+                                // sync) runs. force_normal() bypasses both.
+                                editor.handle_key(key);
                             }
                             continue;
                         }
