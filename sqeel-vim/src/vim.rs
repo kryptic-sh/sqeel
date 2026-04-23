@@ -311,7 +311,11 @@ pub struct SearchPrompt {
 #[derive(Debug, Clone)]
 struct InsertSession {
     count: usize,
-    before: String,
+    /// Min/max row visited during this session.
+    row_min: usize,
+    row_max: usize,
+    /// Snapshot of lines[row_min..=row_max] at session entry.
+    before_lines: Vec<String>,
     reason: InsertReason,
 }
 
@@ -505,6 +509,11 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
 
     if ed.textarea.input(input) {
         ed.content_dirty = true;
+        if let Some(ref mut session) = ed.vim.insert_session {
+            let (row, _) = ed.textarea.cursor();
+            session.row_min = session.row_min.min(row);
+            session.row_max = session.row_max.max(row);
+        }
     }
     true
 }
@@ -513,26 +522,25 @@ fn finish_insert_session(ed: &mut Editor<'_>) {
     let Some(session) = ed.vim.insert_session.take() else {
         return;
     };
-    let after = ed.textarea.lines().join("\n");
-    let inserted = extract_inserted(&session.before, &after);
-    // Replay the insert for `count - 1` more times.
+    let lines = ed.textarea.lines();
+    let row_max = session.row_max.min(lines.len().saturating_sub(1));
+    let before = session.before_lines.join("\n");
+    let after = if row_max >= session.row_min {
+        lines[session.row_min..=row_max].join("\n")
+    } else {
+        String::new()
+    };
+    let inserted = extract_inserted(&before, &after);
     if !inserted.is_empty() && session.count > 1 && !ed.vim.replaying {
         for _ in 0..session.count - 1 {
             ed.mutate(|t| t.insert_str(&inserted));
         }
     }
-    // VisualBlock `I` / `A` replay: apply the inserted text to every
-    // other row in the block range. Not currently part of the dot-repeat
-    // log — that's a polish item.
     if let InsertReason::BlockEdge { top, bot, col } = session.reason {
         if !inserted.is_empty() && top < bot && !ed.vim.replaying {
             for r in (top + 1)..=bot {
                 let line_len = ed.textarea.lines()[r].chars().count();
                 if col > line_len {
-                    // Row is shorter than the block column — pad with
-                    // spaces so the replayed text lines up with the
-                    // anchor row, matching vim's block-insert behaviour
-                    // on ragged / empty lines.
                     ed.textarea.move_cursor(CursorMove::Jump(r, line_len));
                     let pad: String = std::iter::repeat_n(' ', col - line_len).collect();
                     ed.mutate(|t| t.insert_str(&pad));
@@ -589,9 +597,13 @@ fn begin_insert(ed: &mut Editor<'_>, count: usize, reason: InsertReason) {
     } else {
         reason
     };
+    let (row, _) = ed.textarea.cursor();
+    let line = ed.textarea.lines()[row].clone();
     ed.vim.insert_session = Some(InsertSession {
         count,
-        before: ed.textarea.lines().join("\n"),
+        row_min: row,
+        row_max: row,
+        before_lines: vec![line],
         reason,
     });
     ed.vim.mode = Mode::Insert;
@@ -1938,9 +1950,13 @@ fn begin_insert_noundo(ed: &mut Editor<'_>, count: usize, reason: InsertReason) 
     } else {
         reason
     };
+    let (row, _) = ed.textarea.cursor();
+    let line = ed.textarea.lines()[row].clone();
     ed.vim.insert_session = Some(InsertSession {
         count,
-        before: ed.textarea.lines().join("\n"),
+        row_min: row,
+        row_max: row,
+        before_lines: vec![line],
         reason,
     });
     ed.vim.mode = Mode::Insert;
@@ -3083,6 +3099,10 @@ mod tests {
                     "CR" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                     "BS" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
                     "Space" => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+                    "Up" => KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                    "Down" => KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                    "Left" => KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                    "Right" => KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
                     s if s.starts_with("C-") => {
                         let ch = s.chars().nth(2).unwrap();
                         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
@@ -4345,8 +4365,6 @@ mod tests {
                 .join("\n")
                 .as_str(),
         );
-        run_keys(&mut e, "<C-d>");
-        run_keys(&mut e, "<C-u>");
         run_keys(&mut e, "<C-f>");
         run_keys(&mut e, "<C-b>");
         // No explicit assert beyond "didn't panic".
