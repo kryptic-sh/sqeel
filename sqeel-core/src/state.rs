@@ -1,14 +1,4 @@
 use crate::completion_ctx::CompletionCtx;
-
-/// Payload returned by [`AppState::autosave`] describing where the
-/// current editor buffer should be written. The caller performs the
-/// disk write (typically on a background task).
-#[derive(Debug, Clone)]
-pub struct AutosaveJob {
-    pub slug: String,
-    pub name: String,
-    pub content: Arc<String>,
-}
 use crate::config::ConnectionConfig;
 use crate::ddl::DdlEffect;
 use crate::highlight::HighlightSpan;
@@ -34,6 +24,8 @@ pub struct TabEntry {
     /// Last-known editor cursor `(row, col)` (0-based). Restored on tab switch
     /// and persisted in session.toml across restarts.
     pub cursor: Option<(usize, usize)>,
+    /// True when the in-memory content differs from the on-disk file.
+    pub dirty: bool,
 }
 
 impl TabEntry {
@@ -43,6 +35,7 @@ impl TabEntry {
             content: None,
             last_accessed: None,
             cursor: None,
+            dirty: false,
         }
     }
     fn open(name: String, content: String) -> Self {
@@ -51,6 +44,7 @@ impl TabEntry {
             content: Some(content),
             last_accessed: Some(Instant::now()),
             cursor: None,
+            dirty: false,
         }
     }
 }
@@ -2098,46 +2092,81 @@ impl AppState {
         }
     }
 
-    /// Auto-save editor content to the active tab. Updates the in-memory
-    /// tab state synchronously and returns the slug / name / content the
-    /// caller should persist to disk — typically via a background task
-    /// so large-file writes don't stall the TUI event loop. Returns
-    /// `None` when there's nothing to save.
-    pub fn autosave(&mut self) -> Option<AutosaveJob> {
+    /// Sync the live editor buffer into the active tab's in-memory cache
+    /// and mark the tab dirty. Called whenever the editor content changes
+    /// so tab switches don't lose work in memory.
+    pub fn mark_active_dirty(&mut self) {
         if !self.editor_content_synced {
-            return None;
+            return;
         }
+        if self.tabs.is_empty() {
+            let slug = persistence::sanitize_conn_slug(
+                self.active_connection.as_deref().unwrap_or("default"),
+            );
+            let Ok(name) = persistence::next_scratch_name(&slug) else {
+                return;
+            };
+            let content = (*self.editor_content).clone();
+            let mut entry = TabEntry::open(name, content);
+            entry.dirty = true;
+            self.tabs.push(entry);
+            self.active_tab = 0;
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.content = Some((*self.editor_content).clone());
+            tab.last_accessed = Some(Instant::now());
+            tab.dirty = true;
+        }
+    }
+
+    /// Persist the active tab's content to disk and clear its dirty flag.
+    /// Returns the saved tab's name on success.
+    pub fn save_active_tab(&mut self) -> std::io::Result<String> {
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         if self.tabs.is_empty() {
-            let name = persistence::next_scratch_name(&slug).ok()?;
+            let name = persistence::next_scratch_name(&slug)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             let content: String = (*self.editor_content).clone();
-            self.tabs
-                .push(TabEntry::open(name.clone(), content.clone()));
+            persistence::save_query(&slug, &name, &content)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            self.tabs.push(TabEntry::open(name.clone(), content));
             self.active_tab = 0;
-            return Some(AutosaveJob {
-                slug,
-                name,
-                content: Arc::new(content),
-            });
+            return Ok(name);
         }
-        let tab = self.tabs.get_mut(self.active_tab)?;
-        tab.content = Some((*self.editor_content).clone());
-        tab.last_accessed = Some(Instant::now());
-        Some(AutosaveJob {
-            slug,
-            name: tab.name.clone(),
-            content: self.editor_content.clone(),
-        })
+        let idx = self.active_tab;
+        let (name, content) = {
+            let tab = self.tabs.get_mut(idx).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no active tab")
+            })?;
+            let content: String = if self.editor_content_synced {
+                (*self.editor_content).clone()
+            } else {
+                tab.content.clone().unwrap_or_default()
+            };
+            tab.content = Some(content.clone());
+            tab.last_accessed = Some(Instant::now());
+            (tab.name.clone(), content)
+        };
+        persistence::save_query(&slug, &name, &content)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        if let Some(tab) = self.tabs.get_mut(idx) {
+            tab.dirty = false;
+        }
+        Ok(name)
     }
 
-    /// Persist every open tab's cached content to disk. The active tab is
-    /// written from `editor_content`; the rest from each tab's stored content.
-    /// Intended for shutdown so no in-memory edits are lost.
-    pub fn autosave_all(&mut self) {
+    /// Persist every dirty tab's cached content to disk. Returns the
+    /// names of tabs that failed to save.
+    pub fn save_all_dirty(&mut self) -> Vec<String> {
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
+        let mut failed = Vec::new();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
+            if !tab.dirty {
+                continue;
+            }
             let content = if i == self.active_tab && self.editor_content_synced {
                 (*self.editor_content).clone()
             } else if let Some(c) = &tab.content {
@@ -2146,8 +2175,26 @@ impl AppState {
                 continue;
             };
             tab.content = Some(content.clone());
-            let _ = persistence::save_query(&slug, &tab.name, &content);
+            match persistence::save_query(&slug, &tab.name, &content) {
+                Ok(_) => tab.dirty = false,
+                Err(_) => failed.push(tab.name.clone()),
+            }
         }
+        failed
+    }
+
+    /// Names of tabs with unsaved in-memory changes.
+    pub fn dirty_tab_names(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|t| t.dirty)
+            .map(|t| t.name.clone())
+            .collect()
+    }
+
+    /// True if any open tab has unsaved changes.
+    pub fn any_dirty(&self) -> bool {
+        self.tabs.iter().any(|t| t.dirty)
     }
 
     /// Persist a successful query result to disk (errors are never stored).

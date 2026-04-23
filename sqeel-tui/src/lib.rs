@@ -15,16 +15,6 @@ use std::time::{Duration, Instant};
 
 use spinner::frame as spinner_frame;
 
-/// Run the pending autosave on a blocking task so large-file disk
-/// writes never stall the TUI event loop. Accepts an already-computed
-/// job; the in-memory tab state is updated by the caller's
-/// `AppState::autosave()` call synchronously.
-fn spawn_autosave(job: AutosaveJob) {
-    tokio::task::spawn_blocking(move || {
-        let _ = persistence::save_query(&job.slug, &job.name, &job.content);
-    });
-}
-
 use completion_thread::CompletionThread;
 use crossterm::{
     cursor::SetCursorStyle,
@@ -54,11 +44,8 @@ use sqeel_core::{
         statement_at_byte, statement_ranges, strip_sql_comments,
     },
     lsp::{LspClient, LspEvent},
-    persistence,
     schema::{self, SchemaItemKind, SchemaTreeItem},
-    state::{
-        AddConnectionField, AutosaveJob, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode,
-    },
+    state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
 use sqeel_vim::{Editor, paint_block_overlay, paint_char_overlay, paint_line_overlay};
 use theme::ui;
@@ -355,7 +342,8 @@ async fn run_loop(
     }
 
     let mut editor_dirty = false;
-    let mut last_save_time = Instant::now();
+    // Prompt asking the user whether to save dirty buffers before exit.
+    let mut quit_prompt: Option<()> = None;
     let mut doc_version: i32 = 0;
     let mut last_completion_id: Option<i64> = None;
     let mut last_schema_completions: Vec<String> = Vec::new();
@@ -460,6 +448,7 @@ async fn run_loop(
                 s.editor_content = c.clone();
                 s.editor_content_synced = true;
                 editor_dirty = true;
+                s.mark_active_dirty();
             }
             // Apply any completed highlight results from the background thread.
             if let Some(spans) = highlight_thread.try_recv() {
@@ -469,13 +458,6 @@ async fn run_loop(
                     .set_syntax_spans(syntax_spans_by_row(&spans, row_count));
                 s.set_highlights(spans);
                 needs_redraw = true;
-            }
-            if editor_dirty && last_save_time.elapsed() >= Duration::from_millis(1000) {
-                if let Some(job) = s.autosave() {
-                    spawn_autosave(job);
-                }
-                editor_dirty = false;
-                last_save_time = Instant::now();
             }
         }
         if let Some(ref c) = content {
@@ -630,6 +612,9 @@ async fn run_loop(
             let rename_snap = rename_input.clone();
             let picker_snap = file_picker.clone();
             let delete_snap = delete_confirm.clone();
+            let quit_prompt_snap: Option<Vec<String>> = quit_prompt
+                .as_ref()
+                .map(|_| state.lock().unwrap().dirty_tab_names());
             let schema_search_snap = schema_search.clone();
             let editor_search_text_snap: Option<String> =
                 editor.search_prompt().map(|p| p.text.clone());
@@ -648,6 +633,7 @@ async fn run_loop(
                     rename_snap.as_ref(),
                     picker_snap.as_ref(),
                     delete_snap.as_deref(),
+                    quit_prompt_snap.as_deref(),
                     &schema_search_snap,
                     editor_search_text_snap.as_deref(),
                     last_editor_search_snap.as_deref(),
@@ -731,11 +717,8 @@ async fn run_loop(
                                     s.focus = Focus::Editor;
                                     if editor_dirty {
                                         s.editor_content = Arc::new(editor.content());
-                                        if let Some(job) = s.autosave() {
-                                            spawn_autosave(job);
-                                        }
+                                        s.mark_active_dirty();
                                         editor_dirty = false;
-                                        last_save_time = Instant::now();
                                     }
                                     s.switch_to_tab(idx);
                                     s.tab_content_pending.take()
@@ -1056,6 +1039,37 @@ async fn run_loop(
                     continue;
                 }
 
+                // ── Quit confirmation (unsaved buffers) ──────────────────────────
+                if quit_prompt.is_some() {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::NONE, KeyCode::Char('y')) => {
+                            quit_prompt = None;
+                            let failed = {
+                                let mut s = state.lock().unwrap();
+                                s.editor_content = Arc::new(editor.content());
+                                s.mark_active_dirty();
+                                s.save_all_dirty()
+                            };
+                            if failed.is_empty() {
+                                break;
+                            }
+                            toasts.push((
+                                format!("Save failed for: {}", failed.join(", ")),
+                                ToastKind::Error,
+                                std::time::Instant::now(),
+                            ));
+                        }
+                        (KeyModifiers::NONE, KeyCode::Char('n')) => {
+                            break;
+                        }
+                        _ => {
+                            // Any other key (Esc, c, …) cancels.
+                            quit_prompt = None;
+                        }
+                    }
+                    continue;
+                }
+
                 // ── Command input mode ───────────────────────────────────────────
                 if let Some(ref mut cmd) = command_input {
                     match (key.modifiers, key.code) {
@@ -1066,29 +1080,54 @@ async fn run_loop(
                             let cmd_str = command_input.take().unwrap_or_default().text;
                             let trimmed = cmd_str.trim();
                             match editor::ex::run(&mut editor, trimmed) {
-                                editor::ex::ExEffect::Quit { force: _, save } => {
-                                    if save && editor_dirty {
+                                editor::ex::ExEffect::Quit { force, save } => {
+                                    let any_dirty = {
                                         let mut s = state.lock().unwrap();
                                         s.editor_content = Arc::new(editor.content());
-                                        if let Some(job) = s.autosave() {
-                                            spawn_autosave(job);
-                                        }
+                                        s.mark_active_dirty();
+                                        editor_dirty = false;
+                                        s.any_dirty()
+                                    };
+                                    if force {
+                                        break;
                                     }
-                                    break;
+                                    if save {
+                                        let failed = state.lock().unwrap().save_all_dirty();
+                                        if failed.is_empty() {
+                                            break;
+                                        }
+                                        toasts.push((
+                                            format!("Save failed for: {}", failed.join(", ")),
+                                            ToastKind::Error,
+                                            std::time::Instant::now(),
+                                        ));
+                                    } else if any_dirty {
+                                        quit_prompt = Some(());
+                                    } else {
+                                        break;
+                                    }
                                 }
                                 editor::ex::ExEffect::Save => {
-                                    let mut s = state.lock().unwrap();
-                                    s.editor_content = Arc::new(editor.content());
-                                    if let Some(job) = s.autosave() {
-                                        spawn_autosave(job);
+                                    let result = {
+                                        let mut s = state.lock().unwrap();
+                                        s.editor_content = Arc::new(editor.content());
+                                        s.save_active_tab()
+                                    };
+                                    match result {
+                                        Ok(name) => {
+                                            editor_dirty = false;
+                                            toasts.push((
+                                                format!("Saved {name}"),
+                                                ToastKind::Info,
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => toasts.push((
+                                            format!("Save failed: {e}"),
+                                            ToastKind::Error,
+                                            std::time::Instant::now(),
+                                        )),
                                     }
-                                    editor_dirty = false;
-                                    last_save_time = Instant::now();
-                                    toasts.push((
-                                        "Saved".into(),
-                                        ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    ));
                                 }
                                 editor::ex::ExEffect::Substituted { count } => {
                                     state.lock().unwrap().focus = Focus::Editor;
@@ -1206,11 +1245,8 @@ async fn run_loop(
                                 if let Some(idx) = s.tabs.iter().position(|t| &t.name == name) {
                                     if editor_dirty {
                                         s.editor_content = Arc::new(editor.content());
-                                        if let Some(job) = s.autosave() {
-                                            spawn_autosave(job);
-                                        }
+                                        s.mark_active_dirty();
                                         editor_dirty = false;
-                                        last_save_time = Instant::now();
                                     }
                                     s.switch_to_tab(idx);
                                 }
@@ -1456,11 +1492,8 @@ async fn run_loop(
                             let mut s = state.lock().unwrap();
                             if editor_dirty {
                                 s.editor_content = Arc::new(editor.content());
-                                if let Some(job) = s.autosave() {
-                                    spawn_autosave(job);
-                                }
+                                s.mark_active_dirty();
                                 editor_dirty = false;
-                                last_save_time = Instant::now();
                             }
                             s.next_tab();
                             s.tab_content_pending.take()
@@ -1477,11 +1510,8 @@ async fn run_loop(
                             let mut s = state.lock().unwrap();
                             if editor_dirty {
                                 s.editor_content = Arc::new(editor.content());
-                                if let Some(job) = s.autosave() {
-                                    spawn_autosave(job);
-                                }
+                                s.mark_active_dirty();
                                 editor_dirty = false;
-                                last_save_time = Instant::now();
                             }
                             s.prev_tab();
                             s.tab_content_pending.take()
@@ -1826,11 +1856,6 @@ async fn run_loop(
             _ => {} // FocusGained, FocusLost, Paste — ignore
         } // match event
     }
-    {
-        let mut s = state.lock().unwrap();
-        s.editor_content = Arc::new(editor.content());
-        s.autosave_all();
-    }
     Ok(())
 }
 
@@ -2003,6 +2028,7 @@ fn draw(
     rename_input: Option<&TextInput>,
     file_picker: Option<&FilePicker>,
     delete_confirm: Option<&str>,
+    quit_prompt_dirty: Option<&[String]>,
     schema_search: &SchemaSearch,
     editor_search_text: Option<&str>,
     last_editor_search: Option<&str>,
@@ -2202,6 +2228,20 @@ fn draw(
     // Delete confirmation: centered borderless dialog.
     if let Some(name) = delete_confirm {
         draw_confirm_dialog(f, area, &format!("Delete '{name}'?  (y / n)"));
+    }
+
+    // Quit confirmation when there are unsaved buffers.
+    if let Some(names) = quit_prompt_dirty {
+        let list = if names.len() <= 3 {
+            names.join(", ")
+        } else {
+            format!("{} + {} more", names[..3].join(", "), names.len() - 3)
+        };
+        draw_confirm_dialog(
+            f,
+            area,
+            &format!("Save unsaved buffers [{list}]?  (y=save / n=discard / c=cancel)"),
+        );
     }
 
     // File picker (leader+space): centered dialog with input + scrollable list.
