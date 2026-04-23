@@ -395,11 +395,16 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
     if input.key == Key::Esc {
         finish_insert_session(ed);
         ed.vim.mode = Mode::Normal;
-        // Leave the cursor at wherever the insert session parked it —
-        // including however the user moved around with the arrow keys
-        // in insert mode. Re-sync the sticky column to that final
-        // position so the next vertical motion aims at the new column.
-        ed.vim.sticky_col = Some(ed.textarea.cursor().1);
+        // Capture the insert-mode final column *before* the vim-style
+        // Back step — this column is the user's last expressed intent
+        // (typed chars + any arrow-key moves) and should drive the next
+        // vertical motion via sticky_col. The visible cursor still
+        // pulls back one to match vim's normal-mode convention.
+        let final_col = ed.textarea.cursor().1;
+        if final_col > 0 {
+            ed.textarea.move_cursor(CursorMove::Back);
+        }
+        ed.vim.sticky_col = Some(final_col);
         return true;
     }
 
@@ -3636,61 +3641,44 @@ mod tests {
     }
 
     #[test]
-    fn esc_from_insert_keeps_final_column_and_syncs_sticky() {
-        // Cursor at col 12, press I (moves to first non-blank col 4),
-        // type one char (cursor at col 5), Esc. Cursor stays at the
-        // final insert-mode column (col 5), and sticky column matches
-        // so the next j / k aims at that column too.
+    fn esc_from_insert_backs_one_but_sticky_tracks_final_col() {
+        // Cursor at col 12, press I (moves to col 4), type "X" (col 5),
+        // Esc. Visible cursor pulls back to col 4 (vim convention), but
+        // sticky_col = 5 so the next j lands on col 5, not col 12.
         let mut e = editor_with("    this is a line\n    another one of a similar size");
         e.textarea.move_cursor(CursorMove::Jump(0, 12));
         run_keys(&mut e, "I");
         assert_eq!(e.textarea.cursor(), (0, 4));
         run_keys(&mut e, "X<Esc>");
-        // Cursor parks where insert left it — one past the typed char.
-        assert_eq!(e.textarea.cursor(), (0, 5));
+        assert_eq!(e.textarea.cursor(), (0, 4));
         run_keys(&mut e, "j");
         assert_eq!(e.textarea.cursor(), (1, 5));
     }
 
     #[test]
-    fn esc_from_insert_tracks_inserted_chars() {
-        // i at col 0, type "abc", Esc — cursor should be at col 3 (one
-        // past the last typed char, matching the in-insert-mode
-        // position).
-        let mut e = editor_with("xxxxxxx");
+    fn esc_from_insert_sticky_tracks_inserted_chars() {
+        // i at col 0, type "abc" (cursor at col 3 after typing), Esc
+        // backs the cursor to col 2 but sticky remembers col 3.
+        let mut e = editor_with("xxxxxxx\nyyyyyyy");
         run_keys(&mut e, "i");
         run_keys(&mut e, "abc<Esc>");
-        assert_eq!(e.textarea.cursor(), (0, 3));
+        assert_eq!(e.textarea.cursor(), (0, 2));
+        run_keys(&mut e, "j");
+        assert_eq!(e.textarea.cursor(), (1, 3));
     }
 
     #[test]
-    fn esc_from_insert_tracks_arrow_nav() {
+    fn esc_from_insert_sticky_tracks_arrow_nav() {
         // i at col 0, type "abc" (col 3), Left Left (col 1), Esc.
-        // Cursor ends at col 1 — the final insert-mode position.
-        let mut e = editor_with("xxxxxx");
+        // Cursor backs to col 0 (1-1) but sticky = 1.
+        let mut e = editor_with("xxxxxx\nyyyyyy");
         run_keys(&mut e, "i");
         run_keys(&mut e, "abc");
-        // Feed raw Left keys — run_keys doesn't know about arrows so go
-        // through the editor directly.
         for _ in 0..2 {
             e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         }
         run_keys(&mut e, "<Esc>");
-        assert_eq!(e.textarea.cursor(), (0, 1));
-    }
-
-    #[test]
-    fn esc_from_insert_arrow_syncs_sticky_column() {
-        // After Esc with arrow-nav moves, the sticky column should aim
-        // at the final insert-mode column for the next vertical motion.
-        let mut e = editor_with("abcdef\nuvwxyz");
-        run_keys(&mut e, "i");
-        run_keys(&mut e, "XYZ"); // col 3
-        for _ in 0..2 {
-            e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        }
-        run_keys(&mut e, "<Esc>");
-        assert_eq!(e.textarea.cursor(), (0, 1));
+        assert_eq!(e.textarea.cursor(), (0, 0));
         run_keys(&mut e, "j");
         assert_eq!(e.textarea.cursor(), (1, 1));
     }
