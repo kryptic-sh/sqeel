@@ -344,6 +344,11 @@ async fn run_loop(
     let mut editor_dirty = false;
     // Prompt asking the user whether to save dirty buffers before exit.
     let mut quit_prompt: Option<()> = None;
+    // Debounce the expensive content pipeline (full-buffer `String` build,
+    // tree-sitter re-parse, LSP `didChange`, completion request).  Set when
+    // the editor flags a change, cleared on publish.  On huge files this
+    // collapses a burst of keystrokes into a single pipeline run.
+    let mut content_dirty_since: Option<Instant> = None;
     let mut doc_version: i32 = 0;
     // Buffers larger than this are not streamed to the LSP — sqls (and most
     // SQL LSPs) re-parse the whole document on every `didChange` and balloon
@@ -428,11 +433,27 @@ async fn run_loop(
         state.lock().unwrap().evict_cold_tabs();
 
         // Sync editor content + submit to highlight thread when changed.
+        // Cheap per-keystroke work stays here; the expensive full-buffer
+        // `String` build + highlight + LSP + completion submission is
+        // debounced below.
         let content_changed = editor.take_dirty();
         if content_changed {
             needs_redraw = true;
+            editor_dirty = true;
+            if content_dirty_since.is_none() {
+                content_dirty_since = Some(Instant::now());
+            }
+            state.lock().unwrap().mark_active_dirty();
         }
-        let content: Option<Arc<String>> = if content_changed {
+        // Trailing-edge debounce: publish once the dirty window has aged
+        // past the threshold.  The 50 ms event-poll timeout guarantees we
+        // revisit this branch quickly even while the user is idle.
+        const CONTENT_PUBLISH_DEBOUNCE: Duration = Duration::from_millis(75);
+        let should_publish = content_dirty_since
+            .map(|t| t.elapsed() >= CONTENT_PUBLISH_DEBOUNCE)
+            .unwrap_or(false);
+        let content: Option<Arc<String>> = if should_publish {
+            content_dirty_since = None;
             Some(Arc::new(editor.content()))
         } else {
             None
@@ -457,8 +478,6 @@ async fn run_loop(
             if let Some(ref c) = content {
                 s.editor_content = c.clone();
                 s.editor_content_synced = true;
-                editor_dirty = true;
-                s.mark_active_dirty();
             }
             // Apply any completed highlight results from the background thread.
             if let Some(spans) = highlight_thread.try_recv() {
