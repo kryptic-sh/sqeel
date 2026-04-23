@@ -1543,16 +1543,82 @@ async fn run_loop(
                             s.results_cursor_left();
                         }
                     }
+                    // Enter visual-line / visual-block selection in results.
+                    (KeyModifiers::SHIFT, KeyCode::Char('V'))
+                    | (KeyModifiers::NONE, KeyCode::Char('V'))
+                        if focus == Focus::Results =>
+                    {
+                        let mut s = state.lock().unwrap();
+                        let already_line = matches!(
+                            s.active_result().and_then(|t| t.selection),
+                            Some(sqeel_core::state::ResultsSelection {
+                                mode: sqeel_core::state::ResultsSelectionMode::Line,
+                                ..
+                            })
+                        );
+                        if already_line {
+                            s.results_clear_selection();
+                        } else {
+                            s.results_enter_selection(
+                                sqeel_core::state::ResultsSelectionMode::Line,
+                            );
+                        }
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Char('v')) if focus == Focus::Results => {
+                        let mut s = state.lock().unwrap();
+                        let already_block = matches!(
+                            s.active_result().and_then(|t| t.selection),
+                            Some(sqeel_core::state::ResultsSelection {
+                                mode: sqeel_core::state::ResultsSelectionMode::Block,
+                                ..
+                            })
+                        );
+                        if already_block {
+                            s.results_clear_selection();
+                        } else {
+                            s.results_enter_selection(
+                                sqeel_core::state::ResultsSelectionMode::Block,
+                            );
+                        }
+                    }
+                    // Esc cancels an active selection before falling through
+                    // to the default Esc handling.
+                    (KeyModifiers::NONE, KeyCode::Esc)
+                        if focus == Focus::Results
+                            && state
+                                .lock()
+                                .unwrap()
+                                .active_result()
+                                .and_then(|t| t.selection)
+                                .is_some() =>
+                    {
+                        state.lock().unwrap().results_clear_selection();
+                    }
                     (KeyModifiers::NONE, KeyCode::Char('y')) if focus == Focus::Results => {
                         let now = std::time::Instant::now();
+                        let has_selection = state
+                            .lock()
+                            .unwrap()
+                            .active_result()
+                            .and_then(|t| t.selection)
+                            .is_some();
                         let is_yy = pending_results_y
                             .is_some_and(|t| now.duration_since(t).as_millis() < 500);
-                        let yanked = if is_yy {
+                        let yanked = if has_selection {
+                            let mut s = state.lock().unwrap();
+                            let y = s.results_selection_yank();
+                            s.results_clear_selection();
+                            y
+                        } else if is_yy {
                             state.lock().unwrap().results_cursor_yank_row()
                         } else {
                             state.lock().unwrap().results_cursor_yank()
                         };
-                        pending_results_y = if is_yy { None } else { Some(now) };
+                        pending_results_y = if has_selection || is_yy {
+                            None
+                        } else {
+                            Some(now)
+                        };
                         if let Some((text, label)) = yanked {
                             let ok = clipboard.set_text(&text);
                             toasts.push((
@@ -2963,6 +3029,7 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                 Line::from(spans)
             };
 
+            let selection_bounds = state.results_selection_bounds();
             let build_row = |row_idx: usize, row: &Vec<String>| -> Line<'static> {
                 let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
                 for i in 0..r.columns.len() {
@@ -2971,9 +3038,12 @@ fn draw_results(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect, focuse
                     let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
                     let text = format!(" {:<inner$}", cell, inner = inner);
                     let is_cursor = cursor_row == Some(row_idx) && active_col == Some(i);
+                    let is_selected = selection_bounds.is_some_and(|(t, b, l, rr)| {
+                        row_idx >= t && row_idx <= b && i >= l && i <= rr
+                    });
                     let bg_style = if is_cursor {
                         Some(cursor_bg)
-                    } else if active_col == Some(i) {
+                    } else if is_selected || active_col == Some(i) {
                         Some(col_bg)
                     } else {
                         None

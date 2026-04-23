@@ -118,6 +118,29 @@ pub struct ResultsTab {
     /// creation; survives scroll + tab switches so returning users land where
     /// they left off.
     pub cursor: ResultsCursor,
+    /// Active visual selection anchor + mode in the body. `None` means no
+    /// selection. Entered with `V` (line) or `Ctrl-V` (block) when the
+    /// cursor is on a Header / Cell. Exits on `Esc`, `v`, `V`, `Ctrl-V`,
+    /// or after a yank.
+    pub selection: Option<ResultsSelection>,
+}
+
+/// A rectangular / line-wise selection in the results body. Both
+/// `anchor` and `cursor` live in `(row, col)` coordinates; `row` is the
+/// body row index (0 = first data row, no header). `mode` picks whether
+/// the column range spans both corners (Block) or the full row (Line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultsSelection {
+    pub anchor: (usize, usize),
+    pub mode: ResultsSelectionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultsSelectionMode {
+    /// `V` — full row, from first to last column.
+    Line,
+    /// `Ctrl-V` — rectangle between anchor and cursor.
+    Block,
 }
 
 /// What the results-pane cursor currently highlights. Shared across all three
@@ -391,6 +414,7 @@ impl AppState {
             col_scroll: 0,
             saved_filename: None,
             cursor: ResultsCursor::default(),
+            selection: None,
         };
         self.result_tabs.push(tab);
         self.active_result_tab = self.result_tabs.len() - 1;
@@ -407,6 +431,7 @@ impl AppState {
             col_scroll: 0,
             saved_filename: None,
             cursor: ResultsCursor::default(),
+            selection: None,
         };
         self.result_tabs.push(tab);
         let idx = self.result_tabs.len() - 1;
@@ -744,6 +769,99 @@ impl AppState {
             }
             _ => None,
         }
+    }
+
+    /// Begin a visual-line or visual-block selection in the results body.
+    /// Anchors at the current cursor cell; no-op if the cursor isn't on
+    /// a Header or Cell (query line / message line selections aren't
+    /// meaningful here).
+    pub fn results_enter_selection(&mut self, mode: ResultsSelectionMode) {
+        let tab_idx = self.active_result_tab;
+        let Some(tab) = self.result_tabs.get_mut(tab_idx) else {
+            return;
+        };
+        let (row, col) = match tab.cursor {
+            ResultsCursor::Cell { row, col } => (row, col),
+            ResultsCursor::Header(c) => (0, c),
+            _ => return,
+        };
+        // If cursor sat on a header, drop to the first body row so the
+        // selection lives in the data grid (mirrors how `V` on a non-row
+        // line would behave if we had one).
+        if matches!(tab.cursor, ResultsCursor::Header(c) if c == col)
+            && let ResultsPane::Results(r) = &tab.kind
+            && !r.rows.is_empty()
+        {
+            tab.cursor = ResultsCursor::Cell { row: 0, col };
+        }
+        tab.selection = Some(ResultsSelection {
+            anchor: (row, col),
+            mode,
+        });
+    }
+
+    pub fn results_clear_selection(&mut self) {
+        if let Some(tab) = self.result_tabs.get_mut(self.active_result_tab) {
+            tab.selection = None;
+        }
+    }
+
+    /// Current selection bounds as `(top_row, bot_row, left_col, right_col)`,
+    /// or `None` if no active selection. For Line mode the column range
+    /// spans the entire row regardless of anchor/cursor columns.
+    pub fn results_selection_bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        let tab = self.active_result()?;
+        let sel = tab.selection?;
+        let ResultsPane::Results(r) = &tab.kind else {
+            return None;
+        };
+        let (cur_row, cur_col) = match tab.cursor {
+            ResultsCursor::Cell { row, col } => (row, col),
+            ResultsCursor::Header(c) => (0, c),
+            _ => return None,
+        };
+        let (ar, ac) = sel.anchor;
+        let top = ar.min(cur_row);
+        let bot = ar.max(cur_row);
+        let (left, right) = match sel.mode {
+            ResultsSelectionMode::Line => (0, r.columns.len().saturating_sub(1)),
+            ResultsSelectionMode::Block => (ac.min(cur_col), ac.max(cur_col)),
+        };
+        Some((top, bot, left, right))
+    }
+
+    /// Yank whatever the current selection covers as TSV (tab between
+    /// columns, newline between rows). Returns `None` when no selection
+    /// is active. Does not clear the selection — callers usually do that
+    /// after consuming the string.
+    pub fn results_selection_yank(&self) -> Option<(String, &'static str)> {
+        let (top, bot, left, right) = self.results_selection_bounds()?;
+        let tab = self.active_result()?;
+        let ResultsPane::Results(r) = &tab.kind else {
+            return None;
+        };
+        let label = match tab.selection?.mode {
+            ResultsSelectionMode::Line => "Rows",
+            ResultsSelectionMode::Block => "Block",
+        };
+        let mut out = String::new();
+        for row_idx in top..=bot.min(r.rows.len().saturating_sub(1)) {
+            let row = &r.rows[row_idx];
+            let mut first = true;
+            for col_idx in left..=right.min(r.columns.len().saturating_sub(1)) {
+                if !first {
+                    out.push('\t');
+                }
+                first = false;
+                if let Some(cell) = row.get(col_idx) {
+                    out.push_str(cell);
+                }
+            }
+            if row_idx < bot {
+                out.push('\n');
+            }
+        }
+        Some((out, label))
     }
 
     pub fn set_diagnostics(&mut self, diags: Vec<Diagnostic>) {
@@ -2119,6 +2237,84 @@ mod tests {
         assert_eq!(s.results_scroll(), 2);
         s.scroll_results_up();
         assert_eq!(s.results_scroll(), 1);
+    }
+
+    #[test]
+    fn results_visual_line_yank_tsv() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_results(QueryResult {
+            columns: vec!["a".into(), "b".into(), "c".into()],
+            rows: vec![
+                vec!["1".into(), "2".into(), "3".into()],
+                vec!["4".into(), "5".into(), "6".into()],
+                vec!["7".into(), "8".into(), "9".into()],
+            ],
+            col_widths: vec![],
+        });
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 1 };
+        s.results_enter_selection(ResultsSelectionMode::Line);
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 1, col: 2 };
+        let (text, label) = s.results_selection_yank().unwrap();
+        assert_eq!(label, "Rows");
+        assert_eq!(text, "1\t2\t3\n4\t5\t6");
+    }
+
+    #[test]
+    fn results_visual_block_yank_rectangle() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_results(QueryResult {
+            columns: vec!["a".into(), "b".into(), "c".into()],
+            rows: vec![
+                vec!["1".into(), "2".into(), "3".into()],
+                vec!["4".into(), "5".into(), "6".into()],
+                vec!["7".into(), "8".into(), "9".into()],
+            ],
+            col_widths: vec![],
+        });
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 1 };
+        s.results_enter_selection(ResultsSelectionMode::Block);
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 2, col: 2 };
+        let (text, label) = s.results_selection_yank().unwrap();
+        assert_eq!(label, "Block");
+        assert_eq!(text, "2\t3\n5\t6\n8\t9");
+    }
+
+    #[test]
+    fn results_selection_bounds_order() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_results(QueryResult {
+            columns: vec!["a".into(), "b".into(), "c".into()],
+            rows: vec![
+                vec!["1".into(), "2".into(), "3".into()],
+                vec!["4".into(), "5".into(), "6".into()],
+            ],
+            col_widths: vec![],
+        });
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 1, col: 2 };
+        s.results_enter_selection(ResultsSelectionMode::Block);
+        // Move cursor back up-left.
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 0 };
+        let (top, bot, left, right) = s.results_selection_bounds().unwrap();
+        assert_eq!((top, bot, left, right), (0, 1, 0, 2));
+    }
+
+    #[test]
+    fn results_clear_selection() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_results(QueryResult {
+            columns: vec!["x".into()],
+            rows: vec![vec!["1".into()]],
+            col_widths: vec![],
+        });
+        s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 0 };
+        s.results_enter_selection(ResultsSelectionMode::Line);
+        assert!(s.result_tabs[0].selection.is_some());
+        s.results_clear_selection();
+        assert!(s.result_tabs[0].selection.is_none());
     }
 
     #[test]
