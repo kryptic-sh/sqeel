@@ -210,6 +210,11 @@ impl<'a> Editor<'a> {
         self.scroll_viewport(-rows);
     }
 
+    /// Vim's `scrolloff` default — keep the cursor at least this many
+    /// rows away from the top / bottom edge of the viewport while
+    /// scrolling. Collapses to `height / 2` for tiny viewports.
+    const SCROLLOFF: usize = 5;
+
     fn scroll_viewport(&mut self, delta: i16) {
         if delta == 0 {
             return;
@@ -224,8 +229,10 @@ impl<'a> Editor<'a> {
         if height == 0 {
             return;
         }
-        let bot_inclusive = top + height.saturating_sub(1);
-        let new_row = cur_row.clamp(top, bot_inclusive);
+        let margin = Self::SCROLLOFF.min(height / 2);
+        let min_row = top + margin;
+        let max_row = top + height.saturating_sub(1).saturating_sub(margin);
+        let new_row = cur_row.clamp(min_row, max_row.max(min_row));
         if new_row != cur_row {
             let line_len = self
                 .textarea
