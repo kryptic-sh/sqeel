@@ -84,16 +84,39 @@ fn main() -> anyhow::Result<()> {
             s.editor_ratio = 0.5;
         }
     }
-    let url = if let Some(url) = args.url {
-        Some(url)
+    let (url, conn_name) = if let Some(url) = args.url.clone() {
+        let url_ref = url.clone();
+        let name = args.connection.clone().or_else(|| {
+            conns
+                .iter()
+                .find(|c| c.url == url_ref)
+                .map(|c| c.name.clone())
+        });
+        (Some(url), name)
     } else {
-        let name = args.connection.or(session.connection);
-        name.and_then(|n| conns.iter().find(|c| c.name == n).map(|c| c.url.clone()))
+        let name = args.connection.clone().or(session.connection.clone());
+        let url = name
+            .as_ref()
+            .and_then(|n| conns.iter().find(|c| c.name == *n).map(|c| c.url.clone()));
+        (url, name)
     };
     let session_schema_cursor = session.schema_cursor;
     let session_schema_cursor_path = session.schema_cursor_path;
     let session_schema_expanded_paths = session.schema_expanded_paths;
     let session_active_tab = session.active_tab;
+
+    // Load scratch tabs from disk immediately — doesn't need the DB
+    // handshake, so the user sees their last query as soon as the TUI
+    // comes up even if the connection is slow or fails entirely.
+    if let Some(name) = &conn_name {
+        let slug = sanitize_conn_slug(name);
+        let mut s = state.lock().unwrap();
+        s.active_connection = Some(name.clone());
+        s.load_tabs_for_connection(&slug);
+        if session_active_tab < s.tabs.len() {
+            s.switch_to_tab(session_active_tab);
+        }
+    }
 
     // Runtime for async setup (initial connect + reconnection watcher).
     // TuiProvider::run creates its own runtime; must not be called from inside one.
@@ -295,12 +318,19 @@ async fn connect_and_spawn(
                     .find(|c| c.url == url)
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| conn.url.clone());
-                s.active_connection = Some(conn_name.clone());
                 s.set_status(format!("Connected: {conn_name}"));
                 let slug = sanitize_conn_slug(&conn_name);
-                s.load_tabs_for_connection(&slug);
-                if session_active_tab < s.tabs.len() {
-                    s.switch_to_tab(session_active_tab);
+                // Skip the disk load if main() already populated tabs
+                // for this connection — reloading would clobber any
+                // edits the user made while waiting for the handshake.
+                let already_loaded = s.active_connection.as_deref() == Some(conn_name.as_str())
+                    && !s.tabs.is_empty();
+                s.active_connection = Some(conn_name.clone());
+                if !already_loaded {
+                    s.load_tabs_for_connection(&slug);
+                    if session_active_tab < s.tabs.len() {
+                        s.switch_to_tab(session_active_tab);
+                    }
                 }
                 // Mark loading so the session watcher won't persist the
                 // empty schema_expanded_paths before the loader has had a
