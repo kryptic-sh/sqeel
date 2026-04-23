@@ -76,9 +76,12 @@ pub enum SchemaItemKind {
         is_pk: bool,
     },
     /// Non-interactive hint row emitted under an expanded node with no
-    /// children — e.g. "(no tables)" for an empty database or
-    /// "(loading…)" before the lazy loader replies.
-    Placeholder,
+    /// children. `loading == true` means the lazy loader hasn't replied
+    /// yet (render path can show an animated spinner); `false` means
+    /// the load came back empty ("(no tables)" / "(no columns)").
+    Placeholder {
+        loading: bool,
+    },
 }
 
 /// Flat list of visible tree items for rendering.
@@ -259,7 +262,7 @@ fn placeholder_item(
     let text = if loaded {
         format!("(no {what})")
     } else {
-        format!("(loading {what}…)")
+        format!("loading {what}…")
     };
     // Sentinel path that won't match any real node — toggle_node /
     // path_to_string safely no-op on out-of-range indices.
@@ -270,7 +273,7 @@ fn placeholder_item(
         depth,
         node_path,
         name: text.clone(),
-        kind: SchemaItemKind::Placeholder,
+        kind: SchemaItemKind::Placeholder { loading: !loaded },
     }
 }
 
@@ -563,7 +566,7 @@ mod tests {
         }];
         let items = flatten_tree(&tree);
         assert_eq!(items.len(), 2);
-        assert!(matches!(items[1].kind, SchemaItemKind::Placeholder));
+        assert!(matches!(items[1].kind, SchemaItemKind::Placeholder { .. }));
         assert!(items[1].label.contains("no tables"));
     }
 
@@ -596,7 +599,7 @@ mod tests {
         let items = flatten_tree(&tree);
         assert_eq!(items.len(), 3);
         assert!(items[2].label.contains("no columns"));
-        assert!(matches!(items[2].kind, SchemaItemKind::Placeholder));
+        assert!(matches!(items[2].kind, SchemaItemKind::Placeholder { .. }));
     }
 
     #[test]

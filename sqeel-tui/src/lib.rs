@@ -1,6 +1,7 @@
 mod clipboard;
 mod completion_thread;
 mod highlight_thread;
+mod spinner;
 mod theme;
 
 // Re-export the editor crate so existing call sites like
@@ -9,19 +10,10 @@ pub use sqeel_vim as editor;
 
 use clipboard::Clipboard;
 use std::io;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const SPINNER_FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
-
-/// Wall-clock spinner frame. Uses a monotonic epoch so the frame advances at a
-/// steady ~8 Hz regardless of how often the TUI redraws.
-fn spinner_frame() -> &'static str {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let start = *EPOCH.get_or_init(Instant::now);
-    let idx = (start.elapsed().as_millis() / 120) as usize % SPINNER_FRAMES.len();
-    SPINNER_FRAMES[idx]
-}
+use spinner::frame as spinner_frame;
 
 use completion_thread::CompletionThread;
 use crossterm::{
@@ -2549,25 +2541,25 @@ fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor
 
 fn schema_item_line(item: &SchemaTreeItem, u: &theme::UiColors) -> Line<'static> {
     let indent = " ".repeat(1 + item.depth * 2);
-    if matches!(item.kind, SchemaItemKind::Placeholder) {
-        // Greyed-out hint row; no icon so it's visibly distinct from
-        // real tree entries.
-        return Line::from(vec![
-            Span::raw(indent),
-            Span::styled(
-                item.name.clone(),
-                Style::default()
-                    .fg(u.schema_placeholder_fg)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]);
+    if let SchemaItemKind::Placeholder { loading } = item.kind {
+        // Greyed-out hint row; for loading rows also render the shared
+        // spinner frame so the user knows something is still in flight.
+        let style = Style::default()
+            .fg(u.schema_placeholder_fg)
+            .add_modifier(Modifier::ITALIC);
+        let mut spans = vec![Span::raw(indent)];
+        if loading {
+            spans.push(Span::styled(format!("{} ", spinner_frame()), style));
+        }
+        spans.push(Span::styled(item.name.clone(), style));
+        return Line::from(spans);
     }
     let (icon, icon_color) = match &item.kind {
         SchemaItemKind::Database => ("󰆼", u.schema_icon_db),
         SchemaItemKind::Table => ("󰓫", u.schema_icon_table),
         SchemaItemKind::Column { is_pk: true, .. } => ("󰌆", u.schema_icon_pk),
         SchemaItemKind::Column { .. } => ("󱘚", u.schema_icon_column),
-        SchemaItemKind::Placeholder => unreachable!("handled above"),
+        SchemaItemKind::Placeholder { .. } => unreachable!("handled above"),
     };
     let mut spans = vec![
         Span::raw(indent),
