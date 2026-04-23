@@ -98,7 +98,8 @@ impl<'a> Editor<'a> {
             return None;
         }
         let (ar, ac) = self.vim.block_anchor;
-        let (cr, cc) = self.textarea.cursor();
+        let cr = self.textarea.cursor().0;
+        let cc = self.vim.block_vcol;
         let top = ar.min(cr);
         let bot = ar.max(cr);
         let left = ac.min(cc);

@@ -278,6 +278,12 @@ pub struct VimState {
     /// (row, col) anchor for VisualBlock mode. The live cursor is the
     /// opposite corner.
     pub(super) block_anchor: (usize, usize),
+    /// Intended "virtual" column for the block's active corner. j/k
+    /// clamp cursor.col to shorter rows, which would collapse the
+    /// block across ragged content — so we remember the desired column
+    /// separately and use it for block bounds / insert-column
+    /// computations. Updated by h/l only.
+    pub(super) block_vcol: usize,
     /// Track whether the last yank/cut was linewise (drives `p`/`P` layout).
     pub(super) yank_linewise: bool,
     /// Set while replaying `.` / last-change so we don't re-record it.
@@ -436,8 +442,17 @@ fn finish_insert_session(ed: &mut Editor<'_>) {
         if !inserted.is_empty() && top < bot && !ed.vim.replaying {
             for r in (top + 1)..=bot {
                 let line_len = ed.textarea.lines()[r].chars().count();
-                let clamp = col.min(line_len);
-                ed.textarea.move_cursor(CursorMove::Jump(r, clamp));
+                if col > line_len {
+                    // Row is shorter than the block column — pad with
+                    // spaces so the replayed text lines up with the
+                    // anchor row, matching vim's block-insert behaviour
+                    // on ragged / empty lines.
+                    ed.textarea.move_cursor(CursorMove::Jump(r, line_len));
+                    let pad: String = std::iter::repeat_n(' ', col - line_len).collect();
+                    ed.mutate(|t| t.insert_str(&pad));
+                } else {
+                    ed.textarea.move_cursor(CursorMove::Jump(r, col));
+                }
                 ed.mutate(|t| t.insert_str(&inserted));
             }
             ed.textarea.move_cursor(CursorMove::Jump(top, col));
@@ -577,7 +592,9 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         }
         Key::Char('v') if input.ctrl && ed.vim.mode == Mode::Normal => {
             ed.textarea.cancel_selection();
-            ed.vim.block_anchor = ed.textarea.cursor();
+            let cur = ed.textarea.cursor();
+            ed.vim.block_anchor = cur;
+            ed.vim.block_vcol = cur.1;
             ed.vim.mode = Mode::VisualBlock;
             return true;
         }
@@ -678,6 +695,10 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         execute_motion(ed, motion.clone(), count);
         if ed.vim.mode == Mode::VisualLine {
             refresh_visual_line_selection(ed);
+        }
+        // Block mode: maintain the virtual column across j/k clamps.
+        if ed.vim.mode == Mode::VisualBlock {
+            update_block_vcol(ed, &motion);
         }
         if let Motion::Find { ch, forward, till } = motion {
             ed.vim.last_find = Some((ch, forward, till));
@@ -1976,15 +1997,45 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
 }
 
 /// Compute `(top_row, bot_row, left_col, right_col)` for the current
-/// VisualBlock selection. Columns are inclusive on both ends.
+/// VisualBlock selection. Columns are inclusive on both ends. Uses the
+/// tracked virtual column (updated by h/l, preserved across j/k) so
+/// ragged / empty rows don't collapse the block's width.
 fn block_bounds(ed: &Editor<'_>) -> (usize, usize, usize, usize) {
     let (ar, ac) = ed.vim.block_anchor;
-    let (cr, cc) = ed.textarea.cursor();
+    let (cr, _) = ed.textarea.cursor();
+    let cc = ed.vim.block_vcol;
     let top = ar.min(cr);
     let bot = ar.max(cr);
     let left = ac.min(cc);
     let right = ac.max(cc);
     (top, bot, left, right)
+}
+
+/// Update the virtual column after a motion in VisualBlock mode.
+/// Horizontal motions sync `block_vcol` to the new cursor column;
+/// vertical / non-h/l motions leave it alone so the intended column
+/// survives clamping to shorter lines.
+fn update_block_vcol(ed: &mut Editor<'_>, motion: &Motion) {
+    match motion {
+        Motion::Left
+        | Motion::Right
+        | Motion::WordFwd
+        | Motion::BigWordFwd
+        | Motion::WordBack
+        | Motion::BigWordBack
+        | Motion::WordEnd
+        | Motion::BigWordEnd
+        | Motion::LineStart
+        | Motion::FirstNonBlank
+        | Motion::LineEnd
+        | Motion::Find { .. }
+        | Motion::FindRepeat { .. }
+        | Motion::MatchBracket => {
+            ed.vim.block_vcol = ed.textarea.cursor().1;
+        }
+        // Up / Down / FileTop / FileBottom / Search — preserve vcol.
+        _ => {}
+    }
 }
 
 /// Yank / delete / change / replace a rectangular selection. Yanked text
@@ -3613,6 +3664,45 @@ mod tests {
         assert_eq!(
             e.textarea.lines(),
             &["d".to_string(), "".to_string(), "h".to_string()]
+        );
+    }
+
+    #[test]
+    fn block_insert_pads_empty_lines_to_block_column() {
+        // Middle line is empty; block I at column 3 should pad the empty
+        // line with spaces so the inserted text lines up.
+        let mut e = editor_with("this is a line\n\nthis is a line");
+        e.textarea.move_cursor(CursorMove::Jump(0, 3));
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jj");
+        run_keys(&mut e, "I");
+        run_keys(&mut e, "XX<Esc>");
+        assert_eq!(
+            e.textarea.lines(),
+            &[
+                "thiXXs is a line".to_string(),
+                "   XX".to_string(),
+                "thiXXs is a line".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn block_insert_pads_short_lines_to_block_column() {
+        let mut e = editor_with("aaaaa\nbb\naaaaa");
+        e.textarea.move_cursor(CursorMove::Jump(0, 3));
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jj");
+        run_keys(&mut e, "I");
+        run_keys(&mut e, "Y<Esc>");
+        // Row 1 "bb" is shorter than col 3 — pad with one space then Y.
+        assert_eq!(
+            e.textarea.lines(),
+            &[
+                "aaaYaa".to_string(),
+                "bb Y".to_string(),
+                "aaaYaa".to_string()
+            ]
         );
     }
 
