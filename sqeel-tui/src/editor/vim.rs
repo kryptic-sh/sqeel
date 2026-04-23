@@ -395,14 +395,10 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
     if input.key == Key::Esc {
         finish_insert_session(ed);
         ed.vim.mode = Mode::Normal;
-        // Vim leaves the cursor one column to the left on exit when possible.
-        let (_row, col) = ed.textarea.cursor();
-        if col > 0 {
-            ed.textarea.move_cursor(CursorMove::Back);
-        }
-        // Re-sync the sticky column to wherever the insert session left
-        // the cursor so the next vertical motion aims at the new column
-        // rather than where the user was before entering insert mode.
+        // Leave the cursor at wherever the insert session parked it —
+        // including however the user moved around with the arrow keys
+        // in insert mode. Re-sync the sticky column to that final
+        // position so the next vertical motion aims at the new column.
         ed.vim.sticky_col = Some(ed.textarea.cursor().1);
         return true;
     }
@@ -3640,20 +3636,63 @@ mod tests {
     }
 
     #[test]
-    fn esc_from_insert_resyncs_sticky_column() {
+    fn esc_from_insert_keeps_final_column_and_syncs_sticky() {
         // Cursor at col 12, press I (moves to first non-blank col 4),
-        // make edits, Esc. Next j should aim for the post-insert column,
-        // not the pre-insert col 12.
+        // type one char (cursor at col 5), Esc. Cursor stays at the
+        // final insert-mode column (col 5), and sticky column matches
+        // so the next j / k aims at that column too.
         let mut e = editor_with("    this is a line\n    another one of a similar size");
         e.textarea.move_cursor(CursorMove::Jump(0, 12));
         run_keys(&mut e, "I");
         assert_eq!(e.textarea.cursor(), (0, 4));
         run_keys(&mut e, "X<Esc>");
-        // After Esc, cursor is one back from the insertion (standard vim).
-        assert_eq!(e.textarea.cursor(), (0, 4));
+        // Cursor parks where insert left it — one past the typed char.
+        assert_eq!(e.textarea.cursor(), (0, 5));
         run_keys(&mut e, "j");
-        // Should land at col 4 of row 1 — sticky sync'd at Esc.
-        assert_eq!(e.textarea.cursor(), (1, 4));
+        assert_eq!(e.textarea.cursor(), (1, 5));
+    }
+
+    #[test]
+    fn esc_from_insert_tracks_inserted_chars() {
+        // i at col 0, type "abc", Esc — cursor should be at col 3 (one
+        // past the last typed char, matching the in-insert-mode
+        // position).
+        let mut e = editor_with("xxxxxxx");
+        run_keys(&mut e, "i");
+        run_keys(&mut e, "abc<Esc>");
+        assert_eq!(e.textarea.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn esc_from_insert_tracks_arrow_nav() {
+        // i at col 0, type "abc" (col 3), Left Left (col 1), Esc.
+        // Cursor ends at col 1 — the final insert-mode position.
+        let mut e = editor_with("xxxxxx");
+        run_keys(&mut e, "i");
+        run_keys(&mut e, "abc");
+        // Feed raw Left keys — run_keys doesn't know about arrows so go
+        // through the editor directly.
+        for _ in 0..2 {
+            e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        run_keys(&mut e, "<Esc>");
+        assert_eq!(e.textarea.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn esc_from_insert_arrow_syncs_sticky_column() {
+        // After Esc with arrow-nav moves, the sticky column should aim
+        // at the final insert-mode column for the next vertical motion.
+        let mut e = editor_with("abcdef\nuvwxyz");
+        run_keys(&mut e, "i");
+        run_keys(&mut e, "XYZ"); // col 3
+        for _ in 0..2 {
+            e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        run_keys(&mut e, "<Esc>");
+        assert_eq!(e.textarea.cursor(), (0, 1));
+        run_keys(&mut e, "j");
+        assert_eq!(e.textarea.cursor(), (1, 1));
     }
 
     #[test]
