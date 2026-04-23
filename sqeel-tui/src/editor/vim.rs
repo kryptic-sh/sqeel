@@ -2607,6 +2607,10 @@ fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
                 ed.mutate(|t| t.insert_str(format!("\n{text}")));
                 ed.textarea.move_cursor(CursorMove::Head);
             }
+            // Vim parks the cursor on the first non-blank of the pasted
+            // line rather than col 0, so the user's next vertical motion
+            // aims at something meaningful.
+            move_first_non_whitespace(ed);
         } else if before {
             // P: paste at cursor, shifting existing char to the right.
             ed.mutate(|t| t.paste());
@@ -2617,6 +2621,8 @@ fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
             ed.mutate(|t| t.paste());
         }
     }
+    // Any paste re-anchors the sticky column to the new cursor position.
+    ed.vim.sticky_col = Some(ed.textarea.cursor().1);
 }
 
 fn do_undo(ed: &mut Editor<'_>) {
@@ -3576,6 +3582,23 @@ mod tests {
         assert_eq!(e.textarea.cursor(), (1, 1));
         run_keys(&mut e, "j");
         assert_eq!(e.textarea.cursor(), (2, 7));
+    }
+
+    #[test]
+    fn linewise_paste_resets_sticky_column() {
+        // yy then p lands the cursor on the first non-blank of the
+        // pasted line; the next j must not drag back to the old
+        // sticky column.
+        let mut e = editor_with("    hello\naaaaaaaa\nbye");
+        run_keys(&mut e, "llllll"); // col 6, sticky = 6
+        run_keys(&mut e, "yy");
+        run_keys(&mut e, "j"); // into row 1 col 6
+        run_keys(&mut e, "p"); // paste below row 1 — cursor on "    hello"
+        // Cursor should be at (2, 4) — first non-blank of the pasted line.
+        assert_eq!(e.textarea.cursor(), (2, 4));
+        // j should then preserve col 4, not jump back to 6.
+        run_keys(&mut e, "j");
+        assert_eq!(e.textarea.cursor(), (3, 2));
     }
 
     #[test]
