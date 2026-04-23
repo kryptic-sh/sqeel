@@ -3536,6 +3536,87 @@ mod tests {
     }
 
     #[test]
+    fn block_highlight_returns_none_outside_block_mode() {
+        let mut e = editor_with("abc");
+        assert!(e.block_highlight().is_none());
+        run_keys(&mut e, "v");
+        assert!(e.block_highlight().is_none());
+        run_keys(&mut e, "<Esc>V");
+        assert!(e.block_highlight().is_none());
+    }
+
+    #[test]
+    fn block_highlight_bounds_track_anchor_and_cursor() {
+        let mut e = editor_with("aaaa\nbbbb\ncccc");
+        run_keys(&mut e, "ll"); // cursor (0, 2)
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jh"); // cursor (1, 1)
+        // anchor = (0, 2), cursor = (1, 1) → top=0 bot=1 left=1 right=2.
+        assert_eq!(e.block_highlight(), Some((0, 1, 1, 2)));
+    }
+
+    #[test]
+    fn visual_block_delete_handles_short_lines() {
+        // Middle row is shorter than the block's right column.
+        let mut e = editor_with("hello\nhi\nworld");
+        run_keys(&mut e, "l"); // col 1
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jjll"); // cursor (2, 3)
+        run_keys(&mut e, "d");
+        // Row 0: delete cols 1-3 ("ell") → "ho".
+        // Row 1: only 2 chars ("hi"); block starts at col 1, so just "i"
+        //        gets removed → "h".
+        // Row 2: delete cols 1-3 ("orl") → "wd".
+        assert_eq!(
+            e.textarea.lines(),
+            &["ho".to_string(), "h".to_string(), "wd".to_string()]
+        );
+    }
+
+    #[test]
+    fn visual_block_yank_pads_short_lines_with_empties() {
+        let mut e = editor_with("hello\nhi\nworld");
+        run_keys(&mut e, "l");
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jjll");
+        run_keys(&mut e, "y");
+        // Row 0 chars 1-3 = "ell"; row 1 chars 1- (only "i"); row 2 "orl".
+        assert_eq!(e.last_yank.as_deref(), Some("ell\ni\norl"));
+    }
+
+    #[test]
+    fn visual_block_replace_skips_past_eol() {
+        // Block extends past the end of every row in column range;
+        // replace should leave lines shorter than `left` untouched.
+        let mut e = editor_with("ab\ncd\nef");
+        // Put cursor at col 1 (last char), extend block 5 columns right.
+        run_keys(&mut e, "l");
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jjllllll");
+        run_keys(&mut e, "rX");
+        // Every row had only col 0..=1; block covers col 1..=7 → only
+        // col 1 is in range on each row, so just that cell changes.
+        assert_eq!(
+            e.textarea.lines(),
+            &["aX".to_string(), "cX".to_string(), "eX".to_string()]
+        );
+    }
+
+    #[test]
+    fn visual_block_with_empty_line_in_middle() {
+        let mut e = editor_with("abcd\n\nefgh");
+        run_keys(&mut e, "<C-v>");
+        run_keys(&mut e, "jjll"); // cursor (2, 2)
+        run_keys(&mut e, "d");
+        // Row 0 cols 0-2 removed → "d". Row 1 empty → untouched.
+        // Row 2 cols 0-2 removed → "h".
+        assert_eq!(
+            e.textarea.lines(),
+            &["d".to_string(), "".to_string(), "h".to_string()]
+        );
+    }
+
+    #[test]
     fn visual_block_append_repeats_across_rows() {
         let mut e = editor_with("foo\nbar\nbaz");
         run_keys(&mut e, "<C-v>");
