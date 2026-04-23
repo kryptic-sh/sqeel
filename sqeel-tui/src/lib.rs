@@ -893,16 +893,10 @@ async fn run_loop(
                             match pane {
                                 Focus::Schema => {
                                     schema_search.focused = false;
-                                    if schema_search.is_filtering() {
-                                        for _ in 0..mouse_scroll_lines {
-                                            schema_search
-                                                .cursor_down(last_draw_areas.schema_list_count);
-                                        }
-                                    } else {
-                                        // Wheel scrolls the viewport only —
-                                        // the cursor stays where the user put it.
-                                        s.scroll_schema_viewport(mouse_scroll_lines as i32);
-                                    }
+                                    // Wheel always scrolls the viewport — works
+                                    // even with an active filter. The cursor
+                                    // stays where the user put it.
+                                    s.scroll_schema_viewport(mouse_scroll_lines as i32);
                                 }
                                 Focus::Results => {
                                     for _ in 0..mouse_scroll_lines {
@@ -925,13 +919,7 @@ async fn run_loop(
                             match pane {
                                 Focus::Schema => {
                                     schema_search.focused = false;
-                                    if schema_search.is_filtering() {
-                                        for _ in 0..mouse_scroll_lines {
-                                            schema_search.cursor_up();
-                                        }
-                                    } else {
-                                        s.scroll_schema_viewport(-(mouse_scroll_lines as i32));
-                                    }
+                                    s.scroll_schema_viewport(-(mouse_scroll_lines as i32));
                                 }
                                 Focus::Results => {
                                     for _ in 0..mouse_scroll_lines {

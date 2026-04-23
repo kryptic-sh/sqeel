@@ -2318,6 +2318,32 @@ mod tests {
     }
 
     #[test]
+    fn scroll_schema_viewport_moves_offset() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        // Populate a deep-enough tree that there's something to scroll.
+        s.set_schema_nodes(
+            (0..20)
+                .map(|i| SchemaNode::Database {
+                    name: format!("db{i}"),
+                    expanded: false,
+                    tables: vec![],
+                    tables_loaded_at: None,
+                })
+                .collect(),
+        );
+        s.schema_viewport_rows.store(5, Ordering::Relaxed);
+        assert_eq!(s.schema_scroll_offset, 0);
+        s.scroll_schema_viewport(3);
+        assert_eq!(s.schema_scroll_offset, 3);
+        s.scroll_schema_viewport(-1);
+        assert_eq!(s.schema_scroll_offset, 2);
+        // Clamped to max_offset = 20 - 5 = 15.
+        s.scroll_schema_viewport(100);
+        assert_eq!(s.schema_scroll_offset, 15);
+    }
+
+    #[test]
     fn dismiss_restores_editor() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
