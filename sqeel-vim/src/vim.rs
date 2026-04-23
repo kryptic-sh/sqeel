@@ -414,11 +414,11 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
             }
         }
         Key::Backspace => {
-            if let Some(p) = ed.vim.search_prompt.as_mut() {
-                if p.text.pop().is_some() {
-                    p.cursor = p.text.chars().count();
-                    let _ = ed.textarea.set_search_pattern(&p.text);
-                }
+            if let Some(p) = ed.vim.search_prompt.as_mut()
+                && p.text.pop().is_some()
+            {
+                p.cursor = p.text.chars().count();
+                let _ = ed.textarea.set_search_pattern(&p.text);
             }
         }
         Key::Char(c) => {
