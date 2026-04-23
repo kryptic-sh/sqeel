@@ -123,6 +123,8 @@ enum Pending {
     /// Visual mode + `i` or `a` pressed — waiting for the text-object
     /// character to extend the selection over.
     VisualTextObj { inner: bool },
+    /// Bare `z` seen — looking for `z` (center), `t` (top), `b` (bottom).
+    Z,
 }
 
 // ─── Operator / Motion / TextObject ────────────────────────────────────────
@@ -634,6 +636,7 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         Pending::VisualTextObj { inner } => {
             return handle_visual_text_obj(ed, input, inner);
         }
+        Pending::Z => return handle_after_z(ed, input),
         Pending::None => {}
     }
 
@@ -771,6 +774,14 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
                 do_redo(ed);
                 return true;
             }
+            'a' if ed.vim.mode == Mode::Normal => {
+                adjust_number(ed, count.max(1) as i64);
+                return true;
+            }
+            'x' if ed.vim.mode == Mode::Normal => {
+                adjust_number(ed, -(count.max(1) as i64));
+                return true;
+            }
             _ => {}
         }
     }
@@ -819,6 +830,12 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
     if !input.ctrl && input.key == Key::Char('g') && ed.vim.mode == Mode::Normal {
         ed.vim.count = count;
         ed.vim.pending = Pending::G;
+        return true;
+    }
+
+    // `z` prefix (zz / zt / zb — cursor-relative viewport scrolls).
+    if !input.ctrl && input.key == Key::Char('z') && ed.vim.mode == Mode::Normal {
+        ed.vim.pending = Pending::Z;
         return true;
     }
 
@@ -1572,6 +1589,17 @@ fn handle_after_g(ed: &mut Editor<'_>, input: Input) -> bool {
                 });
             }
         }
+        _ => {}
+    }
+    true
+}
+
+fn handle_after_z(ed: &mut Editor<'_>, input: Input) -> bool {
+    use crate::editor::CursorScrollTarget;
+    match input.key {
+        Key::Char('z') => ed.scroll_cursor_to(CursorScrollTarget::Center),
+        Key::Char('t') => ed.scroll_cursor_to(CursorScrollTarget::Top),
+        Key::Char('b') => ed.scroll_cursor_to(CursorScrollTarget::Bottom),
         _ => {}
     }
     true
@@ -2713,6 +2741,48 @@ fn do_char_delete(ed: &mut Editor<'_>, forward: bool, count: usize) {
             ed.mutate(|t| t.delete_char());
         }
     }
+}
+
+/// Vim `Ctrl-a` / `Ctrl-x` — find the next decimal number at or after the
+/// cursor on the current line, add `delta`, leave the cursor on the last
+/// digit of the result. No-op if the line has no digits to the right.
+fn adjust_number(ed: &mut Editor<'_>, delta: i64) -> bool {
+    let (row, col) = ed.textarea.cursor();
+    let chars: Vec<char> = {
+        let lines = ed.textarea.lines();
+        if row >= lines.len() {
+            return false;
+        }
+        lines[row].chars().collect()
+    };
+    let Some(digit_start) = (col..chars.len()).find(|&i| chars[i].is_ascii_digit()) else {
+        return false;
+    };
+    let span_start = if digit_start > 0 && chars[digit_start - 1] == '-' {
+        digit_start - 1
+    } else {
+        digit_start
+    };
+    let mut span_end = digit_start;
+    while span_end < chars.len() && chars[span_end].is_ascii_digit() {
+        span_end += 1;
+    }
+    let s: String = chars[span_start..span_end].iter().collect();
+    let Ok(n) = s.parse::<i64>() else {
+        return false;
+    };
+    let new_s = n.saturating_add(delta).to_string();
+
+    ed.push_undo();
+    ed.textarea.move_cursor(CursorMove::Jump(row, span_start));
+    for _ in 0..(span_end - span_start) {
+        ed.mutate(|t| t.delete_next_char());
+    }
+    ed.mutate(|t| t.insert_str(&new_s));
+    let new_len = new_s.chars().count();
+    ed.textarea
+        .move_cursor(CursorMove::Jump(row, span_start + new_len - 1));
+    true
 }
 
 fn replace_char(ed: &mut Editor<'_>, ch: char, count: usize) {

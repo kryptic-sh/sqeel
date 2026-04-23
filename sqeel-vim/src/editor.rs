@@ -13,6 +13,15 @@ use ratatui::layout::Rect;
 use std::sync::atomic::{AtomicU16, Ordering};
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 
+/// Where the cursor should land in the viewport after a `z`-family
+/// scroll (`zz` / `zt` / `zb`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CursorScrollTarget {
+    Center,
+    Top,
+    Bottom,
+}
+
 pub struct Editor<'a> {
     pub textarea: TextArea<'a>,
     pub keybinding_mode: KeybindingMode,
@@ -255,6 +264,31 @@ impl<'a> Editor<'a> {
     pub fn goto_line(&mut self, line: usize) {
         self.textarea
             .move_cursor(CursorMove::Jump(line.saturating_sub(1), 0));
+    }
+
+    /// Scroll so the cursor row lands at the given viewport position:
+    /// `Center` → middle row, `Top` → first row, `Bottom` → last row.
+    /// Cursor stays on its absolute line; only the viewport moves.
+    pub(super) fn scroll_cursor_to(&mut self, pos: CursorScrollTarget) {
+        let height = self.viewport_height.load(Ordering::Relaxed) as usize;
+        if height == 0 {
+            return;
+        }
+        let cur_row = self.textarea.cursor().0;
+        let cur_top = self.textarea.viewport_top_row();
+        let new_top = match pos {
+            CursorScrollTarget::Center => cur_row.saturating_sub(height / 2),
+            CursorScrollTarget::Top => cur_row,
+            CursorScrollTarget::Bottom => cur_row.saturating_sub(height.saturating_sub(1)),
+        };
+        let delta = new_top as isize - cur_top as isize;
+        if delta == 0 {
+            return;
+        }
+        self.textarea.scroll(Scrolling::Delta {
+            rows: delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16,
+            cols: 0,
+        });
     }
 
     /// Translate a terminal mouse position into a (row, col) inside the document.
@@ -689,5 +723,122 @@ mod tests {
         e.handle_key(key(KeyCode::Char('d')));
         e.force_normal();
         assert_eq!(e.vim_mode(), VimMode::Normal);
+    }
+
+    fn many_lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn prime_viewport(e: &mut Editor<'_>, height: u16) {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        e.set_viewport_height(height);
+        let r = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height,
+        };
+        let mut b = Buffer::empty(r);
+        (&e.textarea).render(r, &mut b);
+    }
+
+    #[test]
+    fn zz_centers_cursor_in_viewport() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content(&many_lines(100));
+        prime_viewport(&mut e, 20);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.handle_key(key(KeyCode::Char('z')));
+        e.handle_key(key(KeyCode::Char('z')));
+        assert_eq!(e.textarea.viewport_top_row(), 40);
+        assert_eq!(e.textarea.cursor().0, 50);
+    }
+
+    #[test]
+    fn zt_puts_cursor_at_viewport_top() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content(&many_lines(100));
+        prime_viewport(&mut e, 20);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.handle_key(key(KeyCode::Char('z')));
+        e.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(e.textarea.viewport_top_row(), 50);
+        assert_eq!(e.textarea.cursor().0, 50);
+    }
+
+    #[test]
+    fn ctrl_a_increments_number_at_cursor() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("x = 41");
+        e.handle_key(ctrl_key(KeyCode::Char('a')));
+        assert_eq!(e.textarea.lines()[0], "x = 42");
+        assert_eq!(e.textarea.cursor(), (0, 5));
+    }
+
+    #[test]
+    fn ctrl_a_finds_number_to_right_of_cursor() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("foo 99 bar");
+        e.handle_key(ctrl_key(KeyCode::Char('a')));
+        assert_eq!(e.textarea.lines()[0], "foo 100 bar");
+        assert_eq!(e.textarea.cursor(), (0, 6));
+    }
+
+    #[test]
+    fn ctrl_a_with_count_adds_count() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("x = 10");
+        for d in "5".chars() {
+            e.handle_key(key(KeyCode::Char(d)));
+        }
+        e.handle_key(ctrl_key(KeyCode::Char('a')));
+        assert_eq!(e.textarea.lines()[0], "x = 15");
+    }
+
+    #[test]
+    fn ctrl_x_decrements_number() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("n=5");
+        e.handle_key(ctrl_key(KeyCode::Char('x')));
+        assert_eq!(e.textarea.lines()[0], "n=4");
+    }
+
+    #[test]
+    fn ctrl_x_crosses_zero_into_negative() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("v=0");
+        e.handle_key(ctrl_key(KeyCode::Char('x')));
+        assert_eq!(e.textarea.lines()[0], "v=-1");
+    }
+
+    #[test]
+    fn ctrl_a_on_negative_number_increments_toward_zero() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("a = -5");
+        e.handle_key(ctrl_key(KeyCode::Char('a')));
+        assert_eq!(e.textarea.lines()[0], "a = -4");
+    }
+
+    #[test]
+    fn ctrl_a_noop_when_no_digit_on_line() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content("no digits here");
+        e.handle_key(ctrl_key(KeyCode::Char('a')));
+        assert_eq!(e.textarea.lines()[0], "no digits here");
+    }
+
+    #[test]
+    fn zb_puts_cursor_at_viewport_bottom() {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        e.set_content(&many_lines(100));
+        prime_viewport(&mut e, 20);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.handle_key(key(KeyCode::Char('z')));
+        e.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(e.textarea.viewport_top_row(), 31);
+        assert_eq!(e.textarea.cursor().0, 50);
     }
 }
