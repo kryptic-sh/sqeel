@@ -477,6 +477,8 @@ async fn run_loop(
 
         // Auto-complete: on every content change, submit a schema completion query to the
         // background thread and (if LSP is available) request supplemental completions.
+        // Gate on Insert mode — popping up completions while the user is in
+        // Normal / Visual / any-visual mode is always a distraction.
         if let Some(ref content) = content {
             doc_version += 1;
 
@@ -497,7 +499,10 @@ async fn run_loop(
             let ctx = completion_ctx::parse_context(content, byte_offset);
 
             let whitespace_left = matches!(char_left, Some(c) if c.is_whitespace());
-            let suppress = hard_suppress || (whitespace_left && matches!(ctx, CompletionCtx::Any));
+            let mode_is_insert = editor.vim_mode() == VimMode::Insert;
+            let suppress = !mode_is_insert
+                || hard_suppress
+                || (whitespace_left && matches!(ctx, CompletionCtx::Any));
 
             if suppress {
                 state.lock().unwrap().dismiss_completions();
@@ -526,6 +531,18 @@ async fn run_loop(
                         last_completion_id = Some(id);
                     }
                 }
+            }
+        }
+
+        // Leaving Insert mode: drop any lingering popup so the user
+        // isn't stuck with stale completions while navigating in Normal.
+        if editor.vim_mode() != VimMode::Insert {
+            let mut s = state.lock().unwrap();
+            if s.show_completions {
+                s.dismiss_completions();
+                last_completion_id = None;
+                last_completion_ctx = None;
+                needs_redraw = true;
             }
         }
 
