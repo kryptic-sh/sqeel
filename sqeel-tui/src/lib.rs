@@ -1257,15 +1257,26 @@ async fn run_loop(
                     }
                     last_esc_at = Some(now);
                 }
-                let s = state.lock().unwrap();
-                let focus = s.focus;
-                let vim_mode = s.vim_mode;
-                let show_completions = s.show_completions;
-                let show_switcher = s.show_connection_switcher;
-                let show_add = s.show_add_connection;
-                let show_help = s.show_help;
-                let show_results = s.has_results();
-                drop(s);
+                let (
+                    focus,
+                    vim_mode,
+                    show_completions,
+                    show_switcher,
+                    show_add,
+                    show_help,
+                    show_results,
+                ) = {
+                    let s = state.lock().unwrap();
+                    (
+                        s.focus,
+                        s.vim_mode,
+                        s.show_completions,
+                        s.show_connection_switcher,
+                        s.show_add_connection,
+                        s.show_help,
+                        s.has_results(),
+                    )
+                };
 
                 // ── Leader-key chord ─────────────────────────────────────────────
                 // Eligible context: no modal open, schema search box not focused,
@@ -1353,13 +1364,14 @@ async fn run_loop(
                     match (key.modifiers, key.code) {
                         (KeyModifiers::NONE, KeyCode::Char('y')) => {
                             quit_prompt = None;
-                            let failed = {
+                            let pending = {
                                 let mut s = state.lock().unwrap();
                                 s.editor_content = Arc::new(editor.content());
                                 s.editor_content_synced = true;
                                 s.mark_active_dirty();
-                                s.save_all_dirty()
+                                s.prepare_save_all_dirty()
                             };
+                            let failed = commit_pending_saves(&state, pending).await;
                             if failed.is_empty() {
                                 break;
                             }
@@ -1406,7 +1418,9 @@ async fn run_loop(
                                         break;
                                     }
                                     if save {
-                                        let failed = state.lock().unwrap().save_all_dirty();
+                                        let pending =
+                                            state.lock().unwrap().prepare_save_all_dirty();
+                                        let failed = commit_pending_saves(&state, pending).await;
                                         if failed.is_empty() {
                                             break;
                                         }
@@ -1422,27 +1436,53 @@ async fn run_loop(
                                     }
                                 }
                                 editor::ex::ExEffect::Save => {
-                                    let result = {
+                                    let prepared = {
                                         let mut s = state.lock().unwrap();
                                         // The heavy content pipeline is
-                                        // gated off for buffers over 2 MB,
-                                        // which otherwise leaves
+                                        // gated off for buffers over
+                                        // 2 MB, which otherwise leaves
                                         // `editor_content_synced = false`
-                                        // and makes `save_active_tab`
-                                        // fall back to stale `tab.content`.
-                                        // Bypass by syncing explicitly here.
+                                        // and the save falls back to
+                                        // stale `tab.content`.
                                         s.editor_content = Arc::new(editor.content());
                                         s.editor_content_synced = true;
-                                        s.save_active_tab()
+                                        s.prepare_save_active_tab()
                                     };
-                                    match result {
-                                        Ok(name) => {
-                                            editor_dirty = false;
-                                            toasts.push((
-                                                format!("Saved {name}"),
-                                                ToastKind::Info,
-                                                std::time::Instant::now(),
-                                            ));
+                                    match prepared {
+                                        Ok(pending) => {
+                                            // Run the disk write on a
+                                            // blocking task so multi-MB
+                                            // saves don't freeze the
+                                            // render loop.
+                                            let name = pending.name.clone();
+                                            let idx = pending.tab_index;
+                                            let commit = tokio::task::spawn_blocking(move || {
+                                                pending.commit()
+                                            })
+                                            .await
+                                            .unwrap_or_else(|e| {
+                                                Err(std::io::Error::other(format!(
+                                                    "spawn_blocking join error: {e}"
+                                                )))
+                                            });
+                                            match commit {
+                                                Ok(()) => {
+                                                    if let Some(i) = idx {
+                                                        state.lock().unwrap().mark_tab_saved(i);
+                                                    }
+                                                    editor_dirty = false;
+                                                    toasts.push((
+                                                        format!("Saved {name}"),
+                                                        ToastKind::Info,
+                                                        std::time::Instant::now(),
+                                                    ));
+                                                }
+                                                Err(e) => toasts.push((
+                                                    format!("Save failed: {e}"),
+                                                    ToastKind::Error,
+                                                    std::time::Instant::now(),
+                                                )),
+                                            }
                                         }
                                         Err(e) => toasts.push((
                                             format!("Save failed: {e}"),
@@ -3904,6 +3944,36 @@ fn highlight_query_line(query: &str, dialect: Dialect) -> Line<'static> {
         out.push(Span::styled(flatten(&bytes[cursor..]), plain));
     }
     Line::from(out)
+}
+
+/// Commit each [`PendingSave`] on a blocking task so multi-MB writes
+/// don't stall the render loop, then clear the matching tab's dirty
+/// flag on success. Returns the names of saves that failed.
+async fn commit_pending_saves(
+    state: &Arc<Mutex<AppState>>,
+    pending: Vec<sqeel_core::state::PendingSave>,
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    for p in pending {
+        let tab_index = p.tab_index;
+        let name = p.name.clone();
+        let commit = tokio::task::spawn_blocking(move || p.commit())
+            .await
+            .unwrap_or_else(|e| {
+                Err(std::io::Error::other(format!(
+                    "spawn_blocking join error: {e}"
+                )))
+            });
+        match commit {
+            Ok(()) => {
+                if let Some(i) = tab_index {
+                    state.lock().unwrap().mark_tab_saved(i);
+                }
+            }
+            Err(_) => failed.push(name),
+        }
+    }
+    failed
 }
 
 /// Combine the LSP diagnostics vector with tree-sitter-derived parse

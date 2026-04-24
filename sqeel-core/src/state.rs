@@ -15,6 +15,31 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// A staged write produced by [`AppState::prepare_save_active_tab`] /
+/// [`AppState::prepare_save_all_dirty`]. The disk-write step is held
+/// off so the caller can run [`commit`](PendingSave::commit) on a
+/// blocking task and keep the event loop responsive during large
+/// writes; once the commit succeeds the caller should invoke
+/// [`AppState::mark_tab_saved`] with `tab_index` to clear the dirty
+/// flag.
+#[derive(Debug, Clone)]
+pub struct PendingSave {
+    pub slug: String,
+    pub name: String,
+    pub content: String,
+    pub tab_index: Option<usize>,
+}
+
+impl PendingSave {
+    /// Write the staged content to disk. Pure I/O — safe to run on
+    /// `tokio::task::spawn_blocking` so the TUI loop doesn't stall on
+    /// multi-megabyte buffers over slow filesystems.
+    pub fn commit(&self) -> std::io::Result<()> {
+        persistence::save_query(&self.slug, &self.name, &self.content)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+}
+
 /// One open editor tab. Content is lazily loaded and evicted after 5 min of inactivity.
 #[derive(Debug, Clone)]
 pub struct TabEntry {
@@ -2128,64 +2153,130 @@ impl AppState {
         }
     }
 
-    /// Persist the active tab's content to disk and clear its dirty flag.
-    /// Returns the saved tab's name on success.
-    pub fn save_active_tab(&mut self) -> std::io::Result<String> {
+    /// Prepare a disk-write for the active tab. Updates the in-memory
+    /// `tab.content` snapshot so it stays in sync with what we're
+    /// about to write, but does NOT clear the tab's dirty flag — the
+    /// caller calls [`mark_tab_saved`] once the disk write lands, so
+    /// a failed write doesn't silently drop the user's unsaved state.
+    ///
+    /// Splits the sync disk I/O off from the state mutation so the
+    /// TUI can ship [`PendingSave::commit`] to `spawn_blocking` and
+    /// keep the render loop responsive during large saves.
+    pub fn prepare_save_active_tab(&mut self) -> std::io::Result<PendingSave> {
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         if self.tabs.is_empty() {
             let name = persistence::next_scratch_name(&slug)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             let content: String = (*self.editor_content).clone();
-            persistence::save_query(&slug, &name, &content)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            self.tabs.push(TabEntry::open(name.clone(), content));
+            self.tabs
+                .push(TabEntry::open(name.clone(), content.clone()));
             self.active_tab = 0;
-            return Ok(name);
+            return Ok(PendingSave {
+                slug,
+                name,
+                content,
+                tab_index: Some(0),
+            });
         }
         let idx = self.active_tab;
-        let (name, content) = {
-            let tab = self.tabs.get_mut(idx).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "no active tab")
-            })?;
-            let content: String = if self.editor_content_synced {
-                (*self.editor_content).clone()
-            } else {
-                tab.content.clone().unwrap_or_default()
-            };
-            tab.content = Some(content.clone());
-            tab.last_accessed = Some(Instant::now());
-            (tab.name.clone(), content)
+        let tab = self
+            .tabs
+            .get_mut(idx)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no active tab"))?;
+        let content: String = if self.editor_content_synced {
+            (*self.editor_content).clone()
+        } else {
+            tab.content.clone().unwrap_or_default()
         };
-        persistence::save_query(&slug, &name, &content)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        if let Some(tab) = self.tabs.get_mut(idx) {
-            tab.dirty = false;
-        }
-        Ok(name)
+        tab.content = Some(content.clone());
+        tab.last_accessed = Some(Instant::now());
+        let name = tab.name.clone();
+        Ok(PendingSave {
+            slug,
+            name,
+            content,
+            tab_index: Some(idx),
+        })
     }
 
-    /// Persist every dirty tab's cached content to disk. Returns the
-    /// names of tabs that failed to save.
-    pub fn save_all_dirty(&mut self) -> Vec<String> {
+    /// Clear the dirty flag on the tab that [`prepare_save_active_tab`]
+    /// or [`prepare_save_all_dirty`] scheduled for a write, now that
+    /// the disk write has landed successfully.
+    pub fn mark_tab_saved(&mut self, tab_index: usize) {
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            tab.dirty = false;
+        }
+    }
+
+    /// Prepare disk writes for every dirty tab. Mirrors
+    /// [`prepare_save_active_tab`] but returns one [`PendingSave`] per
+    /// dirty tab. Caller commits each write on a blocking task then
+    /// calls [`mark_tab_saved`] for the successes.
+    pub fn prepare_save_all_dirty(&mut self) -> Vec<PendingSave> {
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
-        let mut failed = Vec::new();
+        let mut out = Vec::new();
+        let active = self.active_tab;
+        let synced = self.editor_content_synced;
+        let fresh_active_content: Option<String> = if synced {
+            Some((*self.editor_content).clone())
+        } else {
+            None
+        };
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             if !tab.dirty {
                 continue;
             }
-            let content = if i == self.active_tab && self.editor_content_synced {
-                (*self.editor_content).clone()
-            } else if let Some(c) = &tab.content {
-                c.clone()
+            let content = if i == active {
+                fresh_active_content
+                    .as_ref()
+                    .cloned()
+                    .or_else(|| tab.content.clone())
             } else {
+                tab.content.clone()
+            };
+            let Some(content) = content else {
                 continue;
             };
             tab.content = Some(content.clone());
-            match persistence::save_query(&slug, &tab.name, &content) {
-                Ok(_) => tab.dirty = false,
-                Err(_) => failed.push(tab.name.clone()),
+            out.push(PendingSave {
+                slug: slug.clone(),
+                name: tab.name.clone(),
+                content,
+                tab_index: Some(i),
+            });
+        }
+        out
+    }
+
+    /// Synchronous convenience wrapper — prepares + commits + marks
+    /// saved in one shot. Used by tests and any non-async caller; the
+    /// TUI itself prefers the split form so the disk write can run on
+    /// a blocking task.
+    pub fn save_active_tab(&mut self) -> std::io::Result<String> {
+        let pending = self.prepare_save_active_tab()?;
+        pending.commit()?;
+        if let Some(idx) = pending.tab_index {
+            self.mark_tab_saved(idx);
+        }
+        Ok(pending.name)
+    }
+
+    /// Synchronous wrapper mirroring [`prepare_save_all_dirty`] +
+    /// inline commit. Returns the names of tabs whose disk write
+    /// failed.
+    pub fn save_all_dirty(&mut self) -> Vec<String> {
+        let pending = self.prepare_save_all_dirty();
+        let mut failed = Vec::new();
+        for p in pending {
+            match p.commit() {
+                Ok(()) => {
+                    if let Some(idx) = p.tab_index {
+                        self.mark_tab_saved(idx);
+                    }
+                }
+                Err(_) => failed.push(p.name.clone()),
             }
         }
         failed
@@ -2971,6 +3062,33 @@ mod tests {
         s.editor_content_synced = true;
         let _ = s.save_active_tab();
         assert_eq!(s.tabs[0].content.as_deref(), Some("fresh edit"));
+    }
+
+    #[test]
+    fn prepare_save_active_tab_leaves_dirty_until_marked() {
+        use std::sync::Arc;
+        let _dir = isolated_data_dir();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        let mut tab = TabEntry::open("scratch_split".into(), "old".into());
+        tab.dirty = true;
+        s.tabs.push(tab);
+        s.active_tab = 0;
+        s.editor_content = Arc::new("new".into());
+        s.editor_content_synced = true;
+
+        let pending = s.prepare_save_active_tab().expect("prepare should succeed");
+        assert_eq!(pending.name, "scratch_split");
+        assert_eq!(pending.content, "new");
+        assert_eq!(pending.tab_index, Some(0));
+        // In-memory snapshot updated, but dirty stays set until the
+        // disk write lands and we explicitly mark.
+        assert_eq!(s.tabs[0].content.as_deref(), Some("new"));
+        assert!(s.tabs[0].dirty, "dirty flag must stay set pre-commit");
+
+        pending.commit().unwrap();
+        s.mark_tab_saved(0);
+        assert!(!s.tabs[0].dirty);
     }
 
     #[test]
