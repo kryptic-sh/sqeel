@@ -874,6 +874,119 @@ mod tests {
     }
 
     #[test]
+    fn desc_lowercase_select_prior_is_keyword() {
+        // Reproduces the exact screenshot shape: lowercase select then
+        // two blocks of `DESC users;` separated by blank lines.
+        let src = "select * from users;\n\nDESC users;\n\nDESC users;\n";
+        let mut h = Highlighter::new().unwrap();
+        let spans = h.highlight(src, Dialect::MySql);
+        let desc_kw_count = spans
+            .iter()
+            .filter(|s| s.kind == TokenKind::Keyword && &src[s.start_byte..s.end_byte] == "DESC")
+            .count();
+        assert_eq!(
+            desc_kw_count, 2,
+            "expected both DESCs highlighted; spans: {spans:#?}"
+        );
+    }
+
+    #[test]
+    fn desc_highlighted_in_full_buffer_repro() {
+        let src = "select * from ppc_third.searches_182 order by id desc;\n\
+                   select * from ppc_third.searches_181 order by id desc;\n\
+                   select count(*), status from ppc_third.searches_182 group by status;\n\
+                   \n\
+                   -- TODO: \n\
+                   -- test\n\
+                   \n\
+                   -- TODO test\n\
+                   \n\
+                   -- TODO: this is a test\n\
+                   -- FIXME: this is a test\n\
+                   -- this is a test\n\
+                   -- FIX:\n\
+                   \n\
+                   -- NOTE: another note\n\
+                   -- WARN: woah...\n\
+                   -- this is a warning\n\
+                   -- INFO:  this is \n\
+                   \n\
+                   select * from users;\n\
+                   \n\
+                   DESC users;\n\
+                   \n\
+                   DESC users;\n";
+        let mut h = Highlighter::new().unwrap();
+        let spans = h.highlight(src, Dialect::MySql);
+
+        // Both DESC statement-starts must render as keywords.
+        let desc_kw_positions: Vec<usize> = spans
+            .iter()
+            .filter(|s| s.kind == TokenKind::Keyword && &src[s.start_byte..s.end_byte] == "DESC")
+            .map(|s| s.start_byte)
+            .collect();
+        let expected = src
+            .match_indices("DESC ")
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            desc_kw_positions, expected,
+            "all DESC instances should be keyword spans; got positions {desc_kw_positions:?} for expected {expected:?}; spans: {spans:#?}"
+        );
+    }
+
+    #[test]
+    fn desc_highlighted_after_repeated_incremental_edits() {
+        // The live HighlightThread reuses one Highlighter across many
+        // edits with incremental re-parses. Drive a burst of edits and
+        // confirm DESC stays a Keyword span each time.
+        let mut h = Highlighter::new().unwrap();
+        let seeds = [
+            "select * from users;\n",
+            "select * from users;\nD",
+            "select * from users;\nDE",
+            "select * from users;\nDESC",
+            "select * from users;\nDESC ",
+            "select * from users;\nDESC users;\n",
+            "select * from users;\n\nDESC users;\n",
+            "select * from users;\n\nDESC users;\n\nDESC users;\n",
+        ];
+        for src in seeds {
+            h.highlight(src, Dialect::MySql);
+        }
+        let final_src = "select * from users;\n\nDESC users;\n\nDESC users;\n";
+        let spans = h.highlight(final_src, Dialect::MySql);
+        let count = spans
+            .iter()
+            .filter(|s| {
+                s.kind == TokenKind::Keyword && &final_src[s.start_byte..s.end_byte] == "DESC"
+            })
+            .count();
+        assert_eq!(count, 2, "expected 2 DESC keyword spans; got: {spans:#?}");
+    }
+
+    #[test]
+    fn desc_survives_incremental_edit() {
+        // The live highlight-thread retains the tree across edits and
+        // re-parses incrementally. Seed with a plain SELECT, then edit
+        // the source to append a DESC line and re-parse — the DESC must
+        // still pick up a keyword span.
+        let mut h = Highlighter::new().unwrap();
+        let seed = "SELECT * FROM users;\n";
+        h.highlight(seed, Dialect::MySql);
+
+        let edited = "SELECT * FROM users;\nDESC users;\n";
+        let spans = h.highlight(edited, Dialect::MySql);
+        let has_desc_kw = spans
+            .iter()
+            .any(|s| s.kind == TokenKind::Keyword && &edited[s.start_byte..s.end_byte] == "DESC");
+        assert!(
+            has_desc_kw,
+            "DESC should be a keyword after incremental parse; spans: {spans:#?}"
+        );
+    }
+
+    #[test]
     fn desc_after_prior_statement_is_keyword() {
         // Regression: `DESC users;` sitting after a valid SELECT was
         // rendering unhighlighted in the TUI while an identical line
