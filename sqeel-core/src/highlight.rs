@@ -977,16 +977,90 @@ mod tests {
 
     #[test]
     fn statement_ranges_does_not_split_inside_string_literal() {
-        // `;` inside a string must not split — one SELECT only.
         let src = "select '; not end' as x;\n";
-        let ranges = statement_ranges(src);
-        let selects: Vec<&str> = ranges
-            .iter()
-            .map(|&(s, e)| src[s..e].trim())
+        let selects: Vec<String> = statement_ranges(src)
+            .into_iter()
+            .map(|(s, e)| src[s..e].trim().to_string())
             .filter(|t| t.starts_with("select"))
             .collect();
         assert_eq!(selects.len(), 1, "got: {selects:?}");
         assert!(selects[0].contains("; not end"));
+    }
+
+    #[test]
+    fn statement_ranges_does_not_split_inside_double_quoted_string() {
+        let src = "select \"; still in string\" as x;\n";
+        let selects: Vec<String> = statement_ranges(src)
+            .into_iter()
+            .map(|(s, e)| src[s..e].trim().to_string())
+            .filter(|t| t.starts_with("select"))
+            .collect();
+        assert_eq!(selects.len(), 1, "got: {selects:?}");
+    }
+
+    #[test]
+    fn statement_ranges_does_not_split_inside_backtick_identifier() {
+        let src = "select `;weird col;` from t;\n";
+        let selects: Vec<String> = statement_ranges(src)
+            .into_iter()
+            .map(|(s, e)| src[s..e].trim().to_string())
+            .filter(|t| t.starts_with("select"))
+            .collect();
+        assert_eq!(selects.len(), 1, "got: {selects:?}");
+    }
+
+    #[test]
+    fn split_top_level_semicolons_respects_line_comment() {
+        // Directly test the splitter — tree-sitter already partitions
+        // line comments as separate children so the end-to-end test
+        // depends on that partitioning. Here we verify the byte-level
+        // splitter behaves correctly in isolation.
+        let src = "a; -- ; still\nb;";
+        let parts: Vec<&str> = super::split_top_level_semicolons(src, 0, src.len())
+            .into_iter()
+            .map(|(s, e)| &src[s..e])
+            .collect();
+        assert_eq!(parts, vec!["a;", " -- ; still\nb;"]);
+    }
+
+    #[test]
+    fn split_top_level_semicolons_respects_block_comment() {
+        let src = "a; /* ; in comment */ b;";
+        let parts: Vec<&str> = super::split_top_level_semicolons(src, 0, src.len())
+            .into_iter()
+            .map(|(s, e)| &src[s..e])
+            .collect();
+        assert_eq!(parts, vec!["a;", " /* ; in comment */ b;"]);
+    }
+
+    #[test]
+    fn split_top_level_semicolons_respects_string_literal() {
+        let src = "a; 'x;y'; b;";
+        let parts: Vec<&str> = super::split_top_level_semicolons(src, 0, src.len())
+            .into_iter()
+            .map(|(s, e)| &src[s..e])
+            .collect();
+        assert_eq!(parts, vec!["a;", " 'x;y';", " b;"]);
+    }
+
+    #[test]
+    fn statement_at_byte_picks_second_desc_block() {
+        // The user's bug exactly: cursor lands somewhere inside the
+        // second DESC, must return that range only.
+        let src = "desc test;\n\ndesc another;\n";
+        let byte = src.find("another").unwrap();
+        let (s, e) = statement_at_byte(src, byte).unwrap();
+        let text = src[s..e].trim();
+        assert_eq!(text, "desc another;", "got: {text:?}");
+    }
+
+    #[test]
+    fn statement_at_byte_picks_first_desc_block() {
+        let src = "desc test;\n\ndesc another;\n";
+        let byte = src.find("test").unwrap();
+        let (s, e) = statement_at_byte(src, byte).unwrap();
+        let text = src[s..e].trim();
+        assert_eq!(text, "desc test;", "got: {text:?}");
     }
 
     #[test]
