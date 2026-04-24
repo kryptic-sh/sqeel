@@ -2253,13 +2253,16 @@ async fn run_loop(
                     // ── Hover popup (Focus::Hover) — grid nav + yank ─────
                     // Esc first cancels an active visual selection so
                     // the second press closes the popup, mirroring the
-                    // results-pane idiom.
+                    // results-pane idiom. Also drops the pending hover
+                    // request id so a late response doesn't re-open
+                    // the popup after the user dismissed it.
                     (KeyModifiers::NONE, KeyCode::Esc) if focus == Focus::Hover => {
                         let mut s = state.lock().unwrap();
                         if s.hover_selection.is_some() {
                             s.hover_selection = None;
                         } else {
                             s.close_hover();
+                            last_hover_id = None;
                         }
                     }
                     // `V` / `v` / `Ctrl-V` — visual-line / block
@@ -2766,9 +2769,12 @@ async fn run_loop(
                             state.lock().unwrap().focus = Focus::Editor;
                         }
                     }
-                    // `K` in Normal → LSP hover request. Response
-                    // surfaces via `LspEvent::Hover` and renders in a
-                    // popup over the cursor.
+                    // `K` in Normal → LSP hover request. Popup opens
+                    // immediately in a loading state so the user can
+                    // cancel with `Esc` even before sqls answers
+                    // (cold server can take a beat on first request).
+                    // Response arrives via `LspEvent::Hover` and swaps
+                    // content into place.
                     (KeyModifiers::SHIFT, KeyCode::Char('K'))
                     | (KeyModifiers::NONE, KeyCode::Char('K'))
                         if focus == Focus::Editor && vim_mode == VimMode::Normal =>
@@ -2780,6 +2786,7 @@ async fn run_loop(
                                 row as u32,
                                 col as u32,
                             ));
+                            state.lock().unwrap().open_hover_loading();
                         }
                     }
                     // `/`, `?`, `n`, `N` — all handled in the vim engine.
@@ -3189,6 +3196,8 @@ fn draw(
         draw_hover_table(f, area, state, table);
     } else if let Some(ref text) = state.hover_text {
         draw_hover_popup(f, area, state.hover_scroll, text);
+    } else if state.hover_loading {
+        draw_hover_loading(f, area);
     }
 
     // Connection switcher modal (top-level overlay)
@@ -5396,6 +5405,41 @@ fn draw_hover_table(
             .style(bg)
             .scroll((0, char_offset)),
         body_rect,
+    );
+}
+
+/// Loading placeholder rendered while the LSP hover response is in
+/// flight. Uses the same borderless `dialog_bg` chrome so the
+/// popup's footprint is consistent once content arrives.
+fn draw_hover_loading(f: &mut ratatui::Frame<'_>, area: Rect) {
+    if area.width < 20 || area.height < 5 {
+        return;
+    }
+    let u = ui();
+    let bg = Style::default().fg(u.dialog_fg).bg(u.dialog_bg);
+    let popup_w = 34u16.min(area.width.saturating_sub(4));
+    let popup_h = 3u16.min(area.height.saturating_sub(2));
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+        width: popup_w,
+        height: popup_h,
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(Block::default().style(bg), popup);
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("⏳ Loading hover…", bg.add_modifier(Modifier::BOLD)),
+            Span::styled("  (Esc to cancel)", bg),
+        ]))
+        .style(bg),
+        inner,
     );
 }
 

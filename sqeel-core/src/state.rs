@@ -388,6 +388,10 @@ pub struct AppState {
     /// Focus that was active when the hover grid opened. Esc restores
     /// it so the user lands back on whatever pane they were driving.
     pub hover_prev_focus: Option<Focus>,
+    /// True while the hover popup is awaiting the LSP response. Lets
+    /// the render path show a spinner instead of blank chrome when
+    /// the server takes a beat (common on first request / cold sqls).
+    pub hover_loading: bool,
     /// Height of the hover popup's body area (rows currently visible
     /// between the header separator and the popup's bottom padding).
     /// Published by the render path each frame so nav helpers can
@@ -1095,11 +1099,34 @@ impl AppState {
         })
     }
 
+    /// Open the hover popup in a loading state — focus transfers
+    /// immediately so the user can see the popup + cancel it with
+    /// `Esc` even before the LSP has answered. Payload-install paths
+    /// below overwrite the loading flag when the response arrives.
+    pub fn open_hover_loading(&mut self) {
+        // Don't stomp a previous hover_prev_focus if the user mashes K
+        // twice — keep the oldest so the eventual close still lands on
+        // the original pane.
+        if self.focus != Focus::Hover {
+            self.hover_prev_focus = Some(self.focus);
+        }
+        self.focus = Focus::Hover;
+        self.hover_loading = true;
+        self.hover_text = None;
+        self.hover_table = None;
+        self.hover_selection = None;
+        self.hover_scroll = 0;
+        self.hover_col_scroll = 0;
+    }
+
     /// Install a hover grid and switch focus to `Focus::Hover`. Stashes
     /// the previous focus so Esc can restore it.
     pub fn open_hover_table(&mut self, table: QueryResult) {
-        self.hover_prev_focus = Some(self.focus);
+        if self.focus != Focus::Hover {
+            self.hover_prev_focus = Some(self.focus);
+        }
         self.focus = Focus::Hover;
+        self.hover_loading = false;
         self.hover_cursor = ResultsCursor::Cell { row: 0, col: 0 };
         self.hover_selection = None;
         self.hover_scroll = 0;
@@ -1112,8 +1139,11 @@ impl AppState {
     /// popup is scrollable via `j` / `k` while focused, and `Esc`
     /// closes it.
     pub fn open_hover_text(&mut self, text: String) {
-        self.hover_prev_focus = Some(self.focus);
+        if self.focus != Focus::Hover {
+            self.hover_prev_focus = Some(self.focus);
+        }
         self.focus = Focus::Hover;
+        self.hover_loading = false;
         self.hover_text = Some(text);
         self.hover_table = None;
         self.hover_selection = None;
@@ -1124,6 +1154,7 @@ impl AppState {
     /// Close the hover popup and restore focus to wherever `K` was
     /// pressed. Clears both the text and table payloads.
     pub fn close_hover(&mut self) {
+        self.hover_loading = false;
         self.hover_text = None;
         self.hover_table = None;
         self.hover_selection = None;
