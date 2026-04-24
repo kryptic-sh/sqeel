@@ -282,28 +282,6 @@ pub enum ResultsCursor {
 /// cells, given `col_widths` (plus the 1-cell `│` separator between columns).
 /// Leaves `col_scroll` unchanged if already visible. Shared between results
 /// pane and hover popup so both clamp identically.
-/// Strip common inline markdown wrappers (backticks, asterisks,
-/// underscores) from a cell value so the raw value shows through in
-/// the hover grid. Only trims matched outer delimiters; inner
-/// occurrences are left alone so literal content survives.
-fn strip_md_inline(s: &str) -> String {
-    let mut out = s.trim();
-    loop {
-        let before = out;
-        for delim in ["``", "`", "**", "*", "__", "_"] {
-            if out.len() >= 2 * delim.len() && out.starts_with(delim) && out.ends_with(delim) {
-                out = &out[delim.len()..out.len() - delim.len()];
-                out = out.trim();
-                break;
-            }
-        }
-        if out == before {
-            break;
-        }
-    }
-    out.to_string()
-}
-
 pub(crate) fn scroll_cols_into_view_slice(
     col_widths: &[u16],
     col_scroll: &mut usize,
@@ -1028,65 +1006,77 @@ impl AppState {
         });
     }
 
-    /// Parse a GFM-style pipe table out of `text`. Accepts a single
-    /// header row (`| a | b |`), a separator row (`| --- | --- |`),
-    /// and any number of body rows. Returns `None` when no valid table
-    /// is found — callers then render the hover payload as styled
-    /// text instead. Computes column widths from cell contents so the
-    /// popup can size itself just like the results pane.
+    /// Parse the first GFM table found in a markdown hover payload.
+    /// Uses pulldown-cmark so emphasis, inline code, and link text
+    /// inside cells get flattened to their underlying text values
+    /// rather than leaking markdown delimiters into the grid.
     pub fn parse_hover_table(text: &str) -> Option<QueryResult> {
-        let mut lines_iter = text.lines().peekable();
-        // Skip leading blanks / non-table lines until we find a header
-        // row. Keep the rest intact so a mid-hover table is detected.
-        let mut header: Option<Vec<String>> = None;
-        while let Some(line) = lines_iter.next() {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('|') {
-                continue;
-            }
-            let sep = lines_iter.peek().map(|s| s.trim()).unwrap_or("");
-            let is_separator = sep.starts_with('|')
-                && sep.trim_matches('|').split('|').all(|c| {
-                    let t = c.trim();
-                    !t.is_empty() && t.chars().all(|ch| ch == '-' || ch == ':')
-                });
-            if !is_separator {
-                continue;
-            }
-            let cols: Vec<String> = trimmed
-                .trim_matches('|')
-                .split('|')
-                .map(|s| strip_md_inline(s.trim()))
-                .collect();
-            if cols.is_empty() {
-                continue;
-            }
-            header = Some(cols);
-            // Consume the separator row.
-            lines_iter.next();
-            break;
-        }
-        let columns = header?;
+        use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+        let mut opts = Options::empty();
+        opts.insert(Options::ENABLE_TABLES);
+        let mut parser = Parser::new_ext(text, opts);
+
+        let mut header: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<String>> = Vec::new();
-        for line in lines_iter {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('|') {
-                break;
+
+        // Walk events until we hit a Table start. Everything outside a
+        // table is ignored — callers use the full markdown path for
+        // non-tabular hover content.
+        loop {
+            match parser.next()? {
+                Event::Start(Tag::Table(_)) => break,
+                _ => continue,
             }
-            let cells: Vec<String> = trimmed
-                .trim_matches('|')
-                .split('|')
-                .map(|s| strip_md_inline(s.trim()))
-                .collect();
-            // Pad / truncate so every body row matches the column count.
-            let mut row = cells;
-            row.resize(columns.len(), String::new());
-            rows.push(row);
         }
-        if rows.is_empty() {
+
+        let mut in_head = false;
+        let mut current_row: Vec<String> = Vec::new();
+        let mut current_cell = String::new();
+        let mut in_cell = false;
+
+        for event in parser.by_ref() {
+            match event {
+                Event::Start(Tag::TableHead) => {
+                    in_head = true;
+                    current_row.clear();
+                }
+                Event::End(TagEnd::TableHead) => {
+                    // pulldown-cmark emits TableCells directly inside
+                    // TableHead (no wrapping TableRow), so we flush the
+                    // accumulated row here.
+                    header = std::mem::take(&mut current_row);
+                    in_head = false;
+                }
+                Event::Start(Tag::TableRow) => current_row.clear(),
+                Event::End(TagEnd::TableRow) => {
+                    rows.push(std::mem::take(&mut current_row));
+                }
+                Event::Start(Tag::TableCell) => {
+                    current_cell.clear();
+                    in_cell = true;
+                }
+                Event::End(TagEnd::TableCell) => {
+                    current_row.push(std::mem::take(&mut current_cell).trim().to_string());
+                    in_cell = false;
+                }
+                Event::Text(t) if in_cell => current_cell.push_str(&t),
+                Event::Code(t) if in_cell => current_cell.push_str(&t),
+                Event::SoftBreak | Event::HardBreak if in_cell => current_cell.push(' '),
+                Event::End(TagEnd::Table) => break,
+                _ => {}
+            }
+        }
+        // `in_head` is retained for potential future use (e.g. different
+        // cell trim rules); silence the unused-write warning until then.
+        let _ = in_head;
+
+        if header.is_empty() || rows.is_empty() {
             return None;
         }
-        let mut col_widths: Vec<u16> = columns
+        for row in &mut rows {
+            row.resize(header.len(), String::new());
+        }
+        let mut col_widths: Vec<u16> = header
             .iter()
             .map(|c| (c.chars().count() as u16).saturating_add(2))
             .collect();
@@ -1099,7 +1089,7 @@ impl AppState {
             }
         }
         Some(QueryResult {
-            columns,
+            columns: header,
             rows,
             col_widths,
         })

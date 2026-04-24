@@ -18,6 +18,10 @@ tokio = { version = "1", features = ["full"] }
 toml = "1.1.2"
 tree-sitter = "0.26.8"
 tree-sitter-sequel = "0.3.11"
+# Markdown parser for LSP hover payloads — sqls (and most servers)
+# return rich markdown; pulldown-cmark gives us GFM tables + the event
+# stream we use to build styled Lines in the TUI.
+pulldown-cmark = { version = "0.11", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"

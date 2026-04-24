@@ -5451,108 +5451,159 @@ fn draw_hover_popup(f: &mut ratatui::Frame<'_>, area: Rect, scroll: usize, text:
     );
 }
 
-/// Parse a hover response (plain text or light markdown) into styled
-/// ratatui lines. Handles: ATX headers (`#`, `##`, `###`), fenced code
-/// blocks (```lang ... ```), inline backticks, and `**bold**`. Anything
-/// we don't recognise is passed through verbatim so mangled input
-/// still reads as close to the original as possible.
+/// Render an LSP hover payload (markdown or plain text) as styled
+/// ratatui lines via pulldown-cmark. Handles headers, fenced code
+/// blocks, inline code, bold, italic, and blockquotes; everything else
+/// flattens to plain spans so the popup stays readable for arbitrary
+/// server output.
 fn format_hover_lines(text: &str) -> Vec<Line<'static>> {
+    use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
     let u = ui();
-    let header_style = Style::default()
+    let header1 = Style::default()
         .fg(u.dialog_border)
         .add_modifier(Modifier::BOLD);
-    let subheader_style = Style::default()
+    let header2 = Style::default()
         .fg(u.sql_keyword)
         .add_modifier(Modifier::BOLD);
     let code_style = Style::default().fg(u.sql_ident);
+    let bold_style = Style::default().add_modifier(Modifier::BOLD);
+    let italic_style = Style::default().add_modifier(Modifier::ITALIC);
+    let quote_style = Style::default()
+        .fg(u.sql_comment)
+        .add_modifier(Modifier::ITALIC);
+
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    let parser = Parser::new_ext(text, opts);
+
     let mut out: Vec<Line<'static>> = Vec::new();
-    let mut in_code = false;
-    for raw in text.lines() {
-        let line = raw.trim_end();
-        if let Some(rest) = line.strip_prefix("```") {
-            in_code = !in_code;
-            // Skip the fence marker itself; `rest` is the language tag
-            // (e.g. "sql") — discard it so it doesn't render as a
-            // dangling line.
-            let _ = rest;
-            continue;
+    let mut current: Vec<Span<'static>> = Vec::new();
+    // Active style overlay stack. Headings / blockquotes push a base
+    // style that applies to every text span emitted until the matching
+    // End event pops it; `bold` / `emph` / `code` layer on top.
+    let mut base_stack: Vec<Style> = Vec::new();
+    let mut span_stack: Vec<Style> = Vec::new();
+    let mut in_code_block = false;
+
+    let flush_line = |current: &mut Vec<Span<'static>>, out: &mut Vec<Line<'static>>| {
+        out.push(Line::from(std::mem::take(current)));
+    };
+    let active_style = |base_stack: &[Style], span_stack: &[Style]| -> Style {
+        // Right-most wins so inner emphasis overrides outer heading
+        // base. Patch each layer so partial styles (fg only, modifier
+        // only) compose instead of overwriting.
+        let mut acc = Style::default();
+        for s in base_stack {
+            acc = acc.patch(*s);
         }
-        if in_code {
-            out.push(Line::from(Span::styled(line.to_string(), code_style)));
-            continue;
+        for s in span_stack {
+            acc = acc.patch(*s);
         }
-        if let Some(rest) = line.strip_prefix("### ") {
-            out.push(Line::from(Span::styled(rest.to_string(), subheader_style)));
-            continue;
+        acc
+    };
+    let push_text = |text: &str,
+                     style: Style,
+                     current: &mut Vec<Span<'static>>,
+                     out: &mut Vec<Line<'static>>| {
+        // Newlines inside a text event (rare) still need to split the
+        // current line so wrapping works.
+        let mut parts = text.split('\n').peekable();
+        while let Some(chunk) = parts.next() {
+            if !chunk.is_empty() {
+                current.push(Span::styled(chunk.to_string(), style));
+            }
+            if parts.peek().is_some() {
+                flush_line(current, out);
+            }
         }
-        if let Some(rest) = line.strip_prefix("## ") {
-            out.push(Line::from(Span::styled(rest.to_string(), subheader_style)));
-            continue;
+    };
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                base_stack.push(match level {
+                    HeadingLevel::H1 => header1,
+                    _ => header2,
+                });
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                base_stack.pop();
+                flush_line(&mut current, &mut out);
+            }
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                flush_line(&mut current, &mut out);
+                out.push(Line::from(""));
+            }
+            Event::Start(Tag::BlockQuote(_)) => base_stack.push(quote_style),
+            Event::End(TagEnd::BlockQuote) => {
+                base_stack.pop();
+                flush_line(&mut current, &mut out);
+            }
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                base_stack.push(code_style);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                base_stack.pop();
+            }
+            Event::Start(Tag::Emphasis) => span_stack.push(italic_style),
+            Event::End(TagEnd::Emphasis) => {
+                span_stack.pop();
+            }
+            Event::Start(Tag::Strong) => span_stack.push(bold_style),
+            Event::End(TagEnd::Strong) => {
+                span_stack.pop();
+            }
+            Event::Text(t) => {
+                let st = active_style(&base_stack, &span_stack);
+                if in_code_block {
+                    // Code blocks emit a single Text with embedded
+                    // newlines; split them so each source line becomes
+                    // its own visual row.
+                    for (i, chunk) in t.split('\n').enumerate() {
+                        if i > 0 {
+                            flush_line(&mut current, &mut out);
+                        }
+                        if !chunk.is_empty() {
+                            current.push(Span::styled(chunk.to_string(), st));
+                        }
+                    }
+                } else {
+                    push_text(&t, st, &mut current, &mut out);
+                }
+            }
+            Event::Code(t) => {
+                current.push(Span::styled(t.into_string(), code_style));
+            }
+            Event::SoftBreak => current.push(Span::raw(" ")),
+            Event::HardBreak => flush_line(&mut current, &mut out),
+            Event::Rule => {
+                flush_line(&mut current, &mut out);
+                out.push(Line::from(Span::styled(
+                    "─".repeat(40),
+                    Style::default().fg(u.results_sep),
+                )));
+            }
+            _ => {}
         }
-        if let Some(rest) = line.strip_prefix("# ") {
-            out.push(Line::from(Span::styled(rest.to_string(), header_style)));
-            continue;
-        }
-        if line.is_empty() {
-            out.push(Line::from(""));
-            continue;
-        }
-        out.push(render_hover_inline(line, code_style));
+    }
+    if !current.is_empty() {
+        flush_line(&mut current, &mut out);
+    }
+    // Strip trailing blank lines so the popup sizes tightly.
+    while out
+        .last()
+        .is_some_and(|l| l.spans.iter().all(|s| s.content.is_empty()))
+    {
+        out.pop();
     }
     if out.is_empty() {
         out.push(Line::from(""));
     }
     out
-}
-
-/// Span-split a single line on inline markdown emphasis tokens:
-/// `` `code` `` (mono/identifier colour) and `**bold**` (bold modifier).
-/// Unmatched delimiters are rendered literally.
-fn render_hover_inline(line: &str, code_style: Style) -> Line<'static> {
-    let bold_style = Style::default().add_modifier(Modifier::BOLD);
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut buf = String::new();
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    let flush_plain = |buf: &mut String, spans: &mut Vec<Span<'static>>| {
-        if !buf.is_empty() {
-            spans.push(Span::raw(std::mem::take(buf)));
-        }
-    };
-    while i < bytes.len() {
-        // `**bold**`
-        if i + 1 < bytes.len()
-            && bytes[i] == b'*'
-            && bytes[i + 1] == b'*'
-            && let Some(end) = line[i + 2..].find("**")
-        {
-            flush_plain(&mut buf, &mut spans);
-            let text = &line[i + 2..i + 2 + end];
-            spans.push(Span::styled(text.to_string(), bold_style));
-            i += 2 + end + 2;
-            continue;
-        }
-        // `` `code` ``
-        if bytes[i] == b'`'
-            && let Some(end) = line[i + 1..].find('`')
-        {
-            flush_plain(&mut buf, &mut spans);
-            let text = &line[i + 1..i + 1 + end];
-            spans.push(Span::styled(text.to_string(), code_style));
-            i += 1 + end + 1;
-            continue;
-        }
-        // Fall-through: copy one full UTF-8 char — ranging forward to
-        // the next char boundary so multi-byte sequences stay intact.
-        let mut end = i + 1;
-        while end < bytes.len() && !line.is_char_boundary(end) {
-            end += 1;
-        }
-        buf.push_str(&line[i..end]);
-        i = end;
-    }
-    flush_plain(&mut buf, &mut spans);
-    Line::from(spans)
 }
 
 fn draw_completions(
@@ -6080,8 +6131,8 @@ fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect)
 
 #[cfg(test)]
 mod tests {
-    use super::{CommentBody, comment_body_from_line, format_hover_lines, render_hover_inline};
-    use ratatui::style::{Modifier, Style};
+    use super::{CommentBody, comment_body_from_line, format_hover_lines};
+    use ratatui::style::Modifier;
     use sqeel_core::{
         AppState,
         state::{Focus, QueryResult},
@@ -6687,32 +6738,50 @@ mod tests {
                     .join("")
             })
             .collect();
-        assert_eq!(joined, vec!["before", "SELECT 1", "after"]);
+        // Fence markers themselves must not appear in rendered lines.
+        assert!(joined.iter().all(|l| !l.contains("```")));
+        assert!(joined.iter().any(|l| l == "SELECT 1"));
+        assert!(joined.first().is_some_and(|l| l == "before"));
+        assert!(joined.last().is_some_and(|l| l == "after"));
     }
 
     #[test]
-    fn hover_inline_splits_backtick_code() {
-        let line = render_hover_inline("text `code` more", Style::default());
-        let contents: Vec<String> = line.spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(contents.iter().any(|c| c == "code"));
-    }
-
-    #[test]
-    fn hover_inline_splits_bold() {
-        let line = render_hover_inline("a **bold** b", Style::default());
-        let bold_span = line
-            .spans
+    fn hover_formatter_splits_inline_code() {
+        let lines = format_hover_lines("text `code` more");
+        let joined: String = lines
             .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(joined.contains("code"));
+        // Inline code span carries the code style's fg — it must be
+        // a distinct span, not concatenated with the surrounding text.
+        let has_code_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content == "code" && s.style.fg.is_some());
+        assert!(has_code_span);
+    }
+
+    #[test]
+    fn hover_formatter_emits_bold_span() {
+        let lines = format_hover_lines("a **bold** b");
+        let bold_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
             .find(|s| s.content == "bold")
             .expect("bold span present");
         assert!(bold_span.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn hover_inline_handles_unicode_chars() {
-        // Unicode fall-through path must preserve multi-byte chars.
-        let line = render_hover_inline("tablé", Style::default());
-        let joined: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(joined, "tablé");
+    fn hover_formatter_preserves_unicode() {
+        let lines = format_hover_lines("tablé");
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(joined.contains("tablé"));
     }
 }
