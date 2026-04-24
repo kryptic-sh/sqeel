@@ -325,13 +325,24 @@ impl Highlighter {
 fn collect_parse_errors(node: Node, source: &str, dialect: Dialect, out: &mut Vec<ParseError>) {
     if node.is_error() || node.is_missing() {
         let start_byte = node.start_byte();
-        let end_byte = node.end_byte().max(start_byte + 1).min(source.len());
-        if end_byte > start_byte
-            && let Some(slice) = source.get(start_byte..end_byte)
-            && !dialect.is_native_statement(slice.trim_start())
+        let raw_end = node.end_byte().max(start_byte + 1).min(source.len());
+        if raw_end > start_byte
+            && let Some(raw_slice) = source.get(start_byte..raw_end)
+            && !dialect.is_native_statement(raw_slice.trim_start())
         {
+            // Clamp multi-row error nodes to just the first row — tree-
+            // sitter's recovery often swallows several following
+            // statements into one ERROR span, which would leak the
+            // diagnostic underline across unrelated lines.
             let start = node.start_position();
-            let end = node.end_position();
+            let line_end_byte = source[start_byte..raw_end]
+                .find('\n')
+                .map(|off| start_byte + off)
+                .unwrap_or(raw_end);
+            let end_byte = line_end_byte;
+            let Some(slice) = source.get(start_byte..end_byte) else {
+                return;
+            };
             let kind = node.kind();
             let message = if node.is_missing() {
                 if kind.is_empty() {
@@ -340,7 +351,7 @@ fn collect_parse_errors(node: Node, source: &str, dialect: Dialect, out: &mut Ve
                     format!("missing `{kind}`")
                 }
             } else {
-                let snippet = slice.lines().next().unwrap_or("").trim();
+                let snippet = slice.trim();
                 if snippet.is_empty() {
                     "unexpected token".to_string()
                 } else {
@@ -348,13 +359,17 @@ fn collect_parse_errors(node: Node, source: &str, dialect: Dialect, out: &mut Ve
                     format!("unexpected `{trimmed}`")
                 }
             };
+            // Derive the end column from the clamped byte slice so the
+            // underline matches what we're reporting, not tree-sitter's
+            // original multi-row span.
+            let end_col = start.column + slice.chars().count();
             out.push(ParseError {
                 start_byte,
                 end_byte,
                 start_row: start.row,
                 start_col: start.column,
-                end_row: end.row,
-                end_col: end.column,
+                end_row: start.row,
+                end_col,
                 message,
             });
             // Don't descend into an error node — its children are
@@ -1085,6 +1100,25 @@ mod tests {
             h.last_errors().is_empty(),
             "valid SQL should leave no lingering errors"
         );
+    }
+
+    #[test]
+    fn parse_error_clamped_to_single_row() {
+        // The junk "this line should error ..." is followed by valid
+        // DESC statements. tree-sitter often balls them into one big
+        // ERROR span; we must clamp so the underline stays on row 0,
+        // not leak across the whole block.
+        let mut h = Highlighter::new().unwrap();
+        let src = "this line should error this is a test;\nDESC users;\nDESC users;\n";
+        h.highlight(src, Dialect::MySql);
+        let errs = h.last_errors();
+        assert!(!errs.is_empty(), "expected a parse error; got none");
+        for e in errs {
+            assert_eq!(
+                e.start_row, e.end_row,
+                "parse error span crosses rows: {e:?}"
+            );
+        }
     }
 
     #[test]
