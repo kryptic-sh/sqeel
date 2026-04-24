@@ -18,6 +18,8 @@ fn next_id() -> i64 {
 pub struct Diagnostic {
     pub line: u32,
     pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
     pub message: String,
     pub severity: DiagnosticSeverity,
 }
@@ -262,6 +264,8 @@ async fn read_loop(mut reader: BufReader<ChildStdout>, tx: mpsc::Sender<LspEvent
                 .map(|d| Diagnostic {
                     line: d.range.start.line,
                     col: d.range.start.character,
+                    end_line: d.range.end.line,
+                    end_col: d.range.end.character,
                     message: d.message,
                     severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
                 })

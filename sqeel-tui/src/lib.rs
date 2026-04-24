@@ -363,6 +363,7 @@ async fn run_loop(
     // when the cursor line or insert-mode flips, without re-parsing.
     let mut last_highlight_result: Option<HighlightResult> = None;
     let mut last_marker_cursor_row: usize = usize::MAX;
+    let mut last_marker_diag_len: usize = usize::MAX;
     let mut doc_version: i32 = 0;
     // Buffers larger than this are not streamed to the LSP — sqls (and most
     // SQL LSPs) re-parse the whole document on every `didChange` and balloon
@@ -528,22 +529,40 @@ async fn run_loop(
             if let Some(result) = highlight_thread.try_recv() {
                 let row_count = editor.textarea.lines().len();
                 let cursor_row = editor.textarea.cursor().0;
-                apply_window_spans(&mut editor.textarea, &result, row_count, cursor_row);
+                let diagnostics = s.lsp_diagnostics.clone();
+                apply_window_spans(
+                    &mut editor.textarea,
+                    &result,
+                    row_count,
+                    cursor_row,
+                    &diagnostics,
+                );
                 s.set_highlights(result.spans.clone());
                 last_highlight_result = Some(result);
                 last_marker_cursor_row = cursor_row;
+                last_marker_diag_len = diagnostics.len();
                 needs_redraw = true;
             } else {
-                // Cursor moved onto a different row: re-apply the cached
-                // highlight so the cursor-line WORD blending updates
+                // Cursor moved onto a different row OR diagnostics
+                // changed: re-apply the cached highlight so the cursor
+                // -line blending and diagnostic underlines update
                 // without paying another tree-sitter parse.
                 let cursor_row = editor.textarea.cursor().0;
-                if cursor_row != last_marker_cursor_row
+                let diagnostics_len = s.lsp_diagnostics.len();
+                if (cursor_row != last_marker_cursor_row || diagnostics_len != last_marker_diag_len)
                     && let Some(result) = last_highlight_result.as_ref()
                 {
                     let row_count = editor.textarea.lines().len();
-                    apply_window_spans(&mut editor.textarea, result, row_count, cursor_row);
+                    let diagnostics = s.lsp_diagnostics.clone();
+                    apply_window_spans(
+                        &mut editor.textarea,
+                        result,
+                        row_count,
+                        cursor_row,
+                        &diagnostics,
+                    );
                     last_marker_cursor_row = cursor_row;
+                    last_marker_diag_len = diagnostics_len;
                     needs_redraw = true;
                 }
             }
@@ -3782,6 +3801,7 @@ fn apply_window_spans(
     result: &HighlightResult,
     buffer_rows: usize,
     cursor_row: usize,
+    diagnostics: &[sqeel_core::lsp::Diagnostic],
 ) {
     let mut by_row = textarea.take_syntax_spans();
     if by_row.len() < buffer_rows {
@@ -3871,6 +3891,12 @@ fn apply_window_spans(
         let comments = &comment_ranges_by_row[row];
         active_color =
             apply_marker_overlay(row_spans, line, comments, active_color, on_cursor_line);
+    }
+    // LSP diagnostic underlines. Applied last so the underline stacks
+    // on top of the keyword / marker overlays; we preserve the existing
+    // span's fg and just layer on an error-coloured underline.
+    for d in diagnostics {
+        apply_diagnostic_underline(&mut by_row, d, textarea_lines, buffer_rows);
     }
     // Sort each touched row so `line_spans` sees them in start-byte order.
     for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
@@ -4104,6 +4130,97 @@ fn find_comment_markers(line: &str) -> Vec<(usize, usize, Style)> {
     apply_marker_overlay(&mut row, line, &comments, None, false);
     row.sort_by_key(|&(s, _, _)| s);
     row
+}
+
+/// Layer an LSP diagnostic's error / warning underline onto `by_row`
+/// at the diagnostic's range. Existing spans in the range are split
+/// and their fg preserved — we only add the `UNDERLINED` modifier and
+/// paint the underline colour with the diagnostic severity colour, so
+/// keyword / marker colouring inside the range still renders.
+fn apply_diagnostic_underline(
+    by_row: &mut [Vec<(usize, usize, Style)>],
+    d: &sqeel_core::lsp::Diagnostic,
+    lines: &[String],
+    buffer_rows: usize,
+) {
+    let u = ui();
+    let color = match d.severity {
+        lsp_types::DiagnosticSeverity::ERROR => u.status_diag_error,
+        lsp_types::DiagnosticSeverity::WARNING => u.status_diag_warning,
+        _ => return,
+    };
+    let start_row = d.line as usize;
+    let end_row = d.end_line as usize;
+    if start_row >= buffer_rows {
+        return;
+    }
+    let stop = end_row.min(buffer_rows.saturating_sub(1));
+    for (row, row_spans) in by_row.iter_mut().enumerate().take(stop + 1).skip(start_row) {
+        let line_len = lines.get(row).map(|l| l.len()).unwrap_or(0);
+        let start_col = if row == start_row { d.col as usize } else { 0 };
+        let mut end_col = if row == end_row {
+            d.end_col as usize
+        } else {
+            line_len
+        };
+        // Zero-width ranges (LSP sometimes emits those) need to
+        // highlight *something* — fall back to `start_col..line_end`,
+        // clamped to at least one cell.
+        if end_col <= start_col {
+            end_col = line_len.max(start_col + 1);
+        }
+        end_col = end_col.min(line_len.max(start_col + 1));
+        if start_col >= end_col {
+            continue;
+        }
+        merge_underline(row_spans, start_col, end_col, color);
+    }
+}
+
+/// Split `row` at `[start, end)` boundaries, adding `UNDERLINED`
+/// modifier + `underline_color = color` to the overlap region of
+/// each existing span. Uncovered bytes in `[start, end)` get a bare
+/// underline span using `color` as both fg and underline colour.
+fn merge_underline(row: &mut Vec<(usize, usize, Style)>, start: usize, end: usize, color: Color) {
+    let mut out: Vec<(usize, usize, Style)> = Vec::with_capacity(row.len() + 4);
+    let mut overlap_ranges: Vec<(usize, usize)> = Vec::new();
+    for &(s, e, sty) in row.iter() {
+        if e <= start || s >= end {
+            out.push((s, e, sty));
+            continue;
+        }
+        if s < start {
+            out.push((s, start, sty));
+        }
+        let olap_s = s.max(start);
+        let olap_e = e.min(end);
+        let merged = sty
+            .add_modifier(Modifier::UNDERLINED)
+            .underline_color(color);
+        out.push((olap_s, olap_e, merged));
+        overlap_ranges.push((olap_s, olap_e));
+        if e > end {
+            out.push((end, e, sty));
+        }
+    }
+    // Fill gaps in [start, end) uncovered by any existing span.
+    overlap_ranges.sort_by_key(|&(s, _)| s);
+    let bare = Style::default()
+        .fg(color)
+        .add_modifier(Modifier::UNDERLINED)
+        .underline_color(color);
+    let mut cursor = start;
+    for (s, e) in overlap_ranges {
+        if s > cursor {
+            out.push((cursor, s, bare));
+        }
+        cursor = cursor.max(e);
+    }
+    if cursor < end {
+        out.push((cursor, end, bare));
+    }
+    out.sort_by_key(|&(s, _, _)| s);
+    *row = out;
 }
 
 /// Insert a marker span `[ms, me)` with `style` into `row`, trimming /
@@ -4710,6 +4827,8 @@ mod tests {
         s.set_diagnostics(vec![Diagnostic {
             line: 0,
             col: 5,
+            end_line: 0,
+            end_col: 10,
             message: "unexpected token".into(),
             severity: DiagnosticSeverity::ERROR,
         }]);
@@ -4974,6 +5093,86 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_underline_marks_range_and_preserves_fg() {
+        use ratatui::style::{Color, Modifier, Style};
+        use sqeel_core::lsp::Diagnostic;
+        let _ = super::theme::load();
+
+        let blue = Color::Rgb(10, 20, 30);
+        let mut row: Vec<(usize, usize, Style)> = vec![(0, 10, Style::default().fg(blue))];
+        let by_row = std::slice::from_mut(&mut row);
+        let diag = Diagnostic {
+            line: 0,
+            col: 2,
+            end_line: 0,
+            end_col: 7,
+            message: "nope".into(),
+            severity: lsp_types::DiagnosticSeverity::ERROR,
+        };
+        let lines = vec!["SELECT * x;".to_string()];
+        super::apply_diagnostic_underline(by_row, &diag, &lines, 1);
+
+        let overlap = row
+            .iter()
+            .find(|&&(s, e, _)| s == 2 && e == 7)
+            .expect("overlap span missing");
+        assert_eq!(overlap.2.fg, Some(blue), "overlap lost its fg");
+        assert!(
+            overlap.2.add_modifier.contains(Modifier::UNDERLINED),
+            "overlap missing UNDERLINED modifier"
+        );
+    }
+
+    #[test]
+    fn diagnostic_underline_paints_gap_when_no_existing_spans() {
+        use ratatui::style::{Modifier, Style};
+        use sqeel_core::lsp::Diagnostic;
+        let _ = super::theme::load();
+
+        let mut row: Vec<(usize, usize, Style)> = Vec::new();
+        let by_row = std::slice::from_mut(&mut row);
+        let diag = Diagnostic {
+            line: 0,
+            col: 3,
+            end_line: 0,
+            end_col: 8,
+            message: "nope".into(),
+            severity: lsp_types::DiagnosticSeverity::ERROR,
+        };
+        let lines = vec!["some random text".to_string()];
+        super::apply_diagnostic_underline(by_row, &diag, &lines, 1);
+
+        let u = super::theme::ui();
+        let span = row
+            .iter()
+            .find(|&&(s, e, _)| s == 3 && e == 8)
+            .expect("bare diagnostic span missing");
+        assert_eq!(span.2.fg, Some(u.status_diag_error));
+        assert!(span.2.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn diagnostic_underline_zero_width_range_falls_back() {
+        use ratatui::style::Style;
+        use sqeel_core::lsp::Diagnostic;
+        let _ = super::theme::load();
+
+        let mut row: Vec<(usize, usize, Style)> = Vec::new();
+        let by_row = std::slice::from_mut(&mut row);
+        let diag = Diagnostic {
+            line: 0,
+            col: 5,
+            end_line: 0,
+            end_col: 5,
+            message: "nope".into(),
+            severity: lsp_types::DiagnosticSeverity::ERROR,
+        };
+        let lines = vec!["hello world".to_string()];
+        super::apply_diagnostic_underline(by_row, &diag, &lines, 1);
+        assert!(!row.is_empty(), "zero-width diag produced no spans");
+    }
+
+    #[test]
     fn overlay_splits_outer_span_around_marker() {
         use ratatui::style::Style;
         let base = Style::default();
@@ -5034,7 +5233,7 @@ mod tests {
         };
 
         let mut ta = tui_textarea::TextArea::new(lines);
-        super::apply_window_spans(&mut ta, &result, row_count, 0);
+        super::apply_window_spans(&mut ta, &result, row_count, 0, &[]);
         let by_row = ta.take_syntax_spans();
 
         let keyword_style =
@@ -5094,7 +5293,7 @@ mod tests {
         };
 
         let mut ta = tui_textarea::TextArea::new(lines);
-        super::apply_window_spans(&mut ta, &result, row_count, 0);
+        super::apply_window_spans(&mut ta, &result, row_count, 0, &[]);
         let by_row = ta.take_syntax_spans();
 
         // Row 21 and row 23 each hold `DESC users;`. Both should have
