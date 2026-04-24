@@ -96,10 +96,14 @@ impl Dialect {
         }
     }
 
-    /// True iff `text` (any case) is one of this dialect's extra keywords.
+    /// True iff `text` (any case) is one of this dialect's extra keywords
+    /// OR a native-statement-start keyword. Both groups drive the same
+    /// post-parse promotion so `DESC`, `SHOW`, `PRAGMA`, … render as
+    /// keywords even though tree-sitter-sequel doesn't emit them as such.
     fn is_extra_keyword(self, text: &str) -> bool {
         self.extra_keywords()
             .iter()
+            .chain(self.native_statement_starts().iter())
             .any(|kw| kw.eq_ignore_ascii_case(text))
     }
 
@@ -756,6 +760,17 @@ mod tests {
         assert!(Dialect::MySql.is_extra_keyword("AUTO_INCREMENT"));
         assert!(Dialect::Postgres.is_extra_keyword("ilike"));
         assert!(!Dialect::MySql.is_extra_keyword("ilike"));
+    }
+
+    #[test]
+    fn native_statement_starts_also_promote_to_keyword() {
+        // DESC / SHOW / PRAGMA aren't in `extra_keywords` but still need
+        // keyword styling — covered via the chained native-start list.
+        assert!(Dialect::MySql.is_extra_keyword("DESC"));
+        assert!(Dialect::MySql.is_extra_keyword("SHOW"));
+        assert!(Dialect::Sqlite.is_extra_keyword("PRAGMA"));
+        assert!(Dialect::Postgres.is_extra_keyword("LISTEN"));
+        assert!(!Dialect::Postgres.is_extra_keyword("DESC")); // MySQL-only
     }
 
     #[test]
