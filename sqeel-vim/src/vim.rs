@@ -125,6 +125,14 @@ enum Pending {
     VisualTextObj { inner: bool },
     /// Bare `z` seen — looking for `z` (center), `t` (top), `b` (bottom).
     Z,
+    /// `m` pressed — waiting for the mark letter to set.
+    SetMark,
+    /// `'` pressed — waiting for the mark letter to jump to its line
+    /// (lands on first non-blank, linewise for operators).
+    GotoMarkLine,
+    /// `` ` `` pressed — waiting for the mark letter to jump to the
+    /// exact `(row, col)` stored at set time (charwise for operators).
+    GotoMarkChar,
 }
 
 // ─── Operator / Motion / TextObject ────────────────────────────────────────
@@ -328,6 +336,11 @@ pub struct VimState {
     /// Forward half — `Ctrl-i` pops from here. Cleared by any new big
     /// jump, matching vim's "branch off trims forward history" rule.
     pub(super) jump_fwd: Vec<(usize, usize)>,
+    /// Buffer-local lowercase marks. `m{a-z}` stores the current
+    /// cursor `(row, col)` under the letter; `'{a-z}` and `` `{a-z} ``
+    /// read it back. Uppercase / global marks aren't supported
+    /// (single-buffer model).
+    pub(super) marks: std::collections::HashMap<char, (usize, usize)>,
 }
 
 /// Active `/` or `?` search prompt. Text mutations drive the textarea's
@@ -726,6 +739,9 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
             return handle_visual_text_obj(ed, input, inner);
         }
         Pending::Z => return handle_after_z(ed, input),
+        Pending::SetMark => return handle_set_mark(ed, input),
+        Pending::GotoMarkLine => return handle_goto_mark(ed, input, true),
+        Pending::GotoMarkChar => return handle_goto_mark(ed, input, false),
         Pending::None => {}
     }
 
@@ -951,7 +967,62 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         return true;
     }
 
+    // Mark set / jump entries. `m` arms the set-mark pending state;
+    // `'` and `` ` `` arm the goto states (linewise vs charwise). The
+    // mark letter is consumed on the next keystroke.
+    if !input.ctrl && ed.vim.mode == Mode::Normal {
+        match input.key {
+            Key::Char('m') => {
+                ed.vim.pending = Pending::SetMark;
+                return true;
+            }
+            Key::Char('\'') => {
+                ed.vim.pending = Pending::GotoMarkLine;
+                return true;
+            }
+            Key::Char('`') => {
+                ed.vim.pending = Pending::GotoMarkChar;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // Unknown key — swallow so it doesn't bubble into the TUI layer.
+    true
+}
+
+fn handle_set_mark(ed: &mut Editor<'_>, input: Input) -> bool {
+    if let Key::Char(c) = input.key
+        && c.is_ascii_lowercase()
+    {
+        ed.vim.marks.insert(c, ed.textarea.cursor());
+    }
+    true
+}
+
+fn handle_goto_mark(ed: &mut Editor<'_>, input: Input, linewise: bool) -> bool {
+    let Key::Char(c) = input.key else {
+        return true;
+    };
+    if !c.is_ascii_lowercase() {
+        return true;
+    }
+    let Some(&(row, col)) = ed.vim.marks.get(&c) else {
+        return true;
+    };
+    let pre = ed.textarea.cursor();
+    let (r, c_clamped) = clamp_pos(ed, (row, col));
+    if linewise {
+        ed.textarea.move_cursor(CursorMove::Jump(r, 0));
+        move_first_non_whitespace(ed);
+    } else {
+        ed.textarea.move_cursor(CursorMove::Jump(r, c_clamped));
+    }
+    if ed.textarea.cursor() != pre {
+        push_jump(ed, pre);
+    }
+    ed.vim.sticky_col = Some(ed.textarea.cursor().1);
     true
 }
 
@@ -5437,5 +5508,71 @@ mod tests {
         run_keys(&mut e, "<C-o>");
         e.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(e.textarea.cursor(), post);
+    }
+
+    // ─── Mark tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn ma_then_backtick_a_jumps_exact() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 3));
+        run_keys(&mut e, "ma");
+        e.textarea.move_cursor(CursorMove::Jump(20, 0));
+        run_keys(&mut e, "`a");
+        assert_eq!(e.textarea.cursor(), (5, 3));
+    }
+
+    #[test]
+    fn ma_then_apostrophe_a_lands_on_first_non_blank() {
+        let mut e = editor_with_rows(50, 20);
+        // "  line5" — first non-blank is col 2.
+        e.textarea.move_cursor(CursorMove::Jump(5, 6));
+        run_keys(&mut e, "ma");
+        e.textarea.move_cursor(CursorMove::Jump(30, 4));
+        run_keys(&mut e, "'a");
+        assert_eq!(e.textarea.cursor(), (5, 2));
+    }
+
+    #[test]
+    fn goto_mark_pushes_jumplist() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(10, 2));
+        run_keys(&mut e, "mz");
+        e.textarea.move_cursor(CursorMove::Jump(3, 0));
+        run_keys(&mut e, "`z");
+        assert_eq!(e.textarea.cursor(), (10, 2));
+        run_keys(&mut e, "<C-o>");
+        assert_eq!(e.textarea.cursor(), (3, 0));
+    }
+
+    #[test]
+    fn goto_missing_mark_is_noop() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(3, 1));
+        run_keys(&mut e, "`q");
+        assert_eq!(e.textarea.cursor(), (3, 1));
+    }
+
+    #[test]
+    fn uppercase_mark_letter_ignored() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 3));
+        run_keys(&mut e, "mA");
+        // Uppercase marks aren't supported — entry bailed, nothing
+        // stored under 'a' or 'A'.
+        assert!(e.vim.marks.is_empty());
+    }
+
+    #[test]
+    fn mark_survives_document_shrink_via_clamp() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(40, 4));
+        run_keys(&mut e, "mx");
+        // Shrink the buffer to 10 rows.
+        e.set_content("a\nb\nc\nd\ne");
+        run_keys(&mut e, "`x");
+        // Mark clamped to last row, col 0 (short line).
+        let (r, _) = e.textarea.cursor();
+        assert!(r <= 4);
     }
 }
