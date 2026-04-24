@@ -1009,7 +1009,17 @@ async fn run_loop(
                     }
                     LspEvent::Hover(id, text) => {
                         if Some(id) == last_hover_id {
-                            state.lock().unwrap().hover_text = Some(text);
+                            let mut s = state.lock().unwrap();
+                            // Prefer the tabular rendering when the
+                            // payload parses as a pipe table — that
+                            // path also shifts focus into the popup so
+                            // the user can copy cells. Fall back to
+                            // the markdown-styled text view otherwise.
+                            if let Some(table) = AppState::parse_hover_table(&text) {
+                                s.open_hover_table(table);
+                            } else {
+                                s.hover_text = Some(text);
+                            }
                             needs_redraw = true;
                         }
                     }
@@ -1423,6 +1433,11 @@ async fn run_loop(
                                     drop(s);
                                     editor.scroll_down(mouse_scroll_lines as i16);
                                 }
+                                Focus::Hover => {
+                                    for _ in 0..mouse_scroll_lines {
+                                        s.hover_cursor_move(1, 0);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1445,6 +1460,11 @@ async fn run_loop(
                                 Focus::Editor => {
                                     drop(s);
                                     editor.scroll_up(mouse_scroll_lines as i16);
+                                }
+                                Focus::Hover => {
+                                    for _ in 0..mouse_scroll_lines {
+                                        s.hover_cursor_move(-1, 0);
+                                    }
                                 }
                             }
                         }
@@ -1476,11 +1496,16 @@ async fn run_loop(
                 }
             }
             Event::Key(key) => {
-                // Hover popup is one-shot — the next key dismisses it.
-                // Clear first so a stale popup doesn't linger over the
-                // new cursor position. `needs_redraw` is already true
-                // for the iteration (any event sets it).
-                state.lock().unwrap().hover_text.take();
+                // Text-form hover popup is one-shot — the next key
+                // dismisses it. The table-form popup (Focus::Hover)
+                // stays live until the user presses Esc, so don't
+                // touch it here.
+                {
+                    let mut s = state.lock().unwrap();
+                    if s.focus != Focus::Hover {
+                        s.hover_text.take();
+                    }
+                }
                 // Ctrl-C while a query / batch is running cancels the
                 // current query and skips any remaining ones in the
                 // batch. Falls through to the regular handler
@@ -2228,6 +2253,85 @@ async fn run_loop(
                         results_count = results_count
                             .saturating_mul(10)
                             .saturating_add((c as u8 - b'0') as usize);
+                    }
+                    // ── Hover popup (Focus::Hover) — grid nav + yank ─────
+                    (KeyModifiers::NONE, KeyCode::Esc) if focus == Focus::Hover => {
+                        state.lock().unwrap().close_hover();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down)
+                        if focus == Focus::Hover =>
+                    {
+                        state.lock().unwrap().hover_cursor_move(1, 0);
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up)
+                        if focus == Focus::Hover =>
+                    {
+                        state.lock().unwrap().hover_cursor_move(-1, 0);
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('l') | KeyCode::Right)
+                        if focus == Focus::Hover =>
+                    {
+                        state.lock().unwrap().hover_cursor_move(0, 1);
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('h') | KeyCode::Left)
+                        if focus == Focus::Hover =>
+                    {
+                        state.lock().unwrap().hover_cursor_move(0, -1);
+                    }
+                    (KeyModifiers::SHIFT, KeyCode::Char('G'))
+                    | (KeyModifiers::NONE, KeyCode::Char('G'))
+                        if focus == Focus::Hover =>
+                    {
+                        state
+                            .lock()
+                            .unwrap()
+                            .hover_cursor_edge(sqeel_core::state::HoverEdge::LastRow);
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('g')) if focus == Focus::Hover => {
+                        // `gg` — repurpose the results-pane chord tracker
+                        // since only one pane is ever focused at a time.
+                        if results_g_pending {
+                            state
+                                .lock()
+                                .unwrap()
+                                .hover_cursor_edge(sqeel_core::state::HoverEdge::FirstRow);
+                            results_g_pending = false;
+                        } else {
+                            results_g_pending = true;
+                        }
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('0')) if focus == Focus::Hover => {
+                        state
+                            .lock()
+                            .unwrap()
+                            .hover_cursor_edge(sqeel_core::state::HoverEdge::RowStart);
+                    }
+                    (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char('$'))
+                        if focus == Focus::Hover =>
+                    {
+                        state
+                            .lock()
+                            .unwrap()
+                            .hover_cursor_edge(sqeel_core::state::HoverEdge::RowEnd);
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('y')) if focus == Focus::Hover => {
+                        let yanked = state.lock().unwrap().hover_yank();
+                        if let Some((text, label)) = yanked {
+                            let ok = clipboard.set_text(&text);
+                            toasts.push((
+                                if ok {
+                                    format!("{label} copied to clipboard")
+                                } else {
+                                    format!("{label}: clipboard copy failed (too large)")
+                                },
+                                if ok {
+                                    ToastKind::Info
+                                } else {
+                                    ToastKind::Error
+                                },
+                                std::time::Instant::now(),
+                            ));
+                        }
                     }
                     // Results pane navigation. Arrow keys mirror hjkl.
                     (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down)
@@ -3014,8 +3118,12 @@ fn draw(
     }
 
     // Hover popup (LSP `K`). Rendered after completions so a stale
-    // completion list doesn't sit on top of a fresh hover.
-    if let Some(ref text) = state.hover_text {
+    // completion list doesn't sit on top of a fresh hover. Tabular
+    // responses get a focus-in grid; plain markdown goes to the styled
+    // text view.
+    if let Some(ref table) = state.hover_table {
+        draw_hover_table(f, right_chunks[0], state, table);
+    } else if let Some(ref text) = state.hover_text {
         let (cur_row, cur_col) = editor.textarea.cursor();
         let top_row = editor.textarea.viewport_top_row();
         let top_col = editor.textarea.viewport_top_col();
@@ -3989,61 +4097,26 @@ fn draw_results(
                 _ => None,
             };
 
-            let build_header = || -> Line<'static> {
-                let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
-                for (i, c) in r.columns.iter().enumerate() {
-                    let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
-                    let inner = w.saturating_sub(1);
-                    let mut st = header_style;
-                    if cursor == Some(ResultsCursor::Header(i)) {
-                        st = st.bg(cursor_bg);
-                    }
-                    spans.push(Span::styled(format!(" {:<inner$}", c, inner = inner), st));
-                    if i + 1 < r.columns.len() {
-                        spans.push(Span::styled("│".to_string(), sep_style));
-                    }
-                }
-                Line::from(spans)
-            };
-
             let selection_bounds = state.results_selection_bounds();
-            let build_row = |row_idx: usize, row: &Vec<String>| -> Line<'static> {
-                let mut spans: Vec<Span<'static>> = Vec::with_capacity(r.columns.len() * 2);
-                for i in 0..r.columns.len() {
-                    let w = r.col_widths.get(i).copied().unwrap_or(0) as usize;
-                    let inner = w.saturating_sub(1);
-                    let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
-                    let text = format!(" {:<inner$}", cell, inner = inner);
-                    let is_cursor = cursor_row == Some(row_idx) && active_col == Some(i);
-                    let is_selected = selection_bounds.is_some_and(|(t, b, l, rr)| {
-                        row_idx >= t && row_idx <= b && i >= l && i <= rr
-                    });
-                    let bg_style = if is_cursor {
-                        Some(cursor_bg)
-                    } else if is_selected {
-                        Some(col_bg)
-                    } else {
-                        None
-                    };
-                    if let Some(bg) = bg_style {
-                        spans.push(Span::styled(text, Style::default().bg(bg)));
-                    } else {
-                        spans.push(Span::raw(text));
-                    }
-                    if i + 1 < r.columns.len() {
-                        spans.push(Span::styled("│".to_string(), sep_style));
-                    }
-                }
-                Line::from(spans)
+            let header_cursor_col = if matches!(cursor, Some(ResultsCursor::Header(_))) {
+                active_col
+            } else {
+                None
             };
-
-            let body_lines: Vec<Line<'static>> = r
-                .rows
-                .iter()
-                .enumerate()
-                .skip(state.results_scroll())
-                .map(|(i, row)| build_row(i, row))
-                .collect();
+            let (header_line, body_lines) = render_grid_lines(
+                &r.columns,
+                &r.rows,
+                &r.col_widths,
+                cursor_row,
+                active_col,
+                header_cursor_col,
+                selection_bounds,
+                state.results_scroll(),
+                header_style,
+                sep_style,
+                cursor_bg,
+                col_bg,
+            );
 
             let mut query_line = highlight_query_line(&query_text, state.active_dialect);
             if cursor == Some(ResultsCursor::Query) {
@@ -4082,7 +4155,7 @@ fn draw_results(
             f.render_widget(Paragraph::new(query_line), chunks[3]);
             f.render_widget(Paragraph::new(hr.clone()).style(sep_style), chunks[4]);
             f.render_widget(
-                Paragraph::new(build_header()).scroll((0, char_offset)),
+                Paragraph::new(header_line).scroll((0, char_offset)),
                 chunks[5],
             );
             f.render_widget(Paragraph::new(hr).style(sep_style), chunks[6]);
@@ -4188,6 +4261,87 @@ fn results_cursor_bg(focused: bool) -> Color {
     } else {
         ui().results_col_inactive_bg
     }
+}
+
+/// Build the header + body `Line`s for a tabular grid. Used by both
+/// the results pane and the LSP hover popup so their styling stays in
+/// lock-step (cursor cell, column-wide bg, selection rectangle).
+///
+/// - `cursor_row` / `active_col` drive the cursor-cell + column-wide
+///   backgrounds on body rows. Pass `None` for each if the cursor isn't
+///   on the grid.
+/// - `header_cursor_col` flips the header cell at that column to the
+///   strong cursor bg (used when the results cursor is on the header
+///   row; hover grids don't have a header cursor so pass `None`).
+/// - `selection_bounds` is `(top, bot, left, right)` when a visual
+///   selection is active. Rows inside it take the muted column bg.
+/// - `body_skip` drops N leading body rows (row-scroll offset).
+#[allow(clippy::too_many_arguments)]
+fn render_grid_lines(
+    columns: &[String],
+    rows: &[Vec<String>],
+    col_widths: &[u16],
+    cursor_row: Option<usize>,
+    active_col: Option<usize>,
+    header_cursor_col: Option<usize>,
+    selection_bounds: Option<(usize, usize, usize, usize)>,
+    body_skip: usize,
+    header_style: Style,
+    sep_style: Style,
+    cursor_bg: Color,
+    col_bg: Color,
+) -> (Line<'static>, Vec<Line<'static>>) {
+    let col_count = columns.len();
+    let mut header_spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 2);
+    for (i, c) in columns.iter().enumerate() {
+        let w = col_widths.get(i).copied().unwrap_or(0) as usize;
+        let inner = w.saturating_sub(1);
+        let mut st = header_style;
+        if header_cursor_col == Some(i) {
+            st = st.bg(cursor_bg);
+        }
+        header_spans.push(Span::styled(format!(" {:<inner$}", c, inner = inner), st));
+        if i + 1 < col_count {
+            header_spans.push(Span::styled("│".to_string(), sep_style));
+        }
+    }
+    let header_line = Line::from(header_spans);
+
+    let body_lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .skip(body_skip)
+        .map(|(row_idx, row)| {
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 2);
+            for i in 0..col_count {
+                let w = col_widths.get(i).copied().unwrap_or(0) as usize;
+                let inner = w.saturating_sub(1);
+                let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+                let text = format!(" {:<inner$}", cell, inner = inner);
+                let is_cursor = cursor_row == Some(row_idx) && active_col == Some(i);
+                let is_selected = selection_bounds
+                    .is_some_and(|(t, b, l, rr)| row_idx >= t && row_idx <= b && i >= l && i <= rr);
+                let bg = if is_cursor {
+                    Some(cursor_bg)
+                } else if is_selected {
+                    Some(col_bg)
+                } else {
+                    None
+                };
+                if let Some(bg) = bg {
+                    spans.push(Span::styled(text, Style::default().bg(bg)));
+                } else {
+                    spans.push(Span::raw(text));
+                }
+                if i + 1 < col_count {
+                    spans.push(Span::styled("│".to_string(), sep_style));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    (header_line, body_lines)
 }
 
 /// Slightly brighter bg used for the single cell (or header) the cursor
@@ -5041,6 +5195,156 @@ fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String {
         .chars()
         .rev()
         .collect()
+}
+
+/// Render a tabular hover payload as a focus-capturing popup overlay.
+/// The table itself is drawn via `render_grid_lines` so its styling
+/// stays in lock-step with the main results pane.
+fn draw_hover_table(
+    f: &mut ratatui::Frame<'_>,
+    editor_area: Rect,
+    state: &AppState,
+    table: &sqeel_core::state::QueryResult,
+) {
+    let inner_x = editor_area.x + 1;
+    let inner_y = editor_area.y + 1;
+    let inner_w = editor_area.width.saturating_sub(2);
+    let inner_h = editor_area.height.saturating_sub(2);
+    if inner_w < 20 || inner_h < 5 {
+        return;
+    }
+
+    // Natural width: sum of col_widths + 1 separator per column gap.
+    let natural_w: u32 = table
+        .col_widths
+        .iter()
+        .map(|&w| w as u32 + 1)
+        .sum::<u32>()
+        .saturating_sub(1);
+    // Leave room for borders (2) + padding inside.
+    let popup_w = (natural_w as u16)
+        .saturating_add(4)
+        .clamp(30, inner_w.min(100));
+    // Header + separator + body rows + borders (2).
+    let max_body = inner_h.saturating_sub(4);
+    let body_h = (table.rows.len() as u16).min(max_body.max(1));
+    let popup_h = body_h + 4;
+
+    let popup = Rect {
+        x: inner_x + (inner_w.saturating_sub(popup_w)) / 2,
+        y: inner_y + (inner_h.saturating_sub(popup_h)) / 2,
+        width: popup_w,
+        height: popup_h,
+    };
+    f.render_widget(Clear, popup);
+
+    let u = ui();
+    let title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "󰋼 Hover",
+            Style::default()
+                .fg(u.dialog_border)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  ({} rows)", table.rows.len()),
+            Style::default().fg(u.pane_sep),
+        ),
+        Span::raw(" "),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .title_bottom(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "hjkl nav · y yank · Esc close",
+                Style::default().fg(u.pane_sep),
+            ),
+            Span::raw(" "),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(u.dialog_border));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    // Split inner into header (1) + separator (1) + body (rest).
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    let sep_style = Style::default().fg(u.results_sep);
+    let header_style = Style::default()
+        .fg(u.results_header_active)
+        .add_modifier(Modifier::BOLD);
+    let col_bg = results_cursor_bg(true);
+    let cursor_bg = results_cursor_bg_strong(true);
+
+    let cursor_row = match state.hover_cursor {
+        ResultsCursor::Cell { row, .. } => Some(row),
+        _ => None,
+    };
+    let active_col = match state.hover_cursor {
+        ResultsCursor::Cell { col, .. } => Some(col),
+        _ => None,
+    };
+    let selection_bounds: Option<(usize, usize, usize, usize)> =
+        state.hover_selection.and_then(|sel| {
+            let (ar, ac) = sel.anchor;
+            let (cr, cc) = match state.hover_cursor {
+                ResultsCursor::Cell { row, col } => (row, col),
+                _ => return None,
+            };
+            let top = ar.min(cr);
+            let bot = ar.max(cr);
+            let (left, right) = match sel.mode {
+                sqeel_core::state::ResultsSelectionMode::Line => {
+                    (0, table.columns.len().saturating_sub(1))
+                }
+                sqeel_core::state::ResultsSelectionMode::Block => (ac.min(cc), ac.max(cc)),
+            };
+            Some((top, bot, left, right))
+        });
+
+    let (header_line, body_lines) = render_grid_lines(
+        &table.columns,
+        &table.rows,
+        &table.col_widths,
+        cursor_row,
+        active_col,
+        None,
+        selection_bounds,
+        state.hover_scroll,
+        header_style,
+        sep_style,
+        cursor_bg,
+        col_bg,
+    );
+
+    // Horizontal scroll so the cursor column stays visible.
+    let char_offset: u16 = table
+        .col_widths
+        .iter()
+        .take(state.hover_col_scroll)
+        .map(|&w| w as u32 + 1)
+        .sum::<u32>() as u16;
+
+    f.render_widget(
+        Paragraph::new(header_line).scroll((0, char_offset)),
+        chunks[0],
+    );
+    let hr: String = "─".repeat(inner.width as usize);
+    f.render_widget(Paragraph::new(hr).style(sep_style), chunks[1]);
+    f.render_widget(
+        Paragraph::new(body_lines).scroll((0, char_offset)),
+        chunks[2],
+    );
 }
 
 fn draw_hover_popup(

@@ -164,12 +164,24 @@ pub enum AddConnectionField {
     Url,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoverEdge {
+    FirstRow,
+    LastRow,
+    RowStart,
+    RowEnd,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Focus {
     #[default]
     Editor,
     Schema,
     Results,
+    /// LSP hover popup with a tabular payload. While focused the user
+    /// can navigate cells, select, and yank — same idiom as the
+    /// results pane. Esc returns to the previous focus.
+    Hover,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -350,6 +362,28 @@ pub struct AppState {
     /// is visible; cleared by Esc or any cursor-moving keystroke so the
     /// overlay doesn't drift away from the symbol it described.
     pub hover_text: Option<String>,
+    /// Tabular payload parsed out of a markdown-table hover response.
+    /// When `Some` the popup renders as a navigable grid (reuses the
+    /// results-pane rendering + cursor idiom); otherwise the text form
+    /// above is shown as styled markdown.
+    pub hover_table: Option<QueryResult>,
+    /// Cursor inside `hover_table`. Always a `Cell` when active — the
+    /// popup never surfaces a `Query` / `Header` / `MessageLine`
+    /// position, which keeps nav code simple.
+    pub hover_cursor: ResultsCursor,
+    /// Optional visual selection inside the hover grid. Mirrors the
+    /// results-pane `ResultsSelection` so `V` / `v` / `Ctrl-V` / `y`
+    /// behave identically.
+    pub hover_selection: Option<ResultsSelection>,
+    /// Row scroll offset for the hover grid (rows above this aren't
+    /// rendered). Kept in sync with cursor row by `ensure_hover_visible`.
+    pub hover_scroll: usize,
+    /// Column scroll offset for the hover grid — same semantics as
+    /// `results_col_scroll` on a result tab.
+    pub hover_col_scroll: usize,
+    /// Focus that was active when the hover grid opened. Esc restores
+    /// it so the user lands back on whatever pane they were driving.
+    pub hover_prev_focus: Option<Focus>,
     pub active_connection: Option<String>,
     /// SQL dialect of the current connection. Drives per-dialect
     /// keyword highlighting; `Generic` before any connection opens.
@@ -957,6 +991,203 @@ impl AppState {
                 (_, c) => c,
             };
         });
+    }
+
+    /// Parse a GFM-style pipe table out of `text`. Accepts a single
+    /// header row (`| a | b |`), a separator row (`| --- | --- |`),
+    /// and any number of body rows. Returns `None` when no valid table
+    /// is found — callers then render the hover payload as styled
+    /// text instead. Computes column widths from cell contents so the
+    /// popup can size itself just like the results pane.
+    pub fn parse_hover_table(text: &str) -> Option<QueryResult> {
+        let mut lines_iter = text.lines().peekable();
+        // Skip leading blanks / non-table lines until we find a header
+        // row. Keep the rest intact so a mid-hover table is detected.
+        let mut header: Option<Vec<String>> = None;
+        while let Some(line) = lines_iter.next() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('|') {
+                continue;
+            }
+            let sep = lines_iter.peek().map(|s| s.trim()).unwrap_or("");
+            let is_separator = sep.starts_with('|')
+                && sep.trim_matches('|').split('|').all(|c| {
+                    let t = c.trim();
+                    !t.is_empty() && t.chars().all(|ch| ch == '-' || ch == ':')
+                });
+            if !is_separator {
+                continue;
+            }
+            let cols: Vec<String> = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(|s| s.trim().to_string())
+                .collect();
+            if cols.is_empty() {
+                continue;
+            }
+            header = Some(cols);
+            // Consume the separator row.
+            lines_iter.next();
+            break;
+        }
+        let columns = header?;
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for line in lines_iter {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('|') {
+                break;
+            }
+            let cells: Vec<String> = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(|s| s.trim().to_string())
+                .collect();
+            // Pad / truncate so every body row matches the column count.
+            let mut row = cells;
+            row.resize(columns.len(), String::new());
+            rows.push(row);
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        let mut col_widths: Vec<u16> = columns
+            .iter()
+            .map(|c| (c.chars().count() as u16).saturating_add(2))
+            .collect();
+        for row in &rows {
+            for (i, cell) in row.iter().enumerate() {
+                let w = (cell.chars().count() as u16).saturating_add(2);
+                if w > col_widths[i] {
+                    col_widths[i] = w;
+                }
+            }
+        }
+        Some(QueryResult {
+            columns,
+            rows,
+            col_widths,
+        })
+    }
+
+    /// Install a hover grid and switch focus to `Focus::Hover`. Stashes
+    /// the previous focus so Esc can restore it.
+    pub fn open_hover_table(&mut self, table: QueryResult) {
+        self.hover_prev_focus = Some(self.focus);
+        self.focus = Focus::Hover;
+        self.hover_cursor = ResultsCursor::Cell { row: 0, col: 0 };
+        self.hover_selection = None;
+        self.hover_scroll = 0;
+        self.hover_col_scroll = 0;
+        self.hover_table = Some(table);
+    }
+
+    /// Close the hover popup and restore focus to wherever `K` was
+    /// pressed. Clears both the text and table payloads.
+    pub fn close_hover(&mut self) {
+        self.hover_text = None;
+        self.hover_table = None;
+        self.hover_selection = None;
+        if let Some(prev) = self.hover_prev_focus.take() {
+            self.focus = prev;
+        }
+    }
+
+    /// Move the hover-grid cursor. `dr`/`dc` are deltas (positive =
+    /// down / right). Clamped to the grid's bounds.
+    pub fn hover_cursor_move(&mut self, dr: i32, dc: i32) {
+        let Some(ref t) = self.hover_table else {
+            return;
+        };
+        if t.rows.is_empty() || t.columns.is_empty() {
+            return;
+        }
+        let (row, col) = match self.hover_cursor {
+            ResultsCursor::Cell { row, col } => (row as i32, col as i32),
+            _ => (0, 0),
+        };
+        let new_row = (row + dr).clamp(0, t.rows.len() as i32 - 1) as usize;
+        let new_col = (col + dc).clamp(0, t.columns.len() as i32 - 1) as usize;
+        self.hover_cursor = ResultsCursor::Cell {
+            row: new_row,
+            col: new_col,
+        };
+    }
+
+    /// Jump the hover cursor to the first / last row (`gg` / `G`) or
+    /// first / last column (`0` / `$`) of the current row. `which`
+    /// selects among them.
+    pub fn hover_cursor_edge(&mut self, which: HoverEdge) {
+        let Some(ref t) = self.hover_table else {
+            return;
+        };
+        if t.rows.is_empty() || t.columns.is_empty() {
+            return;
+        }
+        let (row, col) = match self.hover_cursor {
+            ResultsCursor::Cell { row, col } => (row, col),
+            _ => (0, 0),
+        };
+        self.hover_cursor = match which {
+            HoverEdge::FirstRow => ResultsCursor::Cell { row: 0, col },
+            HoverEdge::LastRow => ResultsCursor::Cell {
+                row: t.rows.len() - 1,
+                col,
+            },
+            HoverEdge::RowStart => ResultsCursor::Cell { row, col: 0 },
+            HoverEdge::RowEnd => ResultsCursor::Cell {
+                row,
+                col: t.columns.len() - 1,
+            },
+        };
+    }
+
+    /// Yank the current hover-cell, or the selection if one is active.
+    /// TSV format when the selection covers a rectangle, matching the
+    /// results-pane behaviour.
+    pub fn hover_yank(&self) -> Option<(String, &'static str)> {
+        let t = self.hover_table.as_ref()?;
+        if let Some(sel) = self.hover_selection {
+            let (ar, ac) = sel.anchor;
+            let (cr, cc) = match self.hover_cursor {
+                ResultsCursor::Cell { row, col } => (row, col),
+                _ => return None,
+            };
+            let (top, bot) = (ar.min(cr), ar.max(cr));
+            let (left, right) = match sel.mode {
+                ResultsSelectionMode::Line => (0, t.columns.len().saturating_sub(1)),
+                ResultsSelectionMode::Block => (ac.min(cc), ac.max(cc)),
+            };
+            let label = match sel.mode {
+                ResultsSelectionMode::Line => "Rows",
+                ResultsSelectionMode::Block => "Block",
+            };
+            let mut out = String::new();
+            for r in top..=bot.min(t.rows.len().saturating_sub(1)) {
+                let row = &t.rows[r];
+                for c in left..=right.min(row.len().saturating_sub(1)) {
+                    if c > left {
+                        out.push('\t');
+                    }
+                    out.push_str(row.get(c).map(|s| s.as_str()).unwrap_or(""));
+                }
+                if r < bot.min(t.rows.len() - 1) {
+                    out.push('\n');
+                }
+            }
+            return Some((out, label));
+        }
+        // No selection — yank just the single cell under the cursor.
+        if let ResultsCursor::Cell { row, col } = self.hover_cursor {
+            let v = t
+                .rows
+                .get(row)
+                .and_then(|r| r.get(col))
+                .cloned()
+                .unwrap_or_default();
+            return Some((v, "Cell"));
+        }
+        None
     }
 
     /// Scan result cells for the first occurrence of `needle` (case-
@@ -2879,6 +3110,94 @@ mod tests {
             s.result_tabs[0].cursor,
             ResultsCursor::Cell { row: 1, col: 0 }
         );
+    }
+
+    #[test]
+    fn parse_hover_table_picks_up_pipe_grid() {
+        let text = "\
+description preamble
+
+| name | type |
+| ---- | ---- |
+| id   | int  |
+| name | text |
+
+trailing prose ignored";
+        let t = AppState::parse_hover_table(text).expect("table parsed");
+        assert_eq!(t.columns, vec!["name", "type"]);
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[0], vec!["id", "int"]);
+        assert_eq!(t.rows[1], vec!["name", "text"]);
+    }
+
+    #[test]
+    fn parse_hover_table_none_for_plain_text() {
+        assert!(AppState::parse_hover_table("just words").is_none());
+        assert!(AppState::parse_hover_table("| only | header |").is_none());
+    }
+
+    #[test]
+    fn open_hover_table_shifts_focus() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.focus = Focus::Editor;
+        let t = QueryResult {
+            columns: vec!["a".into()],
+            rows: vec![vec!["x".into()]],
+            col_widths: vec![3],
+        };
+        s.open_hover_table(t);
+        assert_eq!(s.focus, Focus::Hover);
+        assert_eq!(s.hover_prev_focus, Some(Focus::Editor));
+        assert!(s.hover_table.is_some());
+    }
+
+    #[test]
+    fn close_hover_restores_focus() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.focus = Focus::Editor;
+        let t = QueryResult {
+            columns: vec!["a".into()],
+            rows: vec![vec!["x".into()]],
+            col_widths: vec![3],
+        };
+        s.open_hover_table(t);
+        s.close_hover();
+        assert_eq!(s.focus, Focus::Editor);
+        assert!(s.hover_table.is_none());
+    }
+
+    #[test]
+    fn hover_cursor_move_clamps_to_grid() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        let t = QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![vec!["1".into(), "2".into()], vec!["3".into(), "4".into()]],
+            col_widths: vec![3, 3],
+        };
+        s.open_hover_table(t);
+        s.hover_cursor_move(10, 10);
+        assert_eq!(s.hover_cursor, ResultsCursor::Cell { row: 1, col: 1 });
+        s.hover_cursor_move(-10, -10);
+        assert_eq!(s.hover_cursor, ResultsCursor::Cell { row: 0, col: 0 });
+    }
+
+    #[test]
+    fn hover_yank_cell_returns_value_under_cursor() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        let t = QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![vec!["x".into(), "y".into()]],
+            col_widths: vec![3, 3],
+        };
+        s.open_hover_table(t);
+        s.hover_cursor_move(0, 1);
+        let (text, label) = s.hover_yank().unwrap();
+        assert_eq!(label, "Cell");
+        assert_eq!(text, "y");
     }
 
     #[test]
