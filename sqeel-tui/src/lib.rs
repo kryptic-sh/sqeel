@@ -368,6 +368,11 @@ async fn run_loop(
         tokio::sync::mpsc::unbounded_channel::<anyhow::Result<LspClient>>();
     let mut lsp_restart_in_flight = false;
 
+    // Cold-tab content loads run on `spawn_blocking` so a large file
+    // or slow filesystem doesn't freeze the render loop on a tab
+    // switch. Finished (tab_index, content) pairs arrive here.
+    let (tab_load_tx, mut tab_load_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, String)>();
+
     let mut editor_dirty = false;
     // Prompt asking the user whether to save dirty buffers before exit.
     let mut quit_prompt: Option<()> = None;
@@ -458,6 +463,29 @@ async fn run_loop(
         {
             last_terminal_size = size;
             terminal.autoresize()?;
+            needs_redraw = true;
+        }
+
+        // Kick off any pending cold-tab disk read on a blocking task
+        // so a big file / slow FS doesn't stall the render loop.
+        let pending_load = state.lock().unwrap().pending_tab_load.take();
+        if let Some(load) = pending_load {
+            let tx = tab_load_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let content =
+                    sqeel_core::persistence::load_query(&load.slug, &load.name).unwrap_or_default();
+                let _ = tx.send((load.tab_index, content));
+            });
+        }
+        // Apply any completed cold-tab loads. We route through
+        // `AppState::apply_loaded_tab_content` which caches onto the
+        // target tab and only surfaces content for the currently
+        // active tab (so a stale load from a rapid-switch doesn't
+        // clobber the live editor).
+        while let Ok((tab_index, content)) = tab_load_rx.try_recv() {
+            let mut s = state.lock().unwrap();
+            s.apply_loaded_tab_content(tab_index, content);
+            drop(s);
             needs_redraw = true;
         }
 

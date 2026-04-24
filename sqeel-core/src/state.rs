@@ -15,6 +15,18 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// A tab-content load that [`AppState::switch_to_tab`] deferred
+/// because the tab's cached content wasn't in memory. The TUI drives
+/// the actual `persistence::load_query` on a blocking task so slow
+/// filesystems don't freeze the render loop, then ships the loaded
+/// content back via [`AppState::apply_loaded_tab_content`].
+#[derive(Debug, Clone)]
+pub struct PendingTabLoad {
+    pub tab_index: usize,
+    pub slug: String,
+    pub name: String,
+}
+
 /// A staged write produced by [`AppState::prepare_save_active_tab`] /
 /// [`AppState::prepare_save_all_dirty`]. The disk-write step is held
 /// off so the caller can run [`commit`](PendingSave::commit) on a
@@ -270,6 +282,11 @@ pub struct AppState {
     /// SQL dialect of the current connection. Drives per-dialect
     /// keyword highlighting; `Generic` before any connection opens.
     pub active_dialect: Dialect,
+    /// Populated by [`switch_to_tab`] when the target tab's content
+    /// isn't cached. The TUI runs the disk read off the render loop,
+    /// then calls [`apply_loaded_tab_content`] so the editor swaps in
+    /// the real content once the load finishes.
+    pub pending_tab_load: Option<PendingTabLoad>,
     /// When a connection resolves we write a sqls config file from its
     /// URL and park the path here. The TUI main loop takes it, restarts
     /// the LSP with `--config=<path>`, so sqls can emit schema-aware
@@ -1973,21 +1990,43 @@ impl AppState {
         self.active_tab = idx;
         let slug =
             persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
-        let (content, cursor) = if let Some(tab) = self.tabs.get_mut(idx) {
+        let (content, cursor, needs_load) = if let Some(tab) = self.tabs.get_mut(idx) {
             tab.last_accessed = Some(Instant::now());
-            let c = if let Some(ref c) = tab.content {
-                c.clone()
+            if let Some(ref c) = tab.content {
+                (c.clone(), tab.cursor, None)
             } else {
-                let c = persistence::load_query(&slug, &tab.name).unwrap_or_default();
-                tab.content = Some(c.clone());
-                c
-            };
-            (c, tab.cursor)
+                // Cold tab: show empty immediately so the editor isn't
+                // stuck on the previous tab, and queue the disk read
+                // for the TUI to run off the render loop.
+                let load = PendingTabLoad {
+                    tab_index: idx,
+                    slug: slug.clone(),
+                    name: tab.name.clone(),
+                };
+                (String::new(), tab.cursor, Some(load))
+            }
         } else {
-            (String::new(), None)
+            (String::new(), None, None)
         };
         self.tab_content_pending = Some(content);
         self.tab_cursor_pending = cursor;
+        if let Some(load) = needs_load {
+            self.pending_tab_load = Some(load);
+        }
+    }
+
+    /// Called by the TUI when a deferred tab-content load completes.
+    /// Stale results (the user switched elsewhere while the load ran)
+    /// are still cached onto their tab but only published to the
+    /// editor when `tab_index` matches the currently active tab.
+    pub fn apply_loaded_tab_content(&mut self, tab_index: usize, content: String) {
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            tab.content = Some(content.clone());
+        }
+        if tab_index == self.active_tab {
+            self.tab_content_pending = Some(content);
+            self.tab_cursor_pending = self.tabs.get(tab_index).and_then(|t| t.cursor);
+        }
     }
 
     /// Update the active tab's stored cursor `(row, col)` (0-based). Called
@@ -3062,6 +3101,62 @@ mod tests {
         s.editor_content_synced = true;
         let _ = s.save_active_tab();
         assert_eq!(s.tabs[0].content.as_deref(), Some("fresh edit"));
+    }
+
+    #[test]
+    fn switch_to_cold_tab_queues_pending_load_and_shows_empty() {
+        let _dir = isolated_data_dir();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        // Two tabs — first warm (has content), second cold.
+        s.tabs.push(TabEntry::open("warm".into(), "hello".into()));
+        let mut cold = TabEntry::open("cold".into(), "ignored".into());
+        cold.content = None;
+        s.tabs.push(cold);
+        s.active_tab = 0;
+        s.editor_content_synced = false;
+
+        s.switch_to_tab(1);
+        // Pending load queued for tab 1; editor gets an empty string
+        // immediately so it doesn't appear stuck on the previous tab.
+        assert_eq!(s.active_tab, 1);
+        assert_eq!(s.tab_content_pending.as_deref(), Some(""));
+        let load = s.pending_tab_load.as_ref().expect("pending load queued");
+        assert_eq!(load.tab_index, 1);
+        assert_eq!(load.name, "cold");
+    }
+
+    #[test]
+    fn apply_loaded_tab_content_publishes_for_active_tab() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.tabs
+            .push(TabEntry::open("only".into(), "placeholder".into()));
+        s.tabs[0].content = None;
+        s.active_tab = 0;
+
+        s.apply_loaded_tab_content(0, "disk content".into());
+        assert_eq!(s.tabs[0].content.as_deref(), Some("disk content"));
+        assert_eq!(s.tab_content_pending.as_deref(), Some("disk content"));
+    }
+
+    #[test]
+    fn apply_loaded_tab_content_stale_switch_does_not_clobber_editor() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.tabs.push(TabEntry::open("a".into(), "a content".into()));
+        s.tabs.push(TabEntry::open("b".into(), "b content".into()));
+        s.tabs[1].content = None;
+        s.active_tab = 0; // looking at tab a
+        s.tab_content_pending = None;
+
+        // Slow disk read for tab b finally lands — we're on a now.
+        s.apply_loaded_tab_content(1, "b disk".into());
+        // Cache updated for future visits to tab b.
+        assert_eq!(s.tabs[1].content.as_deref(), Some("b disk"));
+        // But the editor (tab_content_pending) is NOT clobbered with
+        // b's content — we're viewing a.
+        assert!(s.tab_content_pending.is_none());
     }
 
     #[test]
