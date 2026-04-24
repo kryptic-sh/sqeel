@@ -275,12 +275,123 @@ impl Highlighter {
         let source_bytes = source.as_bytes();
         let mut spans = Vec::new();
         collect_spans(tree.root_node(), source_bytes, dialect, &mut spans);
+        // tree-sitter-sequel can drop whole regions on parse recovery
+        // (e.g. `DESC users;` sitting after a valid SELECT emits no
+        // child spans at all). Sweep any byte-range not covered by a
+        // tree-sitter span for dialect-specific keywords and emit
+        // synthetic Keyword spans for those.
+        promote_uncovered_dialect_keywords(source, dialect, &mut spans);
 
         self.old_source = Some(Arc::clone(source));
         self.old_tree = Some(tree);
 
         spans
     }
+}
+
+/// Find identifier-shaped words in regions that tree-sitter didn't
+/// classify, and emit Keyword spans for those that match the active
+/// dialect's extra-keyword or native-statement list.
+fn promote_uncovered_dialect_keywords(
+    source: &str,
+    dialect: Dialect,
+    spans: &mut Vec<HighlightSpan>,
+) {
+    if matches!(dialect, Dialect::Generic) {
+        return;
+    }
+    // Fast reject: if tree-sitter covered every byte we're done.
+    let total = source.len();
+    if total == 0 {
+        return;
+    }
+    // Sort a shallow copy of existing span ranges for binary-search
+    // style sweep. We only need to know which bytes are covered.
+    let mut covered: Vec<(usize, usize)> =
+        spans.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+    covered.sort_by_key(|&(s, _)| s);
+
+    // Merge overlapping/adjacent ranges for a clean "uncovered" sweep.
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(covered.len());
+    for (s, e) in covered {
+        if let Some(last) = merged.last_mut()
+            && s <= last.1
+        {
+            last.1 = last.1.max(e);
+        } else {
+            merged.push((s, e));
+        }
+    }
+
+    let bytes = source.as_bytes();
+    let mut cursor = 0usize;
+    let mut gap_iter = merged.iter().peekable();
+    let mut additions: Vec<HighlightSpan> = Vec::new();
+    while cursor < total {
+        match gap_iter.peek().copied() {
+            Some(&(gs, ge)) if gs <= cursor => {
+                cursor = ge;
+                gap_iter.next();
+            }
+            Some(&(gs, _)) => {
+                scan_gap_for_keywords(source, bytes, cursor, gs, dialect, &mut additions);
+                cursor = gs;
+            }
+            None => {
+                scan_gap_for_keywords(source, bytes, cursor, total, dialect, &mut additions);
+                cursor = total;
+            }
+        }
+    }
+    spans.extend(additions);
+    spans.sort_by_key(|s| s.start_byte);
+}
+
+fn scan_gap_for_keywords(
+    source: &str,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    dialect: Dialect,
+    out: &mut Vec<HighlightSpan>,
+) {
+    let mut i = start;
+    while i < end {
+        let b = bytes[i];
+        if !(b.is_ascii_alphabetic() || b == b'_') {
+            i += 1;
+            continue;
+        }
+        let word_start = i;
+        while i < end {
+            let c = bytes[i];
+            if !(c.is_ascii_alphanumeric() || c == b'_') {
+                break;
+            }
+            i += 1;
+        }
+        let word = &source[word_start..i];
+        if dialect.is_extra_keyword(word) {
+            let (sr, sc) = byte_to_point_rowcol(source, word_start);
+            let (er, ec) = byte_to_point_rowcol(source, i);
+            out.push(HighlightSpan {
+                start_byte: word_start,
+                end_byte: i,
+                start_row: sr,
+                start_col: sc,
+                end_row: er,
+                end_col: ec,
+                kind: TokenKind::Keyword,
+            });
+        }
+    }
+}
+
+fn byte_to_point_rowcol(source: &str, byte: usize) -> (usize, usize) {
+    let prefix = &source[..byte.min(source.len())];
+    let row = prefix.bytes().filter(|&b| b == b'\n').count();
+    let col = prefix.bytes().rev().take_while(|&b| b != b'\n').count();
+    (row, col)
 }
 
 /// Parse `source` and return the byte ranges of each top-level statement.
@@ -760,6 +871,26 @@ mod tests {
         assert!(Dialect::MySql.is_extra_keyword("AUTO_INCREMENT"));
         assert!(Dialect::Postgres.is_extra_keyword("ilike"));
         assert!(!Dialect::MySql.is_extra_keyword("ilike"));
+    }
+
+    #[test]
+    fn desc_after_prior_statement_is_keyword() {
+        // Regression: `DESC users;` sitting after a valid SELECT was
+        // rendering unhighlighted in the TUI while an identical line
+        // elsewhere rendered as a keyword. Likely tree-sitter-sequel
+        // emits the whole error span as one anonymous leaf when the
+        // prior statement nudges recovery — the post-pass only checked
+        // exact single-token text, so "DESC users;" failed the match.
+        let src = "SELECT * FROM users;\nDESC users;\n";
+        let mut h = Highlighter::new().unwrap();
+        let spans = h.highlight(src, Dialect::MySql);
+        let has_desc_kw = spans
+            .iter()
+            .any(|s| s.kind == TokenKind::Keyword && &src[s.start_byte..s.end_byte] == "DESC");
+        assert!(
+            has_desc_kw,
+            "expected DESC to be a keyword span; spans: {spans:#?}"
+        );
     }
 
     #[test]
