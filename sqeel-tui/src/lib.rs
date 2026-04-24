@@ -433,6 +433,10 @@ async fn run_loop(
     // drop back below the threshold so the server re-syncs the real text.
     let mut lsp_suspended = false;
     let mut last_completion_id: Option<i64> = None;
+    // Most recent hover request id; responses with different ids are
+    // ignored (stale request raced a newer one or the popup was
+    // dismissed before the server answered).
+    let mut last_hover_id: Option<i64> = None;
     let mut last_schema_completions: Vec<String> = Vec::new();
     // Last completion context + prefix, stashed so we can re-run the query
     // once a lazy schema load fills in tables/columns for that context.
@@ -1003,6 +1007,12 @@ async fn run_loop(
                         }
                         state.lock().unwrap().set_diagnostics(diags);
                     }
+                    LspEvent::Hover(id, text) => {
+                        if Some(id) == last_hover_id {
+                            state.lock().unwrap().hover_text = Some(text);
+                            needs_redraw = true;
+                        }
+                    }
                     LspEvent::Completion(id, lsp_items) => {
                         if Some(id) == last_completion_id {
                             // LSP results lead; schema identifiers fill in any gaps.
@@ -1466,6 +1476,11 @@ async fn run_loop(
                 }
             }
             Event::Key(key) => {
+                // Hover popup is one-shot — the next key dismisses it.
+                // Clear first so a stale popup doesn't linger over the
+                // new cursor position. `needs_redraw` is already true
+                // for the iteration (any event sets it).
+                state.lock().unwrap().hover_text.take();
                 // Ctrl-C while a query / batch is running cancels the
                 // current query and skips any remaining ones in the
                 // batch. Falls through to the regular handler
@@ -2586,6 +2601,22 @@ async fn run_loop(
                             state.lock().unwrap().focus = Focus::Editor;
                         }
                     }
+                    // `K` in Normal → LSP hover request. Response
+                    // surfaces via `LspEvent::Hover` and renders in a
+                    // popup over the cursor.
+                    (KeyModifiers::SHIFT, KeyCode::Char('K'))
+                    | (KeyModifiers::NONE, KeyCode::Char('K'))
+                        if focus == Focus::Editor && vim_mode == VimMode::Normal =>
+                    {
+                        if let Some(ref client) = lsp {
+                            let (row, col) = editor.textarea.cursor();
+                            last_hover_id = Some(client.writer().request_hover(
+                                scratch_uri.clone(),
+                                row as u32,
+                                col as u32,
+                            ));
+                        }
+                    }
                     // `/`, `?`, `n`, `N` — all handled in the vim engine.
                     _ if focus == Focus::Editor => {
                         if vim_mode == VimMode::Normal
@@ -2980,6 +3011,17 @@ fn draw(
         let screen_row = cur_row.saturating_sub(top_row);
         let screen_col = cur_col.saturating_sub(top_col);
         draw_completions(f, state, right_chunks[0], screen_row, screen_col);
+    }
+
+    // Hover popup (LSP `K`). Rendered after completions so a stale
+    // completion list doesn't sit on top of a fresh hover.
+    if let Some(ref text) = state.hover_text {
+        let (cur_row, cur_col) = editor.textarea.cursor();
+        let top_row = editor.textarea.viewport_top_row();
+        let top_col = editor.textarea.viewport_top_col();
+        let screen_row = cur_row.saturating_sub(top_row);
+        let screen_col = cur_col.saturating_sub(top_col);
+        draw_hover_popup(f, right_chunks[0], screen_row, screen_col, text);
     }
 
     // Connection switcher modal (top-level overlay)
@@ -5001,6 +5043,60 @@ fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String {
         .collect()
 }
 
+fn draw_hover_popup(
+    f: &mut ratatui::Frame<'_>,
+    editor_area: Rect,
+    cur_row: usize,
+    cur_col: usize,
+    text: &str,
+) {
+    let inner_x = editor_area.x + 1;
+    let inner_y = editor_area.y + 1;
+    let inner_w = editor_area.width.saturating_sub(2);
+    let inner_h = editor_area.height.saturating_sub(2);
+    if inner_w < 10 || inner_h < 3 {
+        return;
+    }
+
+    // Target width: widest line, clamped to a reasonable chunk of the
+    // editor area. Height: count of logical lines, wrapping isn't
+    // applied — long lines just truncate at the popup edge.
+    let longest = text
+        .lines()
+        .map(|l| l.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let popup_w = (longest + 4).clamp(24, inner_w.min(80));
+    let line_count = text.lines().count() as u16;
+    let popup_h = (line_count + 2).clamp(3, inner_h.min(20));
+
+    let cx = inner_x.saturating_add(cur_col as u16);
+    let cy = inner_y.saturating_add(cur_row as u16);
+    // Prefer rendering below the cursor; flip above when the popup
+    // would clip the bottom of the editor.
+    let popup_y = if cy + 2 + popup_h <= inner_y + inner_h {
+        cy + 2
+    } else {
+        cy.saturating_sub(popup_h)
+    };
+    let popup_x = cx.min((inner_x + inner_w).saturating_sub(popup_w));
+
+    let popup = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_w,
+        height: popup_h,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" Hover  (any key to dismiss) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ui().dialog_border));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    f.render_widget(Paragraph::new(text.to_string()), inner);
+}
+
 fn draw_completions(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
@@ -5348,6 +5444,7 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> u16 {
                 ("i", "Insert mode"),
                 ("Esc", "Normal mode"),
                 ("v", "Visual mode"),
+                ("K", "LSP hover under cursor"),
                 ("Ctrl+P / Ctrl+N", "History prev / next"),
             ],
         ),

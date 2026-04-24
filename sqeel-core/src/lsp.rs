@@ -72,6 +72,9 @@ pub enum LspEvent {
     Diagnostics(Vec<Diagnostic>),
     /// (request_id, items) — caller drops if id doesn't match the latest request
     Completion(i64, Vec<String>),
+    /// (request_id, markdown/plain text) — hover payload for the `K`
+    /// binding. Caller drops if id doesn't match the latest request.
+    Hover(i64, String),
 }
 
 #[derive(Serialize)]
@@ -321,6 +324,30 @@ impl LspWriter {
         });
         id
     }
+
+    /// Fire-and-forget hover request. Response surfaces as
+    /// `LspEvent::Hover(id, text)`; caller dedupes by id.
+    pub fn request_hover(&self, uri: Uri, line: u32, col: u32) -> i64 {
+        let id = next_id();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let params = json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": col }
+            });
+            let msg = RpcRequest {
+                jsonrpc: "2.0",
+                id,
+                method: "textDocument/hover",
+                params,
+            };
+            if let Ok(body) = serde_json::to_string(&msg) {
+                let framed = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+                let _ = tx.send(framed).await;
+            }
+        });
+        id
+    }
 }
 
 async fn write_loop(stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
@@ -389,18 +416,56 @@ async fn read_loop(mut reader: BufReader<ChildStdout>, tx: mpsc::Sender<LspEvent
 
         if let Some(id_val) = msg.id
             && let Some(result) = msg.result
-            && let Ok(list) = serde_json::from_value::<CompletionResponse>(result)
         {
             let id = match &id_val {
                 Value::Number(n) => n.as_i64().unwrap_or(0),
                 _ => 0,
             };
-            let items: Vec<String> = match list {
-                CompletionResponse::Array(items) => items.into_iter().map(|i| i.label).collect(),
-                CompletionResponse::List(l) => l.items.into_iter().map(|i| i.label).collect(),
-            };
-            let _ = tx.send(LspEvent::Completion(id, items)).await;
+            // Completion responses come back as `CompletionList` or a
+            // plain array; try that shape first. Hover replies land on
+            // the fall-through with a `HoverContents`-shaped payload.
+            if let Ok(list) = serde_json::from_value::<CompletionResponse>(result.clone()) {
+                let items: Vec<String> = match list {
+                    CompletionResponse::Array(items) => {
+                        items.into_iter().map(|i| i.label).collect()
+                    }
+                    CompletionResponse::List(l) => l.items.into_iter().map(|i| i.label).collect(),
+                };
+                let _ = tx.send(LspEvent::Completion(id, items)).await;
+            } else if let Ok(hover) = serde_json::from_value::<Hover>(result)
+                && let Some(text) = hover_text_from_contents(&hover.contents)
+            {
+                let _ = tx.send(LspEvent::Hover(id, text)).await;
+            }
         }
+    }
+}
+
+/// Flatten `HoverContents` into a plain display string. sqls returns
+/// markdown — we strip the fences so the popup renders as raw text;
+/// the TUI doesn't carry a markdown renderer. Returns `None` when the
+/// server sent an empty response.
+fn hover_text_from_contents(contents: &HoverContents) -> Option<String> {
+    fn marked_string_text(m: &MarkedString) -> String {
+        match m {
+            MarkedString::String(s) => s.clone(),
+            MarkedString::LanguageString(ls) => ls.value.clone(),
+        }
+    }
+    let text = match contents {
+        HoverContents::Scalar(s) => marked_string_text(s),
+        HoverContents::Array(items) => items
+            .iter()
+            .map(marked_string_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        HoverContents::Markup(m) => m.value.clone(),
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -449,5 +514,56 @@ mod tests {
         assert!(body.contains("driver: mysql"));
         assert!(body.contains("u:p@tcp(host)/db"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_text_scalar_string_extracted() {
+        let contents = HoverContents::Scalar(MarkedString::String("hello".into()));
+        assert_eq!(
+            super::hover_text_from_contents(&contents),
+            Some("hello".into())
+        );
+    }
+
+    #[test]
+    fn hover_text_scalar_language_string_extracted() {
+        let contents = HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+            language: "sql".into(),
+            value: "SELECT 1".into(),
+        }));
+        assert_eq!(
+            super::hover_text_from_contents(&contents),
+            Some("SELECT 1".into())
+        );
+    }
+
+    #[test]
+    fn hover_text_array_joins_with_newlines() {
+        let contents = HoverContents::Array(vec![
+            MarkedString::String("line1".into()),
+            MarkedString::String("line2".into()),
+        ]);
+        assert_eq!(
+            super::hover_text_from_contents(&contents),
+            Some("line1\nline2".into())
+        );
+    }
+
+    #[test]
+    fn hover_text_markup_extracted() {
+        let contents = HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: "## schema.table".into(),
+        });
+        assert_eq!(
+            super::hover_text_from_contents(&contents),
+            Some("## schema.table".into())
+        );
+    }
+
+    #[test]
+    fn hover_text_empty_returns_none() {
+        let contents = HoverContents::Scalar(MarkedString::String("   ".into()));
+        assert_eq!(super::hover_text_from_contents(&contents), None);
     }
 }

@@ -160,6 +160,7 @@ features that go beyond basic vim.
 | `gU` / `gu` / `g~`      | Uppercase / lowercase / toggle-case op    |
 | `>` / `<`               | Indent / outdent op                       |
 | `Ctrl+a` / `Ctrl+x`     | Increment / decrement number under cursor |
+| `K`                     | LSP hover popup for symbol under cursor   |
 | `Ctrl+P` / `Ctrl+N`     | Query history prev / next                 |
 
 ### Explorer Pane

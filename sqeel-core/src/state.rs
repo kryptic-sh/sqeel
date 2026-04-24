@@ -346,6 +346,10 @@ pub struct AppState {
     pub completions: Vec<String>,
     pub show_completions: bool,
     pub completion_cursor: usize,
+    /// LSP hover payload for the `K` binding. `Some` while the popup
+    /// is visible; cleared by Esc or any cursor-moving keystroke so the
+    /// overlay doesn't drift away from the symbol it described.
+    pub hover_text: Option<String>,
     pub active_connection: Option<String>,
     /// SQL dialect of the current connection. Drives per-dialect
     /// keyword highlighting; `Generic` before any connection opens.
