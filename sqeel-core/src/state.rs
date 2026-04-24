@@ -2072,9 +2072,22 @@ impl AppState {
         self.active_tab = 0;
         if let Some(tab) = self.tabs.first_mut() {
             tab.last_accessed = Some(Instant::now());
-            let content = persistence::load_query(conn_slug, &tab.name).unwrap_or_default();
-            tab.content = Some(content.clone());
-            self.tab_content_pending = Some(content);
+            if let Some(content) = tab.content.clone() {
+                // Seeded from disk via main() (scratch_xxx.sql already
+                // loaded). Publish directly; no deferred read needed.
+                self.tab_content_pending = Some(content);
+            } else {
+                // Defer the disk read so the TUI's spawn_blocking
+                // handler runs it off the render loop. Show an empty
+                // buffer immediately.
+                let name = tab.name.clone();
+                self.tab_content_pending = Some(String::new());
+                self.pending_tab_load = Some(PendingTabLoad {
+                    tab_index: 0,
+                    slug: conn_slug.to_string(),
+                    name,
+                });
+            }
         }
     }
 

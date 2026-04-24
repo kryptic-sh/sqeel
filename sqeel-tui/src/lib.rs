@@ -536,31 +536,38 @@ async fn run_loop(
                 // Sync the LSP with the freshly loaded buffer so sqls can
                 // emit diagnostics even when the user never touches the
                 // editor after open / tab-switch.
-                if let Some(ref mut client) = lsp
+                if let Some(ref client) = lsp
                     && content.len() <= LSP_MAX_BYTES
                 {
-                    {
-                        doc_version += 1;
-                        let _ = client
-                            .change_document(scratch_uri.clone(), doc_version, &content)
-                            .await;
-                        lsp_suspended = false;
-                        if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
+                    // Fire the didChange off the render loop — serialize +
+                    // send of a multi-MB buffer would otherwise freeze the
+                    // UI for hundreds of ms the moment a large scratch
+                    // loads.
+                    doc_version += 1;
+                    let writer = client.writer();
+                    let uri = scratch_uri.clone();
+                    let version = doc_version;
+                    let text = std::sync::Arc::new(content.clone());
+                    let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
+                    tokio::spawn(async move {
+                        let _ = writer.change_document(uri, version, &text).await;
+                        if let Some(path) = debug_path {
                             use std::io::Write;
                             if let Ok(mut f) = std::fs::OpenOptions::new()
                                 .create(true)
                                 .append(true)
                                 .open(&path)
                             {
-                                let preview: String = content.chars().take(80).collect();
+                                let preview: String = text.chars().take(80).collect();
                                 let _ = writeln!(
                                     f,
-                                    "### lsp didChange (tab-load) v{doc_version} bytes={} preview={preview:?}",
-                                    content.len()
+                                    "### lsp didChange (tab-load) v{version} bytes={} preview={preview:?}",
+                                    text.len()
                                 );
                             }
                         }
-                    }
+                    });
+                    lsp_suspended = false;
                 }
             }
         }
