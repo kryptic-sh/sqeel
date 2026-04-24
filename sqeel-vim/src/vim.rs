@@ -134,6 +134,15 @@ pub enum Operator {
     Delete,
     Change,
     Yank,
+    /// `gU{motion}` — uppercase the range. Entered via the `g` prefix
+    /// in normal mode or `U` in visual mode.
+    Uppercase,
+    /// `gu{motion}` — lowercase the range. `u` in visual mode.
+    Lowercase,
+    /// `g~{motion}` — toggle case of the range. `~` in visual mode
+    /// (character at the cursor for the single-char `~` command stays
+    /// its own code path in normal mode).
+    ToggleCase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -900,6 +909,10 @@ fn visual_operator(input: &Input) -> Option<Operator> {
         Key::Char('y') => Some(Operator::Yank),
         Key::Char('d') | Key::Char('x') => Some(Operator::Delete),
         Key::Char('c') | Key::Char('s') => Some(Operator::Change),
+        // Case operators — shift forms apply to the active selection.
+        Key::Char('U') => Some(Operator::Uppercase),
+        Key::Char('u') => Some(Operator::Lowercase),
+        Key::Char('~') => Some(Operator::ToggleCase),
         _ => None,
     }
 }
@@ -1481,11 +1494,14 @@ fn handle_after_op(ed: &mut Editor<'_>, input: Input, op: Operator, count1: usiz
         return true;
     }
 
-    // Same-letter: dd / cc / yy.
+    // Same-letter: dd / cc / yy / gUU / guu / g~~.
     let double_ch = match op {
         Operator::Delete => 'd',
         Operator::Change => 'c',
         Operator::Yank => 'y',
+        Operator::Uppercase => 'U',
+        Operator::Lowercase => 'u',
+        Operator::ToggleCase => '~',
     };
     if let Key::Char(c) = input.key
         && !input.ctrl
@@ -1575,6 +1591,31 @@ fn handle_op_after_g(ed: &mut Editor<'_>, input: Input, op: Operator, count1: us
     }
     let count2 = take_count(&mut ed.vim);
     let total = count1.max(1) * count2.max(1);
+    // Case-op linewise form: `gUgU`, `gugu`, `g~g~` — same effect as
+    // `gUU` / `guu` / `g~~`. The leading `g` was consumed into
+    // `Pending::OpG`, so here we see the trailing U / u / ~.
+    if matches!(
+        op,
+        Operator::Uppercase | Operator::Lowercase | Operator::ToggleCase
+    ) {
+        let op_char = match op {
+            Operator::Uppercase => 'U',
+            Operator::Lowercase => 'u',
+            Operator::ToggleCase => '~',
+            _ => unreachable!(),
+        };
+        if input.key == Key::Char(op_char) {
+            execute_line_op(ed, op, total);
+            if !ed.vim.replaying {
+                ed.vim.last_change = Some(LastChange::LineOp {
+                    op,
+                    count: total,
+                    inserted: None,
+                });
+            }
+            return true;
+        }
+    }
     let motion = match input.key {
         Key::Char('g') => Motion::FileTop,
         Key::Char('e') => Motion::WordEndBack,
@@ -1607,6 +1648,27 @@ fn handle_after_g(ed: &mut Editor<'_>, input: Input) -> bool {
         }
         Key::Char('e') => execute_motion(ed, Motion::WordEndBack, count),
         Key::Char('E') => execute_motion(ed, Motion::BigWordEndBack, count),
+        // Case operators: `gU` / `gu` / `g~`. Enter operator-pending
+        // so the next input is treated as the motion / text object /
+        // shorthand double (`gUU`, `guu`, `g~~`).
+        Key::Char('U') => {
+            ed.vim.pending = Pending::Op {
+                op: Operator::Uppercase,
+                count1: count,
+            };
+        }
+        Key::Char('u') => {
+            ed.vim.pending = Pending::Op {
+                op: Operator::Lowercase,
+                count1: count,
+            };
+        }
+        Key::Char('~') => {
+            ed.vim.pending = Pending::Op {
+                op: Operator::ToggleCase,
+                count1: count,
+            };
+        }
         Key::Char('J') => {
             // `gJ` — join line below without inserting a space.
             for _ in 0..count.max(1) {
@@ -2074,7 +2136,53 @@ fn run_operator_over_range(
             }
             begin_insert_noundo(ed, 1, InsertReason::AfterChange);
         }
+        Operator::Uppercase | Operator::Lowercase | Operator::ToggleCase => {
+            apply_case_op_to_selection(ed, op, top);
+        }
     }
+}
+
+/// Transform the active selection in place with the given case
+/// operator. Cursor lands on `top` afterward — vim convention for
+/// `gU{motion}` / `gu{motion}` / `g~{motion}`. Preserves the textarea
+/// yank buffer (vim's case operators don't touch registers).
+fn apply_case_op_to_selection(ed: &mut Editor<'_>, op: Operator, top: (usize, usize)) {
+    ed.push_undo();
+    let saved_yank = ed.textarea.yank_text().to_string();
+    let saved_yank_linewise = ed.vim.yank_linewise;
+    // Cut first — tui-textarea's `copy()` consumes the selection,
+    // leaving a subsequent `cut()` with nothing to delete. Cutting
+    // removes the range AND fills the yank buffer; we read from there
+    // for the transform then restore the previous yank so vim's case
+    // operators don't clobber registers.
+    ed.mutate(|t| t.cut());
+    let selection = ed.textarea.yank_text().to_string();
+    let transformed = match op {
+        Operator::Uppercase => selection.to_uppercase(),
+        Operator::Lowercase => selection.to_lowercase(),
+        Operator::ToggleCase => toggle_case_str(&selection),
+        _ => unreachable!(),
+    };
+    ed.mutate(|t| t.insert_str(&transformed));
+    ed.textarea.cancel_selection();
+    ed.textarea.move_cursor(CursorMove::Jump(top.0, top.1));
+    ed.textarea.set_yank_text(saved_yank);
+    ed.vim.yank_linewise = saved_yank_linewise;
+    ed.vim.mode = Mode::Normal;
+}
+
+fn toggle_case_str(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_lowercase() {
+                c.to_uppercase().next().unwrap_or(c)
+            } else if c.is_uppercase() {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn non_empty_yank(ed: &Editor<'_>) -> Option<String> {
@@ -2203,6 +2311,16 @@ fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
             ed.textarea.move_cursor(CursorMove::Jump(row, 0));
             begin_insert_noundo(ed, 1, InsertReason::AfterChange);
         }
+        Operator::Uppercase | Operator::Lowercase | Operator::ToggleCase => {
+            // `gUU` / `guu` / `g~~` — linewise case transform over
+            // [row, end_row]. Preserve cursor on `row` (first non-blank
+            // lines up with vim's behaviour).
+            select_full_lines(ed, row, end_row);
+            apply_case_op_to_selection(ed, op, (row, col));
+            // After case-op on a linewise range vim puts the cursor on
+            // the first non-blank of the starting line.
+            move_first_non_whitespace(ed);
+        }
     }
 }
 
@@ -2246,6 +2364,11 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     ed.textarea.move_cursor(CursorMove::Jump(top, 0));
                     begin_insert_noundo(ed, 1, InsertReason::AfterChange);
                 }
+                Operator::Uppercase | Operator::Lowercase | Operator::ToggleCase => {
+                    finalize_visual_line_selection(ed);
+                    apply_case_op_to_selection(ed, op, (top, 0));
+                    move_first_non_whitespace(ed);
+                }
             }
         }
         Mode::Visual => {
@@ -2277,6 +2400,13 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                         ed.last_yank = Some(y);
                     }
                     begin_insert_noundo(ed, 1, InsertReason::AfterChange);
+                }
+                Operator::Uppercase | Operator::Lowercase | Operator::ToggleCase => {
+                    // Anchor stays where the visual selection started.
+                    let anchor = ed.vim.visual_anchor;
+                    let cursor = ed.textarea.cursor();
+                    let (top, _) = order(anchor, cursor);
+                    apply_case_op_to_selection(ed, op, top);
                 }
             }
         }
@@ -2378,7 +2508,49 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
                 },
             );
         }
+        Operator::Uppercase | Operator::Lowercase | Operator::ToggleCase => {
+            ed.push_undo();
+            transform_block_case(ed, op, top, bot, left, right);
+            ed.vim.mode = Mode::Normal;
+            ed.textarea.move_cursor(CursorMove::Jump(top, left));
+        }
     }
+}
+
+/// In-place case transform over the rectangular block
+/// `(top..=bot, left..=right)`. Rows shorter than `left` are left
+/// untouched — vim behaves the same way (ragged blocks).
+fn transform_block_case(
+    ed: &mut Editor<'_>,
+    op: Operator,
+    top: usize,
+    bot: usize,
+    left: usize,
+    right: usize,
+) {
+    let mut lines: Vec<String> = ed.textarea.lines().to_vec();
+    for r in top..=bot.min(lines.len().saturating_sub(1)) {
+        let chars: Vec<char> = lines[r].chars().collect();
+        if left >= chars.len() {
+            continue;
+        }
+        let end = (right + 1).min(chars.len());
+        let head: String = chars[..left].iter().collect();
+        let mid: String = chars[left..end].iter().collect();
+        let tail: String = chars[end..].iter().collect();
+        let transformed = match op {
+            Operator::Uppercase => mid.to_uppercase(),
+            Operator::Lowercase => mid.to_lowercase(),
+            Operator::ToggleCase => toggle_case_str(&mid),
+            _ => mid,
+        };
+        lines[r] = format!("{head}{transformed}{tail}");
+    }
+    let saved_yank = ed.textarea.yank_text().to_string();
+    let saved_linewise = ed.vim.yank_linewise;
+    ed.restore(lines, (top, left));
+    ed.textarea.set_yank_text(saved_yank);
+    ed.vim.yank_linewise = saved_linewise;
 }
 
 fn block_yank(ed: &Editor<'_>, top: usize, bot: usize, left: usize, right: usize) -> String {
@@ -3332,6 +3504,87 @@ mod tests {
         run_keys(&mut e, "3dd");
         assert_eq!(e.textarea.lines(), &["a".to_string(), "e".to_string()]);
         assert_eq!(e.textarea.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn gu_lowercases_motion_range() {
+        let mut e = editor_with("HELLO WORLD");
+        run_keys(&mut e, "guw");
+        assert_eq!(e.textarea.lines()[0], "hello WORLD");
+        assert_eq!(e.textarea.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn g_u_uppercases_text_object() {
+        let mut e = editor_with("hello world");
+        // gUiw uppercases the word at the cursor.
+        run_keys(&mut e, "gUiw");
+        assert_eq!(e.textarea.lines()[0], "HELLO world");
+        assert_eq!(e.textarea.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn g_tilde_toggles_case_of_range() {
+        let mut e = editor_with("Hello World");
+        run_keys(&mut e, "g~iw");
+        assert_eq!(e.textarea.lines()[0], "hELLO World");
+    }
+
+    #[test]
+    fn g_uu_uppercases_current_line() {
+        let mut e = editor_with("select 1\nselect 2");
+        run_keys(&mut e, "gUU");
+        assert_eq!(e.textarea.lines()[0], "SELECT 1");
+        assert_eq!(e.textarea.lines()[1], "select 2");
+    }
+
+    #[test]
+    fn gugu_lowercases_current_line() {
+        let mut e = editor_with("FOO BAR\nBAZ");
+        run_keys(&mut e, "gugu");
+        assert_eq!(e.textarea.lines()[0], "foo bar");
+    }
+
+    #[test]
+    fn visual_u_uppercases_selection() {
+        let mut e = editor_with("hello world");
+        // v + e selects "hello" (inclusive of last char), U uppercases.
+        run_keys(&mut e, "veU");
+        assert_eq!(e.textarea.lines()[0], "HELLO world");
+    }
+
+    #[test]
+    fn visual_line_u_lowercases_line() {
+        let mut e = editor_with("HELLO WORLD\nOTHER");
+        run_keys(&mut e, "Vu");
+        assert_eq!(e.textarea.lines()[0], "hello world");
+        assert_eq!(e.textarea.lines()[1], "OTHER");
+    }
+
+    #[test]
+    fn g_uu_with_count_uppercases_multiple_lines() {
+        let mut e = editor_with("one\ntwo\nthree\nfour");
+        // `3gUU` uppercases 3 lines starting from the cursor.
+        run_keys(&mut e, "3gUU");
+        assert_eq!(e.textarea.lines()[0], "ONE");
+        assert_eq!(e.textarea.lines()[1], "TWO");
+        assert_eq!(e.textarea.lines()[2], "THREE");
+        assert_eq!(e.textarea.lines()[3], "four");
+    }
+
+    #[test]
+    fn case_op_preserves_yank_register() {
+        let mut e = editor_with("target");
+        run_keys(&mut e, "yy");
+        let yank_before = e.textarea.yank_text().to_string();
+        // gUU changes the line but must not clobber the yank register.
+        run_keys(&mut e, "gUU");
+        assert_eq!(e.textarea.lines()[0], "TARGET");
+        assert_eq!(
+            e.textarea.yank_text(),
+            yank_before,
+            "case ops must preserve the yank buffer"
+        );
     }
 
     #[test]
