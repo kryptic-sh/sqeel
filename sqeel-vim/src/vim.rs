@@ -1053,14 +1053,38 @@ fn is_vertical_motion(motion: &Motion) -> bool {
 }
 
 fn apply_motion_cursor(ed: &mut Editor<'_>, motion: &Motion, count: usize) {
+    apply_motion_cursor_ctx(ed, motion, count, false)
+}
+
+fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, as_operator: bool) {
     match motion {
         Motion::Left => {
+            // Vim default: `h` stops at col 0 (no wrap to previous
+            // line). tui-textarea's `Back` wraps, so we clamp.
             for _ in 0..count {
+                let (_, col) = ed.textarea.cursor();
+                if col == 0 {
+                    break;
+                }
                 ed.textarea.move_cursor(CursorMove::Back);
             }
         }
         Motion::Right => {
+            // Vim default: `l` stops at the last char on the line for
+            // cursor motions. For operator-motion context (`dl`, `cl`,
+            // `yl`) the endpoint is allowed one past the last char so
+            // the operator range actually includes the final char.
             for _ in 0..count {
+                let (row, col) = ed.textarea.cursor();
+                let line_len = ed.textarea.lines()[row].chars().count();
+                let max_col = if as_operator {
+                    line_len
+                } else {
+                    line_len.saturating_sub(1)
+                };
+                if col >= max_col {
+                    break;
+                }
                 ed.textarea.move_cursor(CursorMove::Forward);
             }
         }
@@ -2084,8 +2108,11 @@ fn begin_insert_noundo(ed: &mut Editor<'_>, count: usize, reason: InsertReason) 
 
 fn apply_op_with_motion(ed: &mut Editor<'_>, op: Operator, motion: &Motion, count: usize) {
     let start = ed.textarea.cursor();
-    // Tentatively apply motion to find the endpoint.
-    apply_motion_cursor(ed, motion, count);
+    // Tentatively apply motion to find the endpoint. Operator context
+    // so `l` on the last char advances past-last (standard vim
+    // exclusive-motion endpoint behaviour), enabling `dl` / `cl` /
+    // `yl` to cover the final char.
+    apply_motion_cursor_ctx(ed, motion, count, true);
     let end = ed.textarea.cursor();
     let kind = motion_kind(motion);
     // Restore cursor before selecting (so Yank leaves cursor at start).
@@ -3821,6 +3848,53 @@ mod tests {
         // Enter insert-at-end `A`, Ctrl-d outdents by shiftwidth.
         run_keys(&mut e, "A<C-d>");
         assert_eq!(e.textarea.lines()[0], "  x");
+    }
+
+    #[test]
+    fn h_at_col_zero_does_not_wrap_to_prev_line() {
+        let mut e = editor_with("first\nsecond");
+        e.textarea.move_cursor(CursorMove::Jump(1, 0));
+        run_keys(&mut e, "h");
+        // Cursor must stay on row 1 col 0 — vim default doesn't wrap.
+        assert_eq!(e.textarea.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn l_at_last_char_does_not_wrap_to_next_line() {
+        let mut e = editor_with("ab\ncd");
+        // Move to last char of row 0 (col 1).
+        e.textarea.move_cursor(CursorMove::Jump(0, 1));
+        run_keys(&mut e, "l");
+        // Cursor stays on last char — no wrap.
+        assert_eq!(e.textarea.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn count_l_clamps_at_line_end() {
+        let mut e = editor_with("abcde");
+        // 20l starting at col 0 should land on last char (col 4),
+        // not overflow / wrap.
+        run_keys(&mut e, "20l");
+        assert_eq!(e.textarea.cursor(), (0, 4));
+    }
+
+    #[test]
+    fn count_h_clamps_at_col_zero() {
+        let mut e = editor_with("abcde");
+        e.textarea.move_cursor(CursorMove::Jump(0, 3));
+        run_keys(&mut e, "20h");
+        assert_eq!(e.textarea.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn dl_on_last_char_still_deletes_it() {
+        // `dl` / `x`-equivalent at EOL must delete the last char —
+        // operator motion allows endpoint past-last even though bare
+        // `l` stops before.
+        let mut e = editor_with("ab");
+        e.textarea.move_cursor(CursorMove::Jump(0, 1));
+        run_keys(&mut e, "dl");
+        assert_eq!(e.textarea.lines()[0], "a");
     }
 
     #[test]
