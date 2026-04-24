@@ -282,6 +282,28 @@ pub enum ResultsCursor {
 /// cells, given `col_widths` (plus the 1-cell `│` separator between columns).
 /// Leaves `col_scroll` unchanged if already visible. Shared between results
 /// pane and hover popup so both clamp identically.
+/// Strip common inline markdown wrappers (backticks, asterisks,
+/// underscores) from a cell value so the raw value shows through in
+/// the hover grid. Only trims matched outer delimiters; inner
+/// occurrences are left alone so literal content survives.
+fn strip_md_inline(s: &str) -> String {
+    let mut out = s.trim();
+    loop {
+        let before = out;
+        for delim in ["``", "`", "**", "*", "__", "_"] {
+            if out.len() >= 2 * delim.len() && out.starts_with(delim) && out.ends_with(delim) {
+                out = &out[delim.len()..out.len() - delim.len()];
+                out = out.trim();
+                break;
+            }
+        }
+        if out == before {
+            break;
+        }
+    }
+    out.to_string()
+}
+
 pub(crate) fn scroll_cols_into_view_slice(
     col_widths: &[u16],
     col_scroll: &mut usize,
@@ -1034,7 +1056,7 @@ impl AppState {
             let cols: Vec<String> = trimmed
                 .trim_matches('|')
                 .split('|')
-                .map(|s| s.trim().to_string())
+                .map(|s| strip_md_inline(s.trim()))
                 .collect();
             if cols.is_empty() {
                 continue;
@@ -1054,7 +1076,7 @@ impl AppState {
             let cells: Vec<String> = trimmed
                 .trim_matches('|')
                 .split('|')
-                .map(|s| s.trim().to_string())
+                .map(|s| strip_md_inline(s.trim()))
                 .collect();
             // Pad / truncate so every body row matches the column count.
             let mut row = cells;
@@ -3184,6 +3206,14 @@ trailing prose ignored";
         assert_eq!(t.rows.len(), 2);
         assert_eq!(t.rows[0], vec!["id", "int"]);
         assert_eq!(t.rows[1], vec!["name", "text"]);
+    }
+
+    #[test]
+    fn parse_hover_table_strips_inline_backticks() {
+        let text = "| name | type |\n| ---- | ---- |\n| `id` | `int` |\n| **pk** | _bool_ |";
+        let t = AppState::parse_hover_table(text).expect("table parsed");
+        assert_eq!(t.rows[0], vec!["id", "int"]);
+        assert_eq!(t.rows[1], vec!["pk", "bool"]);
     }
 
     #[test]
