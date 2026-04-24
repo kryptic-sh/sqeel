@@ -19,9 +19,9 @@ use completion_thread::CompletionThread;
 use crossterm::{
     cursor::SetCursorStyle,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-        KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -138,6 +138,14 @@ impl TextInput {
         let b = self.byte_at(self.cursor);
         self.text.insert(b, c);
         self.cursor += 1;
+    }
+    /// Insert a string at the caret, advancing the caret past the end
+    /// of the inserted text. Used by the bracketed-paste handler so a
+    /// paste into a prompt lands as one chunk instead of N keystrokes.
+    fn insert_str(&mut self, s: &str) {
+        let b = self.byte_at(self.cursor);
+        self.text.insert_str(b, s);
+        self.cursor += s.chars().count();
     }
     fn backspace(&mut self) {
         if self.cursor == 0 {
@@ -276,6 +284,7 @@ async fn async_run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableBracketedPaste,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -290,6 +299,7 @@ async fn async_run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         SetCursorStyle::DefaultUserShape,
         PopKeyboardEnhancementFlags,
         LeaveAlternateScreen,
+        DisableBracketedPaste,
         DisableMouseCapture
     )?;
     if in_tmux {
@@ -1284,6 +1294,29 @@ async fn run_loop(
                         }
                     }
                     _ => {}
+                }
+            }
+            Event::Paste(text) => {
+                // Bracketed-paste arrives as one event rather than N
+                // key events. Insert as one atomic chunk:
+                // - editor in Insert mode → splice into the buffer.
+                // - any active prompt → paste into that prompt.
+                // Other modes ignore the paste (vim-ish — use `p`/`P`
+                // for the yank-register flow).
+                let focus = state.lock().unwrap().focus;
+                if focus == Focus::Editor && editor.vim_mode() == VimMode::Insert {
+                    let parts: Vec<&str> = text.split('\n').collect();
+                    for (i, line) in parts.iter().enumerate() {
+                        editor.textarea.insert_str(*line);
+                        if i + 1 < parts.len() {
+                            editor.textarea.insert_newline();
+                        }
+                    }
+                    editor.mark_content_dirty();
+                } else if let Some(ref mut cmd) = command_input {
+                    cmd.insert_str(&text);
+                } else if let Some(ref mut rp) = rename_input {
+                    rp.insert_str(&text);
                 }
             }
             Event::Key(key) => {
@@ -5353,6 +5386,27 @@ mod tests {
         for (s, e, _) in &row {
             assert!(*e <= 12, "span {s}..{e} bled past `*/`");
         }
+    }
+
+    #[test]
+    fn text_input_insert_str_inserts_at_caret_and_advances() {
+        let mut t = super::TextInput::from_str("ab");
+        t.insert_str("XYZ");
+        assert_eq!(t.text, "abXYZ");
+        assert_eq!(t.cursor, 5);
+        t.left();
+        t.left();
+        t.insert_str("--");
+        assert_eq!(t.text, "abX--YZ");
+        assert_eq!(t.cursor, 5);
+    }
+
+    #[test]
+    fn text_input_insert_str_handles_multibyte() {
+        let mut t = super::TextInput::from_str("á");
+        t.insert_str("ñ");
+        assert_eq!(t.text, "áñ");
+        assert_eq!(t.cursor, 2);
     }
 
     #[test]

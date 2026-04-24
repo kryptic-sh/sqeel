@@ -83,8 +83,10 @@ impl<'a> Editor<'a> {
 
     /// Single choke-point for "the buffer just changed". Sets the
     /// dirty flag and drops the cached `content_arc` snapshot so
-    /// subsequent reads rebuild from the live textarea.
-    pub(super) fn mark_content_dirty(&mut self) {
+    /// subsequent reads rebuild from the live textarea. Callers
+    /// mutating `textarea` directly (e.g. the TUI's bracketed-paste
+    /// path) must invoke this to keep the cache honest.
+    pub fn mark_content_dirty(&mut self) {
         self.content_dirty = true;
         self.cached_content = None;
     }
