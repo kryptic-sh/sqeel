@@ -2158,8 +2158,10 @@ async fn run_loop(
                             .saturating_mul(10)
                             .saturating_add((c as u8 - b'0') as usize);
                     }
-                    // Results pane navigation
-                    (KeyModifiers::NONE, KeyCode::Char('j')) if focus == Focus::Results => {
+                    // Results pane navigation. Arrow keys mirror hjkl.
+                    (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down)
+                        if focus == Focus::Results =>
+                    {
                         let n = results_count.max(1);
                         results_count = 0;
                         let mut s = state.lock().unwrap();
@@ -2173,7 +2175,9 @@ async fn run_loop(
                             }
                         }
                     }
-                    (KeyModifiers::NONE, KeyCode::Char('k')) if focus == Focus::Results => {
+                    (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up)
+                        if focus == Focus::Results =>
+                    {
                         let n = results_count.max(1);
                         results_count = 0;
                         let mut s = state.lock().unwrap();
@@ -2187,7 +2191,9 @@ async fn run_loop(
                             }
                         }
                     }
-                    (KeyModifiers::NONE, KeyCode::Char('l')) if focus == Focus::Results => {
+                    (KeyModifiers::NONE, KeyCode::Char('l') | KeyCode::Right)
+                        if focus == Focus::Results =>
+                    {
                         let n = results_count.max(1);
                         results_count = 0;
                         let mut s = state.lock().unwrap();
@@ -2201,7 +2207,9 @@ async fn run_loop(
                             }
                         }
                     }
-                    (KeyModifiers::NONE, KeyCode::Char('h')) if focus == Focus::Results => {
+                    (KeyModifiers::NONE, KeyCode::Char('h') | KeyCode::Left)
+                        if focus == Focus::Results =>
+                    {
                         let n = results_count.max(1);
                         results_count = 0;
                         let mut s = state.lock().unwrap();
