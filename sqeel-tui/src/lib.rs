@@ -331,7 +331,25 @@ async fn run_loop(
     let lsp_binary = main_config.editor.lsp_binary.clone();
     let mouse_scroll_lines = main_config.editor.mouse_scroll_lines;
     let leader_char: char = main_config.editor.leader_key.chars().next().unwrap_or(' ');
-    let mut lsp: Option<LspClient> = LspClient::start(&lsp_binary, None).await.ok();
+    let lsp_start_result = LspClient::start(&lsp_binary, None).await;
+    if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            match &lsp_start_result {
+                Ok(_) => {
+                    let _ = writeln!(f, "### lsp started: binary={lsp_binary}");
+                }
+                Err(e) => {
+                    let _ = writeln!(f, "### lsp FAILED to start: binary={lsp_binary} err={e}");
+                }
+            }
+        }
+    }
+    let mut lsp: Option<LspClient> = lsp_start_result.ok();
     if let Some(ref mut client) = lsp {
         let _ = client.open_document(scratch_uri.clone(), "").await;
     }
@@ -668,6 +686,21 @@ async fn run_loop(
                         let _ = client
                             .change_document(scratch_uri.clone(), doc_version, content)
                             .await;
+                        if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                            {
+                                let preview: String = content.chars().take(80).collect();
+                                let _ = writeln!(
+                                    f,
+                                    "### lsp didChange v{doc_version} bytes={} preview={preview:?}",
+                                    content.len()
+                                );
+                            }
+                        }
                         if let Ok(id) = client
                             .request_completion(scratch_uri.clone(), row as u32, col as u32)
                             .await
