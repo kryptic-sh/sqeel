@@ -1389,7 +1389,11 @@ async fn run_loop(
                     MouseEventKind::ScrollDown => {
                         let mut s = state.lock().unwrap();
                         if s.show_help {
-                            s.help_scroll = s.help_scroll.saturating_add(mouse_scroll_lines as u16);
+                            let max = last_draw_areas.help_max_scroll;
+                            s.help_scroll = s
+                                .help_scroll
+                                .saturating_add(mouse_scroll_lines as u16)
+                                .min(max);
                         } else {
                             s.focus = pane;
                             match pane {
@@ -1970,8 +1974,9 @@ async fn run_loop(
                             state.lock().unwrap().close_help();
                         }
                         (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
+                            let max = last_draw_areas.help_max_scroll;
                             let mut s = state.lock().unwrap();
-                            s.help_scroll = s.help_scroll.saturating_add(1);
+                            s.help_scroll = s.help_scroll.saturating_add(1).min(max);
                         }
                         (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up) => {
                             let mut s = state.lock().unwrap();
@@ -2808,6 +2813,11 @@ struct DrawAreas {
     results: Option<Rect>,
     results_tab_bar: Option<Rect>,
     cursor_shape: CursorShape,
+    /// Upper bound for `help_scroll`: beyond this the bottom of the
+    /// help overlay is already visible. Recomputed each frame from the
+    /// current terminal size so `j` / `Down` / wheel-down saturate at
+    /// the last meaningful scroll offset.
+    help_max_scroll: u16,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2938,6 +2948,7 @@ fn draw(
         },
         results_tab_bar,
         cursor_shape: CursorShape::Hidden,
+        help_max_scroll: 0,
     };
 
     draw_editor(
@@ -2985,7 +2996,7 @@ fn draw(
 
     // Help overlay (topmost)
     if state.show_help {
-        draw_help(f, area, state.help_scroll);
+        areas.help_max_scroll = draw_help(f, area, state.help_scroll);
     }
 
     // LSP warning bar (above status bar)
@@ -5263,7 +5274,7 @@ fn draw_connection_switcher(f: &mut ratatui::Frame<'_>, state: &AppState, area: 
     }
 }
 
-fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
+fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> u16 {
     const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         (
             "Global",
@@ -5411,6 +5422,7 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
             .scroll((scroll, 0)),
         inner,
     );
+    total_rows.saturating_sub(inner.height)
 }
 
 fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) -> (u16, u16) {
