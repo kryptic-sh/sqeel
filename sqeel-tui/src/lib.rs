@@ -462,6 +462,10 @@ async fn run_loop(
     let mut last_draw_areas = DrawAreas::default();
     let mut mouse_drag_pane: Option<Focus> = None;
     let mut mouse_did_drag = false;
+    // Holds an event the drag coalescer peeked-past but couldn't
+    // swallow, so the next iteration processes it instead of calling
+    // `event::read` again.
+    let mut pending_event: Option<Event> = None;
     // Force redraw on first iteration and after every event.
     let mut event_triggered_redraw = true;
     // Last time we ran the schema-freshness sweep. Rate-limited to once a
@@ -1076,12 +1080,34 @@ async fn run_loop(
             last_terminal_size = terminal.size()?;
         }
 
-        if !event::poll(Duration::from_millis(50))? {
-            continue;
+        let mut ev = if let Some(e) = pending_event.take() {
+            e
+        } else {
+            if !event::poll(Duration::from_millis(50))? {
+                continue;
+            }
+            event::read()?
+        };
+
+        // Coalesce consecutive mouse-drag events: the terminal can
+        // emit them faster than we can redraw, so N queued drags mean
+        // N full frame redraws for what visually is one cursor jump.
+        // Drain intermediate drags (keeping the latest) and stash any
+        // non-drag follow-up for the next loop iteration.
+        if matches!(&ev, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Drag(_))) {
+            while event::poll(Duration::ZERO)? {
+                let next = event::read()?;
+                if matches!(&next, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Drag(_))) {
+                    ev = next;
+                } else {
+                    pending_event = Some(next);
+                    break;
+                }
+            }
         }
 
         event_triggered_redraw = true;
-        match event::read()? {
+        match ev {
             Event::Mouse(mouse) => {
                 let area = terminal.size()?;
                 let schema_width = (area.width * 15 / 100).max(30);
