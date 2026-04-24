@@ -4194,7 +4194,13 @@ fn merge_underline(row: &mut Vec<(usize, usize, Style)>, start: usize, end: usiz
         }
         let olap_s = s.max(start);
         let olap_e = e.min(end);
+        // Replace the syntax fg with the diagnostic colour inside the
+        // range so the underline reads loud against the editor bg even
+        // in terminals without colored-underline support. The range is
+        // small (usually one token) so losing syntax colour there is a
+        // fair trade for unambiguous error visibility.
         let merged = sty
+            .fg(color)
             .add_modifier(Modifier::UNDERLINED)
             .underline_color(color);
         out.push((olap_s, olap_e, merged));
@@ -5093,7 +5099,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_underline_marks_range_and_preserves_fg() {
+    fn diagnostic_underline_marks_range_with_severity_color() {
         use ratatui::style::{Color, Modifier, Style};
         use sqeel_core::lsp::Diagnostic;
         let _ = super::theme::load();
@@ -5112,15 +5118,29 @@ mod tests {
         let lines = vec!["SELECT * x;".to_string()];
         super::apply_diagnostic_underline(by_row, &diag, &lines, 1);
 
+        let u = super::theme::ui();
         let overlap = row
             .iter()
             .find(|&&(s, e, _)| s == 2 && e == 7)
             .expect("overlap span missing");
-        assert_eq!(overlap.2.fg, Some(blue), "overlap lost its fg");
+        // fg flips to error colour so the range reads loud even in
+        // terminals without colored-underline support.
+        assert_eq!(overlap.2.fg, Some(u.status_diag_error));
         assert!(
             overlap.2.add_modifier.contains(Modifier::UNDERLINED),
             "overlap missing UNDERLINED modifier"
         );
+        // Bytes outside the range keep their original fg.
+        let left = row
+            .iter()
+            .find(|&&(s, e, _)| s == 0 && e == 2)
+            .expect("left segment missing");
+        assert_eq!(left.2.fg, Some(blue));
+        let right = row
+            .iter()
+            .find(|&&(s, e, _)| s == 7 && e == 10)
+            .expect("right segment missing");
+        assert_eq!(right.2.fg, Some(blue));
     }
 
     #[test]

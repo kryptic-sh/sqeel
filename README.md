@@ -13,7 +13,7 @@ Fast, vim-native SQL client. No Electron. No JVM.
 - Two UIs: terminal (`sqeel`) or native GUI (`sqeel-gui`)
 - MySQL, SQLite, PostgreSQL via sqlx
 - tree-sitter SQL syntax highlighting (dialect-aware)
-- LSP integration (`sqls`) — completions + diagnostics
+- LSP integration (`sqls`) — completions + inline diagnostic underlines
 - Schema browser — click or keyboard to expand/collapse
 - Editor tabs with lazy loading and 5-min RAM eviction
 - Auto-save SQL buffers, result history, query history
