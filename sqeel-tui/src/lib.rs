@@ -383,6 +383,18 @@ async fn run_loop(
     // switch. Finished (tab_index, content) pairs arrive here.
     let (tab_load_tx, mut tab_load_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, String)>();
 
+    // Schema tree-flatten rebuilds run on `spawn_blocking` too — big
+    // schemas (hundreds of tables × thousands of columns) allocate a
+    // String per node and used to freeze the render loop when the
+    // sidebar first populated.
+    type SchemaCacheResult = (
+        Vec<sqeel_core::schema::SchemaTreeItem>,
+        Vec<sqeel_core::schema::SchemaTreeItem>,
+        Vec<String>,
+    );
+    let (schema_cache_tx, mut schema_cache_rx) =
+        tokio::sync::mpsc::unbounded_channel::<SchemaCacheResult>();
+
     let mut editor_dirty = false;
     // Prompt asking the user whether to save dirty buffers before exit.
     let mut quit_prompt: Option<()> = None;
@@ -498,6 +510,15 @@ async fn run_loop(
             drop(s);
             needs_redraw = true;
         }
+        // Install any completed schema-cache rebuild. If the schema
+        // dirtied again during the flatten, the next iteration of the
+        // main loop will kick a fresh rebuild.
+        while let Ok((items, all, ids)) = schema_cache_rx.try_recv() {
+            let mut s = state.lock().unwrap();
+            s.apply_schema_cache_rebuild(items, all, ids);
+            drop(s);
+            needs_redraw = true;
+        }
 
         // Drain pending tab content (set when connection loads or tab switches)
         {
@@ -596,12 +617,34 @@ async fn run_loop(
             };
         {
             let mut s = state.lock().unwrap();
-            // Coalesce any pending schema-cache rebuilds triggered by background
-            // column/table loaders. Readers below (visible items, identifier cache,
-            // draw) see a fresh cache; if nothing changed this is a no-op.
-            let schema_was_dirty = s.schema_cache_dirty;
-            s.rebuild_schema_cache_if_dirty();
-            if schema_was_dirty {
+            // Kick the schema-cache rebuild off the render loop when
+            // it's stale and nothing else is already rebuilding. The
+            // snapshot + flatten work runs on a blocking task; the
+            // finished caches come back through `schema_cache_rx`
+            // below and get applied via `apply_schema_cache_rebuild`.
+            if let Some(nodes) = s.schema_snapshot_for_rebuild() {
+                let tx = schema_cache_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let items = sqeel_core::schema::flatten_tree(&nodes);
+                    let all = sqeel_core::schema::flatten_all(&nodes);
+                    let mut ids: Vec<String> = Vec::new();
+                    let mut stack: Vec<&sqeel_core::schema::SchemaNode> = nodes.iter().collect();
+                    while let Some(node) = stack.pop() {
+                        ids.push(node.name().to_owned());
+                        match node {
+                            sqeel_core::schema::SchemaNode::Database { tables, .. } => {
+                                stack.extend(tables.iter())
+                            }
+                            sqeel_core::schema::SchemaNode::Table { columns, .. } => {
+                                stack.extend(columns.iter())
+                            }
+                            sqeel_core::schema::SchemaNode::Column { .. } => {}
+                        }
+                    }
+                    ids.sort();
+                    ids.dedup();
+                    let _ = tx.send((items, all, ids));
+                });
                 needs_redraw = true;
             }
             // Leaving the schema pane exits search mode entirely.

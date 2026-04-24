@@ -306,6 +306,10 @@ pub struct AppState {
     /// Set by schema mutators that want to defer the O(N log N) cache rebuild.
     /// Consumers call `rebuild_schema_cache_if_dirty` once per tick.
     pub schema_cache_dirty: bool,
+    /// True while a spawn_blocking rebuild is in flight. Guards the
+    /// main loop from spawning duplicate rebuilds while one is running
+    /// against a now-stale snapshot.
+    pub schema_rebuild_in_flight: bool,
     pub query_history: Vec<String>,
     pub history_cursor: Option<usize>,
     // Connection switcher
@@ -411,6 +415,35 @@ impl AppState {
         if self.schema_cache_dirty {
             self.rebuild_schema_cache();
         }
+    }
+
+    /// If a rebuild is needed and none is already in flight, mark the
+    /// in-flight flag + clear the dirty flag (we're snapshotting NOW;
+    /// any further mutations will re-dirty), and hand back a clone of
+    /// `schema_nodes` for the caller to flatten off the render loop.
+    /// Returns `None` otherwise so the caller skips spawning.
+    pub fn schema_snapshot_for_rebuild(&mut self) -> Option<Vec<SchemaNode>> {
+        if !self.schema_cache_dirty || self.schema_rebuild_in_flight {
+            return None;
+        }
+        self.schema_rebuild_in_flight = true;
+        self.schema_cache_dirty = false;
+        Some(self.schema_nodes.clone())
+    }
+
+    /// Install the caches computed off-main-loop by
+    /// [`schema_snapshot_for_rebuild`]'s consumer. Clears the
+    /// in-flight flag so a subsequent mutation can kick another rebuild.
+    pub fn apply_schema_cache_rebuild(
+        &mut self,
+        items: Vec<SchemaTreeItem>,
+        all: Vec<SchemaTreeItem>,
+        ids: Vec<String>,
+    ) {
+        self.schema_items_cache = items;
+        self.all_schema_items_cache = all;
+        self.schema_identifier_cache = Arc::new(ids);
+        self.schema_rebuild_in_flight = false;
     }
 
     /// Active result tab's pane (or `Empty` if no tabs).
@@ -3157,6 +3190,45 @@ mod tests {
         // But the editor (tab_content_pending) is NOT clobbered with
         // b's content — we're viewing a.
         assert!(s.tab_content_pending.is_none());
+    }
+
+    #[test]
+    fn schema_snapshot_for_rebuild_returns_none_when_clean() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        assert!(s.schema_snapshot_for_rebuild().is_none());
+    }
+
+    #[test]
+    fn schema_snapshot_for_rebuild_yields_once_and_marks_in_flight() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_cache_dirty = true;
+        let snap = s.schema_snapshot_for_rebuild();
+        assert!(snap.is_some());
+        assert!(s.schema_rebuild_in_flight);
+        assert!(!s.schema_cache_dirty, "dirty cleared on snapshot");
+        // Second call returns None because in_flight blocks it.
+        s.schema_cache_dirty = true;
+        assert!(s.schema_snapshot_for_rebuild().is_none());
+    }
+
+    #[test]
+    fn apply_schema_cache_rebuild_clears_in_flight_and_installs_caches() {
+        use crate::schema::{SchemaItemKind, SchemaTreeItem};
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.schema_rebuild_in_flight = true;
+        let items = vec![SchemaTreeItem {
+            label: "x".into(),
+            depth: 0,
+            node_path: vec![0],
+            name: "x".into(),
+            kind: SchemaItemKind::Database,
+        }];
+        s.apply_schema_cache_rebuild(items.clone(), items.clone(), vec!["x".into()]);
+        assert!(!s.schema_rebuild_in_flight);
+        assert_eq!(s.schema_identifier_cache.len(), 1);
     }
 
     #[test]
