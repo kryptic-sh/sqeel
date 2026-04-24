@@ -1068,6 +1068,12 @@ async fn run_loop(
             } else {
                 None
             };
+            // Hover-loading state piggybacks on the same tick — its
+            // spinner needs periodic redraws to animate while we
+            // wait on the LSP response.
+            if s.hover_loading {
+                needs_redraw = true;
+            }
             (s.schema_loading, pending_loads, lazy_pool)
         };
         if stale_due {
@@ -5528,7 +5534,7 @@ fn draw_hover_loading(f: &mut ratatui::Frame<'_>, area: Rect) {
     // than chars; char-count under-sized the popup and clipped the
     // trailing "(Esc to cancel)" hint.
     use unicode_width::UnicodeWidthStr;
-    let label = "⏳ Loading hover…";
+    let label = format!("{} Loading hover…", spinner_frame());
     let hint = "  (Esc to cancel)";
     let content_w = (label.width() + hint.width()) as u16;
     let popup_w = (content_w + 4).min(area.width.saturating_sub(4));
