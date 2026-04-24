@@ -750,24 +750,35 @@ async fn run_loop(
                         if lsp_suspended {
                             lsp_suspended = false;
                         }
-                        let _ = client
-                            .change_document(scratch_uri.clone(), doc_version, content)
-                            .await;
-                        if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
-                            use std::io::Write;
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&path)
-                            {
-                                let preview: String = content.chars().take(80).collect();
-                                let _ = writeln!(
-                                    f,
-                                    "### lsp didChange v{doc_version} bytes={} preview={preview:?}",
-                                    content.len()
-                                );
+                        // Fire didChange from a spawned task so the
+                        // per-keystroke JSON serialization of the full
+                        // buffer doesn't block the render loop on
+                        // multi-MB files. The LSP write-queue is an
+                        // mpsc so latest-wins coalescing still happens
+                        // on the other side.
+                        let writer = client.writer();
+                        let uri = scratch_uri.clone();
+                        let version = doc_version;
+                        let text = Arc::clone(content);
+                        let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
+                        tokio::spawn(async move {
+                            let _ = writer.change_document(uri, version, &text).await;
+                            if let Some(path) = debug_path {
+                                use std::io::Write;
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(&path)
+                                {
+                                    let preview: String = text.chars().take(80).collect();
+                                    let _ = writeln!(
+                                        f,
+                                        "### lsp didChange v{version} bytes={} preview={preview:?}",
+                                        text.len()
+                                    );
+                                }
                             }
-                        }
+                        });
                         if let Ok(id) = client
                             .request_completion(scratch_uri.clone(), row as u32, col as u32)
                             .await

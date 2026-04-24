@@ -255,6 +255,45 @@ impl LspClient {
         self.write_tx.send(msg).await?;
         Ok(())
     }
+
+    /// Clonable write-side handle. Use it to fire-and-forget
+    /// notifications (e.g. `didChange`) from a spawned task so the
+    /// render loop doesn't block on the JSON serialization + channel
+    /// send — which for multi-MB buffers would otherwise block per
+    /// keystroke.
+    pub fn writer(&self) -> LspWriter {
+        LspWriter {
+            tx: self.write_tx.clone(),
+        }
+    }
+}
+
+/// Cheap cloneable write-side of an [`LspClient`]. Doesn't hold any
+/// `&mut` reference so the caller can move it into a spawned task and
+/// fire notifications off the render loop. Sends drop silently if the
+/// owning client has been dropped (e.g. LSP restart SIGKILLed the
+/// previous child) — the caller doesn't need to observe the error.
+#[derive(Clone)]
+pub struct LspWriter {
+    tx: mpsc::Sender<String>,
+}
+
+impl LspWriter {
+    pub async fn change_document(&self, uri: Uri, version: i32, text: &str) -> anyhow::Result<()> {
+        let params = json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{ "text": text }]
+        });
+        let msg = RpcNotification {
+            jsonrpc: "2.0",
+            method: "textDocument/didChange",
+            params,
+        };
+        let body = serde_json::to_string(&msg)?;
+        let framed = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        self.tx.send(framed).await?;
+        Ok(())
+    }
 }
 
 async fn write_loop(stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
