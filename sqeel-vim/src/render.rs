@@ -8,8 +8,64 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier, Style};
 use tui_textarea::TextArea;
+
+/// A single gutter sign to paint for a document row. `priority` lets
+/// callers resolve "which sign wins for a row that has both an
+/// ERROR and a WARNING" (higher wins; errors beat warnings).
+pub struct GutterSign {
+    pub row: usize,
+    pub ch: char,
+    pub fg: Color,
+    pub priority: u8,
+}
+
+/// Paint single-cell signs into the leftmost column of the textarea
+/// gutter (overwriting the leading space tui-textarea renders before
+/// each line number). Rows outside the viewport are skipped.
+/// Per-row signs are coalesced to the highest-priority one.
+pub fn paint_gutter_signs(
+    f: &mut Frame<'_>,
+    textarea: &TextArea<'_>,
+    area: Rect,
+    signs: &[GutterSign],
+) {
+    if signs.is_empty() {
+        return;
+    }
+    let top_row = textarea.viewport_top_row();
+    let content_h = area.height;
+    // Resolve one sign per row (highest priority wins).
+    let mut best: std::collections::HashMap<usize, &GutterSign> = std::collections::HashMap::new();
+    for s in signs {
+        best.entry(s.row)
+            .and_modify(|cur| {
+                if s.priority > cur.priority {
+                    *cur = s;
+                }
+            })
+            .or_insert(s);
+    }
+    let buf = f.buffer_mut();
+    for sign in best.values() {
+        if sign.row < top_row {
+            continue;
+        }
+        let dy = (sign.row - top_row) as u16;
+        if dy >= content_h {
+            continue;
+        }
+        let x = area.x;
+        let y = area.y + dy;
+        if x >= buf.area.x + buf.area.width || y >= buf.area.y + buf.area.height {
+            continue;
+        }
+        let cell = &mut buf[(x, y)];
+        cell.set_char(sign.ch);
+        cell.set_style(Style::default().fg(sign.fg));
+    }
+}
 
 /// Paint a char-wise selection overlay spanning from `start` to `end`
 /// inclusive. Single-row selections cover `[start.1, end.1]`; multi-row
@@ -160,5 +216,96 @@ pub fn paint_block_overlay(
             let cell = &mut buf[(screen_x, screen_y)];
             cell.modifier.insert(Modifier::REVERSED);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn render_signs(signs: Vec<GutterSign>) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(20, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let textarea = TextArea::from(["a", "b", "c", "d"]);
+        let rect = Rect::new(0, 0, 20, 5);
+        terminal
+            .draw(|f| {
+                f.render_widget(&textarea, rect);
+                paint_gutter_signs(f, &textarea, rect, &signs);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn highest_priority_sign_wins_per_row() {
+        let buf = render_signs(vec![
+            GutterSign {
+                row: 0,
+                ch: 'Y',
+                fg: Color::Yellow,
+                priority: 1,
+            },
+            GutterSign {
+                row: 0,
+                ch: 'X',
+                fg: Color::Red,
+                priority: 2,
+            },
+        ]);
+        assert_eq!(buf[(0, 0)].symbol(), "X");
+        assert_eq!(buf[(0, 0)].fg, Color::Red);
+    }
+
+    #[test]
+    fn different_rows_get_different_signs() {
+        let buf = render_signs(vec![
+            GutterSign {
+                row: 0,
+                ch: 'E',
+                fg: Color::Red,
+                priority: 2,
+            },
+            GutterSign {
+                row: 2,
+                ch: 'W',
+                fg: Color::Yellow,
+                priority: 1,
+            },
+        ]);
+        assert_eq!(buf[(0, 0)].symbol(), "E");
+        assert_eq!(buf[(0, 2)].symbol(), "W");
+    }
+
+    #[test]
+    fn rows_outside_viewport_are_skipped() {
+        let signs = vec![GutterSign {
+            row: 100,
+            ch: 'E',
+            fg: Color::Red,
+            priority: 2,
+        }];
+        let buf = render_signs(signs);
+        for y in 0..5 {
+            assert_ne!(buf[(0, y)].symbol(), "E");
+        }
+    }
+
+    #[test]
+    fn empty_signs_list_is_noop() {
+        let buf_with = render_signs(vec![]);
+        let backend = TestBackend::new(20, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let textarea = TextArea::from(["a", "b", "c", "d"]);
+        let rect = Rect::new(0, 0, 20, 5);
+        terminal
+            .draw(|f| {
+                f.render_widget(&textarea, rect);
+            })
+            .unwrap();
+        let buf_without = terminal.backend().buffer().clone();
+        assert_eq!(buf_with, buf_without);
     }
 }

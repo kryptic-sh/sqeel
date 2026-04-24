@@ -47,7 +47,10 @@ use sqeel_core::{
     schema::{self, SchemaItemKind, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
-use sqeel_vim::{Editor, paint_block_overlay, paint_char_overlay, paint_line_overlay};
+use sqeel_vim::{
+    Editor, GutterSign, paint_block_overlay, paint_char_overlay, paint_gutter_signs,
+    paint_line_overlay,
+};
 use theme::ui;
 
 /// Bundle of schema-sidebar search state: query string, whether the input box has
@@ -3441,6 +3444,30 @@ fn draw_editor(
     // the cursor without recomputing layout.
     editor.set_viewport_height(chunks[1].height);
     f.render_widget(&editor.textarea, chunks[1]);
+
+    // Gutter diagnostic signs: paint a severity marker in the leftmost
+    // gutter cell for any row with an LSP diagnostic. Highest severity
+    // wins per row (error > warning).
+    let gutter_signs: Vec<GutterSign> = state
+        .lsp_diagnostics
+        .iter()
+        .filter_map(|d| match d.severity {
+            lsp_types::DiagnosticSeverity::ERROR => Some(GutterSign {
+                row: d.line as usize,
+                ch: '●',
+                fg: ui().status_diag_error,
+                priority: 2,
+            }),
+            lsp_types::DiagnosticSeverity::WARNING => Some(GutterSign {
+                row: d.line as usize,
+                ch: '⚠',
+                fg: ui().status_diag_warning,
+                priority: 1,
+            }),
+            _ => None,
+        })
+        .collect();
+    paint_gutter_signs(f, &editor.textarea, chunks[1], &gutter_signs);
 
     // All three visual modes paint their highlight as a post-render
     // overlay so the cursor can sit at its natural column (matches vim)

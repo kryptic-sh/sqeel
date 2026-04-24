@@ -22,7 +22,9 @@ mod render;
 mod vim;
 
 pub use editor::Editor;
-pub use render::{paint_block_overlay, paint_char_overlay, paint_line_overlay};
+pub use render::{
+    GutterSign, paint_block_overlay, paint_char_overlay, paint_gutter_signs, paint_line_overlay,
+};
 pub use vim::SearchPrompt;
 
 /// Which keyboard discipline the editor uses. Currently vim-only, but
