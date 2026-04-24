@@ -401,6 +401,12 @@ pub struct AppState {
     /// the column-scroll clamp so `l` past the right edge advances
     /// `hover_col_scroll` instead of parking the cursor off-screen.
     pub hover_body_width: AtomicU16,
+    /// Terminal-space (x, y) of the hover body's top-left cell.
+    /// Published by the render path so the mouse click handler can
+    /// translate a click inside the popup into a (row, col) on the
+    /// underlying grid.
+    pub hover_body_x: AtomicU16,
+    pub hover_body_y: AtomicU16,
     pub active_connection: Option<String>,
     /// SQL dialect of the current connection. Drives per-dialect
     /// keyword highlighting; `Generic` before any connection opens.
@@ -1184,6 +1190,44 @@ impl AppState {
             col: new_col,
         };
         self.clamp_hover_scroll();
+    }
+
+    /// Translate a terminal-space mouse click into a `(row, col)` on
+    /// the hover grid, returning `None` when the click didn't land
+    /// inside the body area. Uses the dimensions published by the
+    /// render path each frame, plus `hover_scroll` / `hover_col_scroll`
+    /// for the current viewport offset.
+    pub fn hover_click_to_cell(&self, mx: u16, my: u16) -> Option<(usize, usize)> {
+        let t = self.hover_table.as_ref()?;
+        let body_x = self.hover_body_x.load(Ordering::Relaxed);
+        let body_y = self.hover_body_y.load(Ordering::Relaxed);
+        let body_w = self.hover_body_width.load(Ordering::Relaxed);
+        let body_h = self.hover_body_height.load(Ordering::Relaxed);
+        if body_w == 0 || body_h == 0 {
+            return None;
+        }
+        if mx < body_x || mx >= body_x + body_w || my < body_y || my >= body_y + body_h {
+            return None;
+        }
+        let rel_row = (my - body_y) as usize;
+        let row = self.hover_scroll + rel_row;
+        if row >= t.rows.len() {
+            return None;
+        }
+        // Walk columns from `hover_col_scroll`, accumulating widths +
+        // the 1-cell separator, until we cover the click's x offset.
+        let rel_x = (mx - body_x) as u32;
+        let mut acc: u32 = 0;
+        let mut col = self.hover_col_scroll;
+        while col < t.columns.len() {
+            let w = t.col_widths.get(col).copied().unwrap_or(0) as u32 + 1;
+            if rel_x < acc + w {
+                return Some((row, col));
+            }
+            acc += w;
+            col += 1;
+        }
+        None
     }
 
     /// Re-clamp the hover row + column scroll offsets so the cursor

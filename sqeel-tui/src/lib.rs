@@ -1170,7 +1170,27 @@ async fn run_loop(
                 // Hover popup steals focus; a stray click on the
                 // underlying editor would otherwise move `state.focus`
                 // back out of `Focus::Hover` and break Esc/nav.
+                // Clicks inside the popup's body area move the hover
+                // cursor to the clicked cell; clicks outside the body
+                // are swallowed so they don't leak to the editor.
                 if state.lock().unwrap().focus == Focus::Hover {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let mut s = state.lock().unwrap();
+                            if let Some((row, col)) = s.hover_click_to_cell(mouse.column, mouse.row)
+                            {
+                                s.hover_cursor = ResultsCursor::Cell { row, col };
+                                s.clamp_hover_scroll();
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            state.lock().unwrap().hover_cursor_move(1, 0);
+                        }
+                        MouseEventKind::ScrollUp => {
+                            state.lock().unwrap().hover_cursor_move(-1, 0);
+                        }
+                        _ => {}
+                    }
                     continue;
                 }
                 // Help overlay swallows clicks / drags so they don't
@@ -5391,15 +5411,20 @@ fn draw_hover_table(
     let hr: String = "─".repeat(inner.width as usize);
     f.render_widget(Paragraph::new(hr).style(sep_style), chunks[1]);
     let body_rect = chunks[2];
-    // Publish the body dimensions so `clamp_hover_scroll` can follow
-    // the cursor with the row + column scroll offsets. Without this
-    // `l` past the viewport leaves the cursor off-screen.
+    // Publish the body rect so nav helpers can clamp the scroll
+    // offsets and the mouse-click handler can translate terminal-
+    // space coordinates into grid (row, col). Without this `l` past
+    // the viewport leaves the cursor off-screen, and clicks inside
+    // the popup can't hit their cell.
+    use std::sync::atomic::Ordering;
+    state.hover_body_x.store(body_rect.x, Ordering::Relaxed);
+    state.hover_body_y.store(body_rect.y, Ordering::Relaxed);
     state
         .hover_body_height
-        .store(body_rect.height, std::sync::atomic::Ordering::Relaxed);
+        .store(body_rect.height, Ordering::Relaxed);
     state
         .hover_body_width
-        .store(body_rect.width, std::sync::atomic::Ordering::Relaxed);
+        .store(body_rect.width, Ordering::Relaxed);
     f.render_widget(
         Paragraph::new(body_lines)
             .style(bg)
