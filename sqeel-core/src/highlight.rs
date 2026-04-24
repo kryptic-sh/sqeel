@@ -102,6 +102,94 @@ impl Dialect {
             .iter()
             .any(|kw| kw.eq_ignore_ascii_case(text))
     }
+
+    /// Statement-start tokens that tree-sitter-sequel doesn't parse as
+    /// valid statements but that the target engine accepts natively
+    /// (e.g. MySQL's `DESC` / `SHOW`, SQLite's `PRAGMA`). When a
+    /// statement begins with one of these, we skip the tree-sitter
+    /// syntax gate and let the DB be the source of truth.
+    fn native_statement_starts(self) -> &'static [&'static str] {
+        match self {
+            Dialect::MySql => &[
+                "DESC",
+                "DESCRIBE",
+                "SHOW",
+                "EXPLAIN",
+                "USE",
+                "ANALYZE",
+                "OPTIMIZE",
+                "REPAIR",
+                "CHECK",
+                "FLUSH",
+                "KILL",
+                "RENAME",
+                "SET",
+                "START",
+                "COMMIT",
+                "ROLLBACK",
+                "SAVEPOINT",
+                "LOAD",
+                "GRANT",
+                "REVOKE",
+                "CALL",
+            ],
+            Dialect::Postgres => &[
+                "EXPLAIN",
+                "ANALYZE",
+                "VACUUM",
+                "CLUSTER",
+                "COPY",
+                "LISTEN",
+                "NOTIFY",
+                "UNLISTEN",
+                "REINDEX",
+                "REFRESH",
+                "SET",
+                "SHOW",
+                "RESET",
+                "BEGIN",
+                "COMMIT",
+                "ROLLBACK",
+                "SAVEPOINT",
+                "GRANT",
+                "REVOKE",
+                "CALL",
+            ],
+            Dialect::Sqlite => &[
+                "PRAGMA",
+                "VACUUM",
+                "ATTACH",
+                "DETACH",
+                "REINDEX",
+                "ANALYZE",
+                "EXPLAIN",
+                "BEGIN",
+                "COMMIT",
+                "ROLLBACK",
+                "SAVEPOINT",
+                "RELEASE",
+            ],
+            Dialect::Generic => &[],
+        }
+    }
+
+    /// True iff `stmt`'s first non-comment token is one of this dialect's
+    /// engine-native statement starts. Caller should skip the tree-sitter
+    /// syntax gate for `true` and let the DB report any real error.
+    pub fn is_native_statement(self, stmt: &str) -> bool {
+        let stripped = strip_sql_comments(stmt);
+        let trimmed = stripped.trim_start();
+        let first_word: String = trimmed
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic() || *c == '_')
+            .collect();
+        if first_word.is_empty() {
+            return false;
+        }
+        self.native_statement_starts()
+            .iter()
+            .any(|w| w.eq_ignore_ascii_case(&first_word))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -642,6 +730,24 @@ mod tests {
         assert!(!Dialect::Postgres.extra_keywords().is_empty());
         assert!(!Dialect::Sqlite.extra_keywords().is_empty());
         assert!(Dialect::Generic.extra_keywords().is_empty());
+    }
+
+    #[test]
+    fn is_native_statement_matches_leading_token() {
+        assert!(Dialect::MySql.is_native_statement("DESC users"));
+        assert!(Dialect::MySql.is_native_statement("desc users"));
+        assert!(Dialect::MySql.is_native_statement("DESCRIBE users"));
+        assert!(Dialect::MySql.is_native_statement("SHOW TABLES"));
+        assert!(Dialect::MySql.is_native_statement("-- lead\nDESC users"));
+        assert!(!Dialect::MySql.is_native_statement("SELECT * FROM users"));
+
+        assert!(Dialect::Sqlite.is_native_statement("PRAGMA foreign_keys = ON"));
+        assert!(!Dialect::Sqlite.is_native_statement("DESC users")); // DESC is MySQL-only here
+    }
+
+    #[test]
+    fn is_native_statement_skips_leading_comments_and_whitespace() {
+        assert!(Dialect::MySql.is_native_statement("   \n  -- comment line\n  DESC users;\n"));
     }
 
     #[test]

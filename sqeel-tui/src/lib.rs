@@ -1843,9 +1843,12 @@ async fn run_loop(
                             .unwrap_or_else(|| content.trim().to_string());
                         let mut s = state.lock().unwrap();
                         s.dismiss_completions();
+                        let dialect = s.active_dialect;
                         if strip_sql_comments(&stmt).trim().is_empty() {
                             // nothing to run on empty/whitespace-only content
-                        } else if let Some(err) = first_syntax_error(&stmt) {
+                        } else if !dialect.is_native_statement(&stmt)
+                            && let Some(err) = first_syntax_error(&stmt)
+                        {
                             s.dismiss_results();
                             s.set_error(format!(
                                 "Syntax error at {}:{} — {}",
@@ -1878,9 +1881,20 @@ async fn run_loop(
                             .collect();
                         let mut s = state.lock().unwrap();
                         s.dismiss_completions();
+                        let dialect = s.active_dialect;
+                        // Syntax pre-check only if none of the statements
+                        // are engine-native (DESC, SHOW, PRAGMA, …) —
+                        // tree-sitter-sequel rejects those but the DB runs
+                        // them fine.
+                        let any_native = stmts.iter().any(|s| dialect.is_native_statement(s));
+                        let syntax_err = if any_native {
+                            None
+                        } else {
+                            first_syntax_error(&content)
+                        };
                         if stmts.is_empty() {
                             // nothing to run on empty/whitespace-only content
-                        } else if let Some(err) = first_syntax_error(&content) {
+                        } else if let Some(err) = syntax_err {
                             s.dismiss_results();
                             s.set_error(format!(
                                 "Syntax error at {}:{} — {}",
