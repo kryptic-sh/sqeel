@@ -1598,6 +1598,57 @@ impl AppState {
         false
     }
 
+    /// Scan the hover grid for `needle` (case-insensitive), parking
+    /// the hover cursor on the first match. Semantics mirror
+    /// [`Self::results_find`] so `/` in the popup behaves exactly
+    /// like `/` in the results pane.
+    pub fn hover_find(&mut self, needle: &str, forward: bool, skip_current: bool) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let needle_lc = needle.to_lowercase();
+        let hit = {
+            let Some(t) = self.hover_table.as_ref() else {
+                return false;
+            };
+            if t.rows.is_empty() || t.columns.is_empty() {
+                return false;
+            }
+            let total_cols = t.columns.len();
+            let total_rows = t.rows.len();
+            let (cur_row, cur_col) = match self.hover_cursor {
+                ResultsCursor::Cell { row, col } => (row, col),
+                _ => (0, 0),
+            };
+            let total = total_rows * total_cols;
+            let start = cur_row * total_cols + cur_col;
+            let step = if forward { 1 } else { total - 1 };
+            let skip = if skip_current { 1 } else { 0 };
+            let mut found: Option<(usize, usize)> = None;
+            for i in skip..total {
+                let probe = (start + i * step) % total;
+                let row = probe / total_cols;
+                let col = probe % total_cols;
+                let cell = t.rows.get(row).and_then(|r| r.get(col));
+                if let Some(v) = cell
+                    && v.to_lowercase().contains(&needle_lc)
+                {
+                    found = Some((row, col));
+                    break;
+                }
+            }
+            found
+        };
+        match hit {
+            Some((row, col)) => {
+                self.hover_cursor = ResultsCursor::Cell { row, col };
+                self.clamp_hover_scroll();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `$` — jump to the last column of the current row.
     pub fn results_cursor_row_end(&mut self) {
         self.with_active_tab(|t| {

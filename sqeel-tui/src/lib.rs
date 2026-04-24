@@ -499,6 +499,9 @@ async fn run_loop(
     // Most recent committed results-pane search pattern — kept so
     // `n` / `N` have something to repeat after the prompt closes.
     let mut results_search_pattern: Option<String> = None;
+    // Hover popup `/` search — parallel to results_search_*.
+    let mut hover_search_prompt: Option<TextInput> = None;
+    let mut hover_search_pattern: Option<String> = None;
     loop {
         let mut needs_redraw = event_triggered_redraw;
         event_triggered_redraw = false;
@@ -1119,6 +1122,7 @@ async fn run_loop(
             let editor_search_text = editor.search_prompt().map(|p| p.text.as_str().to_owned());
             let last_editor_search = editor.last_search().map(str::to_owned);
             let results_search_text = results_search_prompt.as_ref().map(|p| p.text.clone());
+            let hover_search_text = hover_search_prompt.as_ref().map(|p| p.text.clone());
             terminal.draw(|f| {
                 let s = state.lock().unwrap();
                 last_draw_areas = draw(
@@ -1134,6 +1138,7 @@ async fn run_loop(
                     editor_search_text.as_deref(),
                     last_editor_search.as_deref(),
                     results_search_text.as_deref(),
+                    hover_search_text.as_deref(),
                     &toast_snap,
                 );
             })?;
@@ -2018,6 +2023,37 @@ async fn run_loop(
                     continue;
                 }
 
+                // ── Hover-popup `/` search prompt ────────────────────────────────
+                if let Some(ref mut prompt) = hover_search_prompt {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::NONE, KeyCode::Esc) => {
+                            hover_search_prompt = None;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Enter) => {
+                            let text = hover_search_prompt.take().unwrap_or_default().text;
+                            if !text.is_empty() {
+                                let mut s = state.lock().unwrap();
+                                let found = s.hover_find(&text, true, false);
+                                hover_search_pattern = Some(text);
+                                drop(s);
+                                if !found {
+                                    toasts.push((
+                                        "Pattern not found".into(),
+                                        ToastKind::Info,
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                            }
+                        }
+                        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+                            prompt.insert_char(c);
+                        }
+                        (KeyModifiers::NONE, code) if prompt.handle_nav(code) => {}
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // ── Results-pane `/` search prompt ───────────────────────────────
                 if let Some(ref mut prompt) = results_search_prompt {
                     match (key.modifiers, key.code) {
@@ -2490,6 +2526,40 @@ async fn run_loop(
                             .lock()
                             .unwrap()
                             .hover_cursor_edge(sqeel_core::state::HoverEdge::RowEnd);
+                    }
+                    // `/` → open hover search prompt.
+                    (KeyModifiers::NONE, KeyCode::Char('/')) if focus == Focus::Hover => {
+                        hover_search_prompt = Some(TextInput::default());
+                    }
+                    // `n` / `N` — repeat committed hover search.
+                    (KeyModifiers::NONE, KeyCode::Char('n')) if focus == Focus::Hover => {
+                        if let Some(pat) = hover_search_pattern.clone() {
+                            let mut s = state.lock().unwrap();
+                            if !s.hover_find(&pat, true, true) {
+                                drop(s);
+                                toasts.push((
+                                    "Pattern not found".into(),
+                                    ToastKind::Info,
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                    }
+                    (KeyModifiers::SHIFT, KeyCode::Char('N'))
+                    | (KeyModifiers::NONE, KeyCode::Char('N'))
+                        if focus == Focus::Hover =>
+                    {
+                        if let Some(pat) = hover_search_pattern.clone() {
+                            let mut s = state.lock().unwrap();
+                            if !s.hover_find(&pat, false, true) {
+                                drop(s);
+                                toasts.push((
+                                    "Pattern not found".into(),
+                                    ToastKind::Info,
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
                     }
                     (KeyModifiers::NONE, KeyCode::Char('y')) if focus == Focus::Hover => {
                         let yanked = state.lock().unwrap().hover_yank();
@@ -3165,6 +3235,7 @@ fn draw(
     editor_search_text: Option<&str>,
     last_editor_search: Option<&str>,
     results_search_text: Option<&str>,
+    hover_search_text: Option<&str>,
     toasts: &[(String, ToastKind)],
 ) -> DrawAreas {
     let area = f.area();
@@ -3319,7 +3390,7 @@ fn draw(
     // the only chrome, padded inside, `Clear` under it to punch
     // through whatever the editor drew.
     if let Some(ref table) = state.hover_table {
-        draw_hover_table(f, area, state, table);
+        draw_hover_table(f, area, state, table, hover_search_text);
     } else if let Some(ref text) = state.hover_text {
         draw_hover_popup(f, area, state.hover_scroll, text);
     } else if state.hover_loading {
@@ -5424,6 +5495,7 @@ fn draw_hover_table(
     area: Rect,
     state: &AppState,
     table: &sqeel_core::state::QueryResult,
+    search_text: Option<&str>,
 ) {
     if area.width < 20 || area.height < 5 {
         return;
@@ -5444,9 +5516,11 @@ fn draw_hover_table(
     // Body max = terminal height - vertical padding (2) - borders
     // space (none) - header/hr (2). Popup height = header + hr + body
     // + 1 top + 1 bottom pad.
-    let max_body = area.height.saturating_sub(4);
+    // Reserve one extra row when the `/` prompt is live.
+    let prompt_rows: u16 = if search_text.is_some() { 1 } else { 0 };
+    let max_body = area.height.saturating_sub(4 + prompt_rows);
     let body_h = (table.rows.len() as u16).min(max_body.max(1));
-    let popup_h = (body_h + 4).min(area.height.saturating_sub(2));
+    let popup_h = (body_h + 4 + prompt_rows).min(area.height.saturating_sub(2));
 
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(popup_w)) / 2,
@@ -5464,13 +5538,19 @@ fn draw_hover_table(
         height: popup.height.saturating_sub(2),
     };
     // No title row — the popup is chromeless apart from `dialog_bg`.
+    // Layout: header (1) + separator (1) + body (rest) + optional
+    // `/` prompt (1) pinned to the bottom.
+    let mut constraints = vec![
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ];
+    if prompt_rows > 0 {
+        constraints.push(Constraint::Length(1));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
+        .constraints(constraints)
         .split(inner);
 
     let sep_style = Style::default().fg(u.results_sep).bg(u.dialog_bg);
@@ -5562,6 +5642,12 @@ fn draw_hover_table(
             .scroll((0, char_offset)),
         body_rect,
     );
+
+    // `/` prompt pinned to the bottom when active.
+    if let (Some(text), Some(rect)) = (search_text, chunks.get(3).copied()) {
+        let prompt_style = Style::default().fg(u.status_mode_normal).bg(u.dialog_bg);
+        f.render_widget(Paragraph::new(format!("/{text}")).style(prompt_style), rect);
+    }
 }
 
 /// Loading placeholder rendered while the LSP hover response is in
