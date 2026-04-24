@@ -162,6 +162,13 @@ impl LspClient {
                     publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                         ..Default::default()
                     }),
+                    // sqls gates `textDocument/hover` on the client
+                    // advertising the capability; without this the
+                    // server silently drops every hover request.
+                    hover: Some(HoverClientCapabilities {
+                        content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -421,10 +428,30 @@ async fn read_loop(mut reader: BufReader<ChildStdout>, tx: mpsc::Sender<LspEvent
                 Value::Number(n) => n.as_i64().unwrap_or(0),
                 _ => 0,
             };
-            // Completion responses come back as `CompletionList` or a
-            // plain array; try that shape first. Hover replies land on
-            // the fall-through with a `HoverContents`-shaped payload.
-            if let Ok(list) = serde_json::from_value::<CompletionResponse>(result.clone()) {
+            let debug = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
+            // Try the Hover shape first — it carries a `contents`
+            // field whose type is distinctive enough that false
+            // positives don't sneak through. Completion responses are
+            // either a raw array or an object with `isIncomplete` +
+            // `items`, neither of which matches. Probing Hover first
+            // keeps hover replies from accidentally being routed
+            // through the Completion branch on servers that return
+            // odd shapes.
+            if let Ok(hover) = serde_json::from_value::<Hover>(result.clone()) {
+                if let Some(path) = &debug {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        let _ = writeln!(f, "### lsp hover response id={id}");
+                    }
+                }
+                if let Some(text) = hover_text_from_contents(&hover.contents) {
+                    let _ = tx.send(LspEvent::Hover(id, text)).await;
+                }
+            } else if let Ok(list) = serde_json::from_value::<CompletionResponse>(result) {
                 let items: Vec<String> = match list {
                     CompletionResponse::Array(items) => {
                         items.into_iter().map(|i| i.label).collect()
@@ -432,10 +459,15 @@ async fn read_loop(mut reader: BufReader<ChildStdout>, tx: mpsc::Sender<LspEvent
                     CompletionResponse::List(l) => l.items.into_iter().map(|i| i.label).collect(),
                 };
                 let _ = tx.send(LspEvent::Completion(id, items)).await;
-            } else if let Ok(hover) = serde_json::from_value::<Hover>(result)
-                && let Some(text) = hover_text_from_contents(&hover.contents)
-            {
-                let _ = tx.send(LspEvent::Hover(id, text)).await;
+            } else if let Some(path) = &debug {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(f, "### lsp unroutable response id={id}");
+                }
             }
         }
     }
