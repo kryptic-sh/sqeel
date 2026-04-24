@@ -496,6 +496,11 @@ pub struct AppState {
     /// has a shared ref) can update them without taking a mutable lock.
     pub results_body_rows: AtomicU16,
     pub results_body_width: AtomicU16,
+    /// Terminal-space top-left of the results body area. Published on
+    /// every draw so the mouse handler can translate clicks into
+    /// grid (row, col) without re-computing layout.
+    pub results_body_x: AtomicU16,
+    pub results_body_y: AtomicU16,
     /// Visible row count of the schema list viewport, written by the TUI on
     /// every draw so cursor-nav helpers can scroll the viewport without needing
     /// the height plumbed through.
@@ -1190,6 +1195,45 @@ impl AppState {
             col: new_col,
         };
         self.clamp_hover_scroll();
+    }
+
+    /// Translate a terminal-space mouse click into a `(row, col)` on
+    /// the active results grid. Mirrors [`Self::hover_click_to_cell`]
+    /// so both panes share the same click → cell idiom (drag-select,
+    /// click-to-cursor, etc.). Returns `None` when the click misses
+    /// the body or no results are visible.
+    pub fn results_click_to_cell(&self, mx: u16, my: u16) -> Option<(usize, usize)> {
+        let tab = self.active_result()?;
+        let ResultsPane::Results(r) = &tab.kind else {
+            return None;
+        };
+        let body_x = self.results_body_x.load(Ordering::Relaxed);
+        let body_y = self.results_body_y.load(Ordering::Relaxed);
+        let body_h = self.results_body_rows.load(Ordering::Relaxed);
+        let body_w = self.results_body_width.load(Ordering::Relaxed);
+        if body_w == 0 || body_h == 0 {
+            return None;
+        }
+        if mx < body_x || mx >= body_x + body_w || my < body_y || my >= body_y + body_h {
+            return None;
+        }
+        let rel_row = (my - body_y) as usize;
+        let row = tab.scroll + rel_row;
+        if row >= r.rows.len() {
+            return None;
+        }
+        let rel_x = (mx - body_x) as u32;
+        let mut acc: u32 = 0;
+        let mut col = tab.col_scroll;
+        while col < r.columns.len() {
+            let w = r.col_widths.get(col).copied().unwrap_or(0) as u32 + 1;
+            if rel_x < acc + w {
+                return Some((row, col));
+            }
+            acc += w;
+            col += 1;
+        }
+        None
     }
 
     /// Translate a terminal-space mouse click into a `(row, col)` on

@@ -466,6 +466,10 @@ async fn run_loop(
     let mut last_draw_areas = DrawAreas::default();
     let mut mouse_drag_pane: Option<Focus> = None;
     let mut mouse_did_drag = false;
+    // Anchor cell captured on mouse-down over a grid (results / hover).
+    // Promoted to a visual-block selection on the first drag event;
+    // `None` means the press didn't land on a selectable cell.
+    let mut mouse_drag_anchor: Option<(usize, usize)> = None;
     // Holds an event the drag coalescer peeked-past but couldn't
     // swallow, so the next iteration processes it instead of calling
     // `event::read` again.
@@ -1181,7 +1185,38 @@ async fn run_loop(
                             {
                                 s.hover_cursor = ResultsCursor::Cell { row, col };
                                 s.clamp_hover_scroll();
+                                mouse_drag_anchor = Some((row, col));
+                            } else {
+                                mouse_drag_anchor = None;
                             }
+                            mouse_drag_pane = Some(Focus::Hover);
+                            mouse_did_drag = false;
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            if mouse_drag_pane == Some(Focus::Hover)
+                                && let Some(anchor) = mouse_drag_anchor
+                            {
+                                use sqeel_core::state::{ResultsSelection, ResultsSelectionMode};
+                                let mut s = state.lock().unwrap();
+                                if !mouse_did_drag {
+                                    s.hover_selection = Some(ResultsSelection {
+                                        anchor,
+                                        mode: ResultsSelectionMode::Block,
+                                    });
+                                }
+                                if let Some((row, col)) =
+                                    s.hover_click_to_cell(mouse.column, mouse.row)
+                                {
+                                    s.hover_cursor = ResultsCursor::Cell { row, col };
+                                    s.clamp_hover_scroll();
+                                }
+                            }
+                            mouse_did_drag = true;
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            mouse_drag_pane = None;
+                            mouse_did_drag = false;
+                            mouse_drag_anchor = None;
                         }
                         MouseEventKind::ScrollDown => {
                             state.lock().unwrap().hover_cursor_move(1, 0);
@@ -1341,6 +1376,16 @@ async fn run_loop(
                                     }
                                 }
                             }
+                            // Capture the anchor cell for a potential
+                            // drag-select before we drop the lock. The
+                            // first drag event promotes this to a live
+                            // block selection; a plain click leaves
+                            // the anchor unused.
+                            mouse_drag_anchor = if pane == Focus::Results {
+                                s.results_click_to_cell(mouse.column, mouse.row)
+                            } else {
+                                None
+                            };
                             drop(s);
                             if pane == Focus::Editor {
                                 editor.mouse_click(last_draw_areas.editor, mouse.column, mouse.row);
@@ -1359,6 +1404,39 @@ async fn run_loop(
                                 mouse.column,
                                 mouse.row,
                             );
+                        } else if mouse_drag_pane == Some(Focus::Results)
+                            && let Some(anchor) = mouse_drag_anchor
+                        {
+                            // First drag frame: install a Block
+                            // selection anchored at the mouse-down
+                            // cell. Subsequent frames extend it by
+                            // moving the results cursor.
+                            use sqeel_core::state::{
+                                ResultsCursor, ResultsSelection, ResultsSelectionMode,
+                            };
+                            let mut s = state.lock().unwrap();
+                            if !mouse_did_drag {
+                                let idx = s.active_result_tab;
+                                if let Some(t) = s.result_tabs.get_mut(idx) {
+                                    t.cursor = ResultsCursor::Cell {
+                                        row: anchor.0,
+                                        col: anchor.1,
+                                    };
+                                    t.selection = Some(ResultsSelection {
+                                        anchor,
+                                        mode: ResultsSelectionMode::Block,
+                                    });
+                                }
+                            }
+                            if let Some((row, col)) =
+                                s.results_click_to_cell(mouse.column, mouse.row)
+                            {
+                                let idx = s.active_result_tab;
+                                if let Some(t) = s.result_tabs.get_mut(idx) {
+                                    t.cursor = ResultsCursor::Cell { row, col };
+                                }
+                                s.clamp_results_cursor();
+                            }
                         }
                         mouse_did_drag = true;
                     }
@@ -4248,12 +4326,15 @@ fn draw_results(
             );
             f.render_widget(Paragraph::new(hr).style(sep_style), chunks[6]);
             let body_area = chunks[7];
+            use std::sync::atomic::Ordering;
+            state.results_body_x.store(body_area.x, Ordering::Relaxed);
+            state.results_body_y.store(body_area.y, Ordering::Relaxed);
             state
                 .results_body_rows
-                .store(body_area.height, std::sync::atomic::Ordering::Relaxed);
+                .store(body_area.height, Ordering::Relaxed);
             state
                 .results_body_width
-                .store(body_area.width, std::sync::atomic::Ordering::Relaxed);
+                .store(body_area.width, Ordering::Relaxed);
             f.render_widget(
                 Paragraph::new(body_lines).scroll((0, char_offset)),
                 body_area,
