@@ -320,6 +320,14 @@ pub struct VimState {
     /// [`Editor::last_search`] so their status line can render a hint
     /// and so `n` / `N` have something to repeat.
     pub(super) last_search: Option<String>,
+    /// Back half of the jumplist — `Ctrl-o` pops from here. Populated
+    /// with the pre-motion cursor when a "big jump" motion fires
+    /// (`gg`/`G`, `%`, `*`/`#`, `n`/`N`, `H`/`M`/`L`, committed `/` or
+    /// `?`). Capped at 100 entries.
+    pub(super) jump_back: Vec<(usize, usize)>,
+    /// Forward half — `Ctrl-i` pops from here. Cleared by any new big
+    /// jump, matching vim's "branch off trims forward history" rule.
+    pub(super) jump_fwd: Vec<(usize, usize)>,
 }
 
 /// Active `/` or `?` search prompt. Text mutations drive the textarea's
@@ -433,10 +441,14 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
             if let Some(p) = prompt {
                 if !p.text.is_empty() {
                     let _ = ed.textarea.set_search_pattern(&p.text);
+                    let pre = ed.textarea.cursor();
                     if p.forward {
                         ed.textarea.search_forward(false);
                     } else {
                         ed.textarea.search_back(false);
+                    }
+                    if ed.textarea.cursor() != pre {
+                        push_jump(ed, pre);
                     }
                     ed.vim.last_search = Some(p.text);
                 } else {
@@ -862,8 +874,28 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
                 adjust_number(ed, -(count.max(1) as i64));
                 return true;
             }
+            'o' if ed.vim.mode == Mode::Normal => {
+                for _ in 0..count.max(1) {
+                    jump_back(ed);
+                }
+                return true;
+            }
+            'i' if ed.vim.mode == Mode::Normal => {
+                for _ in 0..count.max(1) {
+                    jump_forward(ed);
+                }
+                return true;
+            }
             _ => {}
         }
+    }
+
+    // `Tab` in normal mode is also `Ctrl-i` — vim aliases them.
+    if !input.ctrl && input.key == Key::Tab && ed.vim.mode == Mode::Normal {
+        for _ in 0..count.max(1) {
+            jump_forward(ed);
+        }
+        return true;
     }
 
     // Motion-only commands.
@@ -976,6 +1008,82 @@ fn find_entry(input: &Input) -> Option<(bool, bool)> {
     }
 }
 
+// ─── Jumplist (Ctrl-o / Ctrl-i) ────────────────────────────────────────────
+
+/// Max jumplist depth. Matches vim default.
+const JUMPLIST_MAX: usize = 100;
+
+/// Record a pre-jump cursor position. Called *before* a big-jump
+/// motion runs (`gg`/`G`, `%`, `*`/`#`, `n`/`N`, `H`/`M`/`L`, `/`?
+/// commit, `:{nr}`). Making a new jump while the forward stack had
+/// entries trims them — branching off the history clears the "redo".
+fn push_jump(ed: &mut Editor<'_>, from: (usize, usize)) {
+    ed.vim.jump_back.push(from);
+    if ed.vim.jump_back.len() > JUMPLIST_MAX {
+        ed.vim.jump_back.remove(0);
+    }
+    ed.vim.jump_fwd.clear();
+}
+
+/// `Ctrl-o` — jump back to the most recent pre-jump position. Saves
+/// the current cursor onto the forward stack so `Ctrl-i` can return.
+fn jump_back(ed: &mut Editor<'_>) {
+    let Some(target) = ed.vim.jump_back.pop() else {
+        return;
+    };
+    let cur = ed.textarea.cursor();
+    ed.vim.jump_fwd.push(cur);
+    let (r, c) = clamp_pos(ed, target);
+    ed.textarea.move_cursor(CursorMove::Jump(r, c));
+    ed.vim.sticky_col = Some(c);
+}
+
+/// `Ctrl-i` / `Tab` — redo the last `Ctrl-o`. Saves the current cursor
+/// onto the back stack.
+fn jump_forward(ed: &mut Editor<'_>) {
+    let Some(target) = ed.vim.jump_fwd.pop() else {
+        return;
+    };
+    let cur = ed.textarea.cursor();
+    ed.vim.jump_back.push(cur);
+    if ed.vim.jump_back.len() > JUMPLIST_MAX {
+        ed.vim.jump_back.remove(0);
+    }
+    let (r, c) = clamp_pos(ed, target);
+    ed.textarea.move_cursor(CursorMove::Jump(r, c));
+    ed.vim.sticky_col = Some(c);
+}
+
+/// Clamp a stored `(row, col)` to the live buffer in case edits
+/// shrunk the document between push and pop.
+fn clamp_pos(ed: &Editor<'_>, pos: (usize, usize)) -> (usize, usize) {
+    let last_row = ed.textarea.lines().len().saturating_sub(1);
+    let r = pos.0.min(last_row);
+    let line_len = ed
+        .textarea
+        .lines()
+        .get(r)
+        .map(|l| l.chars().count())
+        .unwrap_or(0);
+    let c = pos.1.min(line_len.saturating_sub(1));
+    (r, c)
+}
+
+/// True for motions that vim treats as jumps (pushed onto the jumplist).
+fn is_big_jump(motion: &Motion) -> bool {
+    matches!(
+        motion,
+        Motion::FileTop
+            | Motion::FileBottom
+            | Motion::MatchBracket
+            | Motion::WordAtCursor { .. }
+            | Motion::SearchNext { .. }
+            | Motion::ViewportTop
+            | Motion::ViewportMiddle
+            | Motion::ViewportBottom
+    )
+}
+
 // ─── Scroll helpers (Ctrl-d / Ctrl-u / Ctrl-f / Ctrl-b) ────────────────────
 
 /// Half-viewport row count, with a floor of 1 so tiny / un-rendered
@@ -1058,8 +1166,13 @@ fn execute_motion(ed: &mut Editor<'_>, motion: Motion, count: usize) {
         },
         other => other,
     };
-    let pre_col = ed.textarea.cursor().1;
+    let pre_pos = ed.textarea.cursor();
+    let pre_col = pre_pos.1;
     apply_motion_cursor(ed, &motion, count);
+    let post_pos = ed.textarea.cursor();
+    if is_big_jump(&motion) && pre_pos != post_pos {
+        push_jump(ed, pre_pos);
+    }
     apply_sticky_col(ed, &motion, pre_col);
 }
 
@@ -1771,12 +1884,16 @@ fn handle_after_g(ed: &mut Editor<'_>, input: Input) -> bool {
     match input.key {
         Key::Char('g') => {
             // gg — top / jump to line count.
+            let pre = ed.textarea.cursor();
             if count > 1 {
                 ed.textarea.move_cursor(CursorMove::Jump(count - 1, 0));
             } else {
                 ed.textarea.move_cursor(CursorMove::Top);
             }
             move_first_non_whitespace(ed);
+            if ed.textarea.cursor() != pre {
+                push_jump(ed, pre);
+            }
         }
         Key::Char('e') => execute_motion(ed, Motion::WordEndBack, count),
         Key::Char('E') => execute_motion(ed, Motion::BigWordEndBack, count),
@@ -5224,5 +5341,101 @@ mod tests {
         let top = e.textarea.viewport_top_row();
         run_keys(&mut e, "3H");
         assert_eq!(e.textarea.cursor().0, top + 2);
+    }
+
+    // ─── Jumplist tests ───────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_o_returns_to_pre_g_position() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 2));
+        run_keys(&mut e, "G");
+        assert_eq!(e.textarea.cursor().0, 49);
+        run_keys(&mut e, "<C-o>");
+        assert_eq!(e.textarea.cursor(), (5, 2));
+    }
+
+    #[test]
+    fn ctrl_i_redoes_jump_after_ctrl_o() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 2));
+        run_keys(&mut e, "G");
+        let post = e.textarea.cursor();
+        run_keys(&mut e, "<C-o>");
+        run_keys(&mut e, "<C-i>");
+        assert_eq!(e.textarea.cursor(), post);
+    }
+
+    #[test]
+    fn new_jump_clears_forward_stack() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 2));
+        run_keys(&mut e, "G");
+        run_keys(&mut e, "<C-o>");
+        run_keys(&mut e, "gg");
+        run_keys(&mut e, "<C-i>");
+        assert_eq!(e.textarea.cursor().0, 0);
+    }
+
+    #[test]
+    fn ctrl_o_on_empty_stack_is_noop() {
+        let mut e = editor_with_rows(10, 20);
+        e.textarea.move_cursor(CursorMove::Jump(3, 1));
+        run_keys(&mut e, "<C-o>");
+        assert_eq!(e.textarea.cursor(), (3, 1));
+    }
+
+    #[test]
+    fn asterisk_search_pushes_jump() {
+        let mut e = editor_with("foo bar\nbaz foo end");
+        e.textarea.move_cursor(CursorMove::Jump(0, 0));
+        run_keys(&mut e, "*");
+        let after = e.textarea.cursor();
+        assert_ne!(after, (0, 0));
+        run_keys(&mut e, "<C-o>");
+        assert_eq!(e.textarea.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn h_viewport_jump_is_recorded() {
+        let mut e = editor_with_rows(100, 10);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.textarea
+            .scroll(tui_textarea::Scrolling::Delta { rows: 45, cols: 0 });
+        let pre = e.textarea.cursor();
+        run_keys(&mut e, "H");
+        assert_ne!(e.textarea.cursor(), pre);
+        run_keys(&mut e, "<C-o>");
+        assert_eq!(e.textarea.cursor(), pre);
+    }
+
+    #[test]
+    fn j_k_motion_does_not_push_jump() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 0));
+        run_keys(&mut e, "jjj");
+        run_keys(&mut e, "<C-o>");
+        assert_eq!(e.textarea.cursor().0, 8);
+    }
+
+    #[test]
+    fn jumplist_caps_at_100() {
+        let mut e = editor_with_rows(200, 20);
+        for i in 0..101 {
+            e.textarea.move_cursor(CursorMove::Jump(i, 0));
+            run_keys(&mut e, "G");
+        }
+        assert!(e.vim.jump_back.len() <= 100);
+    }
+
+    #[test]
+    fn tab_acts_as_ctrl_i() {
+        let mut e = editor_with_rows(50, 20);
+        e.textarea.move_cursor(CursorMove::Jump(5, 2));
+        run_keys(&mut e, "G");
+        let post = e.textarea.cursor();
+        run_keys(&mut e, "<C-o>");
+        e.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(e.textarea.cursor(), post);
     }
 }
