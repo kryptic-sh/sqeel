@@ -1149,10 +1149,16 @@ async fn run_loop(
         event_triggered_redraw = true;
         match ev {
             Event::Mouse(mouse) => {
-                // Help overlay swallows all mouse events — without this
-                // a click on the overlay would fall through and focus /
-                // edit whatever pane sits underneath.
-                if state.lock().unwrap().show_help {
+                // Help overlay swallows clicks / drags so they don't
+                // fall through to whatever pane sits underneath — but
+                // scroll events need to pass through so the user can
+                // mouse-scroll the help content itself.
+                if state.lock().unwrap().show_help
+                    && !matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                    )
+                {
                     continue;
                 }
                 let area = terminal.size()?;
