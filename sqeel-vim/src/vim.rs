@@ -72,7 +72,7 @@
 //!   `last_search_pattern` rather than the TUI loop). Safe to defer.
 
 use crate::VimMode;
-use tui_textarea::{CursorMove, Input, Key, Scrolling};
+use tui_textarea::{CursorMove, Input, Key};
 
 use crate::editor::Editor;
 
@@ -190,6 +190,12 @@ pub enum Motion {
     SearchNext {
         reverse: bool,
     },
+    /// `H` — cursor to viewport top (plus `count - 1` rows down).
+    ViewportTop,
+    /// `M` — cursor to viewport middle.
+    ViewportMiddle,
+    /// `L` — cursor to viewport bottom (minus `count - 1` rows up).
+    ViewportBottom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -820,25 +826,28 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         return true;
     }
 
-    // Ctrl-prefixed scrolling + misc.
+    // Ctrl-prefixed scrolling + misc. Vim semantics: Ctrl-d / Ctrl-u
+    // move the cursor by half a window, Ctrl-f / Ctrl-b by a full
+    // window. Viewport follows the cursor. Cursor lands on the first
+    // non-blank of the target row (matches vim).
     if input.ctrl
         && let Key::Char(c) = input.key
     {
         match c {
             'd' => {
-                ed.textarea.scroll(Scrolling::HalfPageDown);
+                scroll_cursor_rows(ed, viewport_half_rows(ed, count) as isize);
                 return true;
             }
             'u' => {
-                ed.textarea.scroll(Scrolling::HalfPageUp);
+                scroll_cursor_rows(ed, -(viewport_half_rows(ed, count) as isize));
                 return true;
             }
             'f' => {
-                ed.textarea.scroll(Scrolling::PageDown);
+                scroll_cursor_rows(ed, viewport_full_rows(ed, count) as isize);
                 return true;
             }
             'b' => {
-                ed.textarea.scroll(Scrolling::PageUp);
+                scroll_cursor_rows(ed, -(viewport_full_rows(ed, count) as isize));
                 return true;
             }
             'r' => {
@@ -967,6 +976,37 @@ fn find_entry(input: &Input) -> Option<(bool, bool)> {
     }
 }
 
+// ─── Scroll helpers (Ctrl-d / Ctrl-u / Ctrl-f / Ctrl-b) ────────────────────
+
+/// Half-viewport row count, with a floor of 1 so tiny / un-rendered
+/// viewports still step by a single row. `count` multiplies.
+fn viewport_half_rows(ed: &Editor<'_>, count: usize) -> usize {
+    let h = ed.viewport_height_value() as usize;
+    (h / 2).max(1).saturating_mul(count.max(1))
+}
+
+/// Full-viewport row count. Vim conventionally keeps 2 lines of overlap
+/// between successive `Ctrl-f` pages; we approximate with `h - 2`.
+fn viewport_full_rows(ed: &Editor<'_>, count: usize) -> usize {
+    let h = ed.viewport_height_value() as usize;
+    h.saturating_sub(2).max(1).saturating_mul(count.max(1))
+}
+
+/// Move the cursor by `delta` rows (positive = down, negative = up),
+/// clamp to the document, then land at the first non-blank on the new
+/// row. The textarea viewport auto-scrolls to keep the cursor visible.
+fn scroll_cursor_rows(ed: &mut Editor<'_>, delta: isize) {
+    if delta == 0 {
+        return;
+    }
+    let (row, _) = ed.textarea.cursor();
+    let last_row = ed.textarea.lines().len().saturating_sub(1);
+    let target = (row as isize + delta).max(0).min(last_row as isize) as usize;
+    ed.textarea.move_cursor(CursorMove::Jump(target, 0));
+    move_first_non_whitespace(ed);
+    ed.vim.sticky_col = Some(ed.textarea.cursor().1);
+}
+
 // ─── Motion parsing ────────────────────────────────────────────────────────
 
 fn parse_motion(input: &Input) -> Option<Motion> {
@@ -995,6 +1035,9 @@ fn parse_motion(input: &Input) -> Option<Motion> {
         Key::Char('#') => Some(Motion::WordAtCursor { forward: false }),
         Key::Char('n') => Some(Motion::SearchNext { reverse: false }),
         Key::Char('N') => Some(Motion::SearchNext { reverse: true }),
+        Key::Char('H') => Some(Motion::ViewportTop),
+        Key::Char('M') => Some(Motion::ViewportMiddle),
+        Key::Char('L') => Some(Motion::ViewportBottom),
         _ => None,
     }
 }
@@ -1184,6 +1227,32 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
                     let _ = ed.textarea.search_forward(false);
                 }
             }
+        }
+        Motion::ViewportTop => {
+            let top = ed.textarea.viewport_top_row();
+            let target = top.saturating_add(count.saturating_sub(1));
+            let last = ed.textarea.lines().len().saturating_sub(1);
+            ed.textarea
+                .move_cursor(CursorMove::Jump(target.min(last), 0));
+            move_first_non_whitespace(ed);
+        }
+        Motion::ViewportMiddle => {
+            let top = ed.textarea.viewport_top_row();
+            let h = ed.viewport_height_value() as usize;
+            let last = ed.textarea.lines().len().saturating_sub(1);
+            let visible_bot = (top + h.saturating_sub(1)).min(last);
+            let mid = top + (visible_bot - top) / 2;
+            ed.textarea.move_cursor(CursorMove::Jump(mid, 0));
+            move_first_non_whitespace(ed);
+        }
+        Motion::ViewportBottom => {
+            let top = ed.textarea.viewport_top_row();
+            let h = ed.viewport_height_value() as usize;
+            let last = ed.textarea.lines().len().saturating_sub(1);
+            let visible_bot = (top + h.saturating_sub(1)).min(last);
+            let target = visible_bot.saturating_sub(count.saturating_sub(1)).max(top);
+            ed.textarea.move_cursor(CursorMove::Jump(target, 0));
+            move_first_non_whitespace(ed);
         }
     }
 }
@@ -2132,6 +2201,9 @@ fn motion_kind(motion: &Motion) -> MotionKind {
     match motion {
         Motion::Up | Motion::Down => MotionKind::Linewise,
         Motion::FileTop | Motion::FileBottom => MotionKind::Linewise,
+        Motion::ViewportTop | Motion::ViewportMiddle | Motion::ViewportBottom => {
+            MotionKind::Linewise
+        }
         Motion::WordEnd | Motion::BigWordEnd | Motion::WordEndBack | Motion::BigWordEndBack => {
             MotionKind::Inclusive
         }
@@ -5047,5 +5119,110 @@ mod tests {
         // Buffer stays the same number of rows — no extra lines
         // injected by a multi-line "inserted" replay.
         assert_eq!(e.textarea.lines().len(), 3);
+    }
+
+    // ─── Viewport scroll / jump tests ─────────────────────────────────
+
+    fn editor_with_rows(n: usize, viewport: u16) -> Editor<'static> {
+        let mut e = Editor::new(KeybindingMode::Vim);
+        let body = (0..n)
+            .map(|i| format!("  line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        e.set_content(&body);
+        e.set_viewport_height(viewport);
+        e
+    }
+
+    #[test]
+    fn ctrl_d_moves_cursor_half_page_down() {
+        let mut e = editor_with_rows(100, 20);
+        run_keys(&mut e, "<C-d>");
+        assert_eq!(e.textarea.cursor().0, 10);
+    }
+
+    #[test]
+    fn ctrl_u_moves_cursor_half_page_up() {
+        let mut e = editor_with_rows(100, 20);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        run_keys(&mut e, "<C-u>");
+        assert_eq!(e.textarea.cursor().0, 40);
+    }
+
+    #[test]
+    fn ctrl_f_moves_cursor_full_page_down() {
+        let mut e = editor_with_rows(100, 20);
+        run_keys(&mut e, "<C-f>");
+        // One full page ≈ h - 2 (overlap).
+        assert_eq!(e.textarea.cursor().0, 18);
+    }
+
+    #[test]
+    fn ctrl_b_moves_cursor_full_page_up() {
+        let mut e = editor_with_rows(100, 20);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        run_keys(&mut e, "<C-b>");
+        assert_eq!(e.textarea.cursor().0, 32);
+    }
+
+    #[test]
+    fn ctrl_d_lands_on_first_non_blank() {
+        let mut e = editor_with_rows(100, 20);
+        run_keys(&mut e, "<C-d>");
+        // "  line10" — first non-blank is col 2.
+        assert_eq!(e.textarea.cursor().1, 2);
+    }
+
+    #[test]
+    fn ctrl_d_clamps_at_end_of_buffer() {
+        let mut e = editor_with_rows(5, 20);
+        run_keys(&mut e, "<C-d>");
+        assert_eq!(e.textarea.cursor().0, 4);
+    }
+
+    #[test]
+    fn capital_h_jumps_to_viewport_top() {
+        let mut e = editor_with_rows(100, 10);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.textarea
+            .scroll(tui_textarea::Scrolling::Delta { rows: 45, cols: 0 });
+        let top = e.textarea.viewport_top_row();
+        run_keys(&mut e, "H");
+        assert_eq!(e.textarea.cursor().0, top);
+        assert_eq!(e.textarea.cursor().1, 2);
+    }
+
+    #[test]
+    fn capital_l_jumps_to_viewport_bottom() {
+        let mut e = editor_with_rows(100, 10);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.textarea
+            .scroll(tui_textarea::Scrolling::Delta { rows: 45, cols: 0 });
+        let top = e.textarea.viewport_top_row();
+        run_keys(&mut e, "L");
+        assert_eq!(e.textarea.cursor().0, top + 9);
+    }
+
+    #[test]
+    fn capital_m_jumps_to_viewport_middle() {
+        let mut e = editor_with_rows(100, 10);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.textarea
+            .scroll(tui_textarea::Scrolling::Delta { rows: 45, cols: 0 });
+        let top = e.textarea.viewport_top_row();
+        run_keys(&mut e, "M");
+        // 10-row viewport: middle is top + 4.
+        assert_eq!(e.textarea.cursor().0, top + 4);
+    }
+
+    #[test]
+    fn capital_h_count_offsets_from_top() {
+        let mut e = editor_with_rows(100, 10);
+        e.textarea.move_cursor(CursorMove::Jump(50, 0));
+        e.textarea
+            .scroll(tui_textarea::Scrolling::Delta { rows: 45, cols: 0 });
+        let top = e.textarea.viewport_top_row();
+        run_keys(&mut e, "3H");
+        assert_eq!(e.textarea.cursor().0, top + 2);
     }
 }
