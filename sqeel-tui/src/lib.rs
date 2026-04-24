@@ -2194,7 +2194,14 @@ async fn run_loop(
                             );
                         }
                     }
-                    (KeyModifiers::CONTROL, KeyCode::Char('v')) if focus == Focus::Results => {
+                    // Block selection: `Ctrl-V` (vim) or lowercase `v`.
+                    // Char-visual doesn't apply to a cell grid, so `v`
+                    // is repurposed here — also gives users whose
+                    // terminal swallows `Ctrl-V` a working fallback.
+                    (KeyModifiers::CONTROL, KeyCode::Char('v'))
+                    | (KeyModifiers::NONE, KeyCode::Char('v'))
+                        if focus == Focus::Results =>
+                    {
                         let mut s = state.lock().unwrap();
                         let already_block = matches!(
                             s.active_result().and_then(|t| t.selection),
@@ -5084,6 +5091,10 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) {
                 ("j / k", "Scroll down / up"),
                 ("h / l", "Scroll left / right"),
                 ("H / L", "Prev / next result tab"),
+                ("V", "Visual-line select rows"),
+                ("v / Ctrl+V", "Visual-block select rectangle"),
+                ("y", "Yank selection / row"),
+                ("Esc", "Clear selection"),
                 ("Left click", "Copy column value"),
                 ("Right click", "Copy full row"),
                 ("Left click (error)", "Copy query or error text"),
