@@ -2892,8 +2892,21 @@ async fn run_loop(
                     | (KeyModifiers::NONE, KeyCode::Char('K'))
                         if focus == Focus::Editor && vim_mode == VimMode::Normal =>
                     {
-                        if let Some(ref client) = lsp {
-                            let (row, col) = editor.textarea.cursor();
+                        let (row, col) = editor.textarea.cursor();
+                        // Fast path: if the word under the cursor
+                        // matches a table we've already cached columns
+                        // for, render the hover from the local schema
+                        // cache and skip the LSP round-trip entirely.
+                        let word = word_at_cursor(editor.textarea.lines(), row, col);
+                        let cached = if !word.is_empty() {
+                            state.lock().unwrap().hover_table_from_cache(&word)
+                        } else {
+                            None
+                        };
+                        if let Some(table) = cached {
+                            state.lock().unwrap().open_hover_table(table);
+                            last_hover_id = None;
+                        } else if let Some(ref client) = lsp {
                             last_hover_id = Some(client.writer().request_hover(
                                 scratch_uri.clone(),
                                 row as u32,
@@ -5379,6 +5392,28 @@ fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String {
         .chars()
         .rev()
         .collect()
+}
+
+/// Full word spanning the cursor — extends both left and right of the
+/// caret until it hits a non-identifier character. Used by `K` to
+/// short-circuit the LSP hover when the word matches a table we've
+/// already cached columns for.
+fn word_at_cursor(lines: &[String], row: usize, col: usize) -> String {
+    let Some(line) = lines.get(row) else {
+        return String::new();
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let col = col.min(chars.len());
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut start = col;
+    while start > 0 && is_word(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < chars.len() && is_word(chars[end]) {
+        end += 1;
+    }
+    chars[start..end].iter().collect()
 }
 
 /// Render a tabular hover payload as a centred, borderless, focus-

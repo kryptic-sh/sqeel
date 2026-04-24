@@ -1071,7 +1071,16 @@ impl AppState {
                     in_cell = true;
                 }
                 Event::End(TagEnd::TableCell) => {
-                    current_row.push(std::mem::take(&mut current_cell).trim().to_string());
+                    // sqls emits empty cells as a literal "``" (empty
+                    // inline-code span), which pulldown-cmark passes
+                    // through as Text rather than a Code event. Strip
+                    // a surrounding pair of backticks so visually-
+                    // empty cells don't render as "``" in the grid.
+                    let mut cell = std::mem::take(&mut current_cell).trim().to_string();
+                    while cell.starts_with('`') && cell.ends_with('`') && cell.len() >= 2 {
+                        cell = cell[1..cell.len() - 1].trim().to_string();
+                    }
+                    current_row.push(cell);
                     in_cell = false;
                 }
                 Event::Text(t) if in_cell => current_cell.push_str(&t),
@@ -1108,6 +1117,89 @@ impl AppState {
             rows,
             col_widths,
         })
+    }
+
+    /// Synthesise a hover table from the schema cache when the word
+    /// under the cursor matches a table we've already fetched columns
+    /// for. Returns `None` when the name doesn't resolve or the
+    /// table's columns haven't been loaded yet — callers fall back
+    /// to a real LSP hover in those cases. Case-insensitive match.
+    pub fn hover_table_from_cache(&self, name: &str) -> Option<QueryResult> {
+        let lower = name.to_lowercase();
+        for node in &self.schema_nodes {
+            let SchemaNode::Database { tables, .. } = node else {
+                continue;
+            };
+            for t in tables {
+                let SchemaNode::Table {
+                    name: tname,
+                    columns,
+                    columns_loaded_at,
+                    ..
+                } = t
+                else {
+                    continue;
+                };
+                if tname.to_lowercase() != lower {
+                    continue;
+                }
+                // Columns must have been fetched already — otherwise
+                // we'd render an empty grid. Fall through to LSP in
+                // that case.
+                columns_loaded_at.as_ref()?;
+                if columns.is_empty() {
+                    return None;
+                }
+                let header = vec![
+                    "Column".into(),
+                    "Type".into(),
+                    "PK".into(),
+                    "Nullable".into(),
+                ];
+                let rows: Vec<Vec<String>> = columns
+                    .iter()
+                    .filter_map(|c| {
+                        if let SchemaNode::Column {
+                            name,
+                            type_name,
+                            nullable,
+                            is_pk,
+                        } = c
+                        {
+                            Some(vec![
+                                name.clone(),
+                                type_name.clone(),
+                                if *is_pk { "✓" } else { "" }.into(),
+                                if *nullable { "✓" } else { "" }.into(),
+                            ])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    return None;
+                }
+                let mut col_widths: Vec<u16> = header
+                    .iter()
+                    .map(|c: &String| (c.chars().count() as u16).saturating_add(2))
+                    .collect();
+                for row in &rows {
+                    for (i, cell) in row.iter().enumerate() {
+                        let w = (cell.chars().count() as u16).saturating_add(2);
+                        if w > col_widths[i] {
+                            col_widths[i] = w;
+                        }
+                    }
+                }
+                return Some(QueryResult {
+                    columns: header,
+                    rows,
+                    col_widths,
+                });
+            }
+        }
+        None
     }
 
     /// Open the hover popup in a loading state — focus transfers
