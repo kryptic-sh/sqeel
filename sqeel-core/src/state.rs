@@ -1082,6 +1082,20 @@ impl AppState {
         self.hover_table = Some(table);
     }
 
+    /// Install a plain-text hover payload and switch focus to
+    /// `Focus::Hover`. Markdown rendering happens at draw time; the
+    /// popup is scrollable via `j` / `k` while focused, and `Esc`
+    /// closes it.
+    pub fn open_hover_text(&mut self, text: String) {
+        self.hover_prev_focus = Some(self.focus);
+        self.focus = Focus::Hover;
+        self.hover_text = Some(text);
+        self.hover_table = None;
+        self.hover_selection = None;
+        self.hover_scroll = 0;
+        self.hover_col_scroll = 0;
+    }
+
     /// Close the hover popup and restore focus to wherever `K` was
     /// pressed. Clears both the text and table payloads.
     pub fn close_hover(&mut self) {

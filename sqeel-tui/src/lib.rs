@@ -1010,15 +1010,13 @@ async fn run_loop(
                     LspEvent::Hover(id, text) => {
                         if Some(id) == last_hover_id {
                             let mut s = state.lock().unwrap();
-                            // Prefer the tabular rendering when the
-                            // payload parses as a pipe table — that
-                            // path also shifts focus into the popup so
-                            // the user can copy cells. Fall back to
-                            // the markdown-styled text view otherwise.
+                            // Both forms capture focus so the popup
+                            // stays interactive: tables for cell nav +
+                            // yank, plain text for scroll + Esc.
                             if let Some(table) = AppState::parse_hover_table(&text) {
                                 s.open_hover_table(table);
                             } else {
-                                s.hover_text = Some(text);
+                                s.open_hover_text(text);
                             }
                             needs_redraw = true;
                         }
@@ -1496,16 +1494,8 @@ async fn run_loop(
                 }
             }
             Event::Key(key) => {
-                // Text-form hover popup is one-shot — the next key
-                // dismisses it. The table-form popup (Focus::Hover)
-                // stays live until the user presses Esc, so don't
-                // touch it here.
-                {
-                    let mut s = state.lock().unwrap();
-                    if s.focus != Focus::Hover {
-                        s.hover_text.take();
-                    }
-                }
+                // Hover popups (both text and table forms) capture
+                // focus and live until Esc; no auto-dismiss here.
                 // Ctrl-C while a query / batch is running cancels the
                 // current query and skips any remaining ones in the
                 // batch. Falls through to the regular handler
@@ -2261,12 +2251,22 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down)
                         if focus == Focus::Hover =>
                     {
-                        state.lock().unwrap().hover_cursor_move(1, 0);
+                        let mut s = state.lock().unwrap();
+                        if s.hover_table.is_some() {
+                            s.hover_cursor_move(1, 0);
+                        } else {
+                            s.hover_scroll = s.hover_scroll.saturating_add(1);
+                        }
                     }
                     (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up)
                         if focus == Focus::Hover =>
                     {
-                        state.lock().unwrap().hover_cursor_move(-1, 0);
+                        let mut s = state.lock().unwrap();
+                        if s.hover_table.is_some() {
+                            s.hover_cursor_move(-1, 0);
+                        } else {
+                            s.hover_scroll = s.hover_scroll.saturating_sub(1);
+                        }
                     }
                     (KeyModifiers::NONE, KeyCode::Char('l') | KeyCode::Right)
                         if focus == Focus::Hover =>
@@ -3117,19 +3117,14 @@ fn draw(
         draw_completions(f, state, right_chunks[0], screen_row, screen_col);
     }
 
-    // Hover popup (LSP `K`). Rendered after completions so a stale
-    // completion list doesn't sit on top of a fresh hover. Tabular
-    // responses get a focus-in grid; plain markdown goes to the styled
-    // text view.
+    // Hover popup (LSP `K`). Centered borderless dialog matching the
+    // command / rename / delete / file-picker styling — dialog_bg as
+    // the only chrome, padded inside, `Clear` under it to punch
+    // through whatever the editor drew.
     if let Some(ref table) = state.hover_table {
-        draw_hover_table(f, right_chunks[0], state, table);
+        draw_hover_table(f, area, state, table);
     } else if let Some(ref text) = state.hover_text {
-        let (cur_row, cur_col) = editor.textarea.cursor();
-        let top_row = editor.textarea.viewport_top_row();
-        let top_col = editor.textarea.viewport_top_col();
-        let screen_row = cur_row.saturating_sub(top_row);
-        let screen_col = cur_col.saturating_sub(top_col);
-        draw_hover_popup(f, right_chunks[0], screen_row, screen_col, text);
+        draw_hover_popup(f, area, state.hover_scroll, text);
     }
 
     // Connection switcher modal (top-level overlay)
@@ -5197,92 +5192,69 @@ fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String {
         .collect()
 }
 
-/// Render a tabular hover payload as a focus-capturing popup overlay.
-/// The table itself is drawn via `render_grid_lines` so its styling
-/// stays in lock-step with the main results pane.
+/// Render a tabular hover payload as a centred, borderless, focus-
+/// stealing dialog. Chrome matches the command palette — 2-col / 1-row
+/// padding on `dialog_bg`, no border rule.
 fn draw_hover_table(
     f: &mut ratatui::Frame<'_>,
-    editor_area: Rect,
+    area: Rect,
     state: &AppState,
     table: &sqeel_core::state::QueryResult,
 ) {
-    let inner_x = editor_area.x + 1;
-    let inner_y = editor_area.y + 1;
-    let inner_w = editor_area.width.saturating_sub(2);
-    let inner_h = editor_area.height.saturating_sub(2);
-    if inner_w < 20 || inner_h < 5 {
+    if area.width < 20 || area.height < 5 {
         return;
     }
+    let u = ui();
+    let bg = Style::default().fg(u.dialog_fg).bg(u.dialog_bg);
 
-    // Natural width: sum of col_widths + 1 separator per column gap.
+    // Natural width: sum of col_widths + separator per column gap.
     let natural_w: u32 = table
         .col_widths
         .iter()
         .map(|&w| w as u32 + 1)
         .sum::<u32>()
         .saturating_sub(1);
-    // Leave room for borders (2) + padding inside.
     let popup_w = (natural_w as u16)
-        .saturating_add(4)
-        .clamp(30, inner_w.min(100));
-    // Header + separator + body rows + borders (2).
-    let max_body = inner_h.saturating_sub(4);
+        .saturating_add(4) // 2-col pad each side
+        .clamp(40, area.width.saturating_sub(4).min(100));
+    let max_body = area.height.saturating_sub(6);
     let body_h = (table.rows.len() as u16).min(max_body.max(1));
-    let popup_h = body_h + 4;
+    let popup_h = (body_h + 4).min(area.height.saturating_sub(2));
 
     let popup = Rect {
-        x: inner_x + (inner_w.saturating_sub(popup_w)) / 2,
-        y: inner_y + (inner_h.saturating_sub(popup_h)) / 2,
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
         width: popup_w,
         height: popup_h,
     };
     f.render_widget(Clear, popup);
+    f.render_widget(Block::default().style(bg), popup);
 
-    let u = ui();
-    let title = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "󰋼 Hover",
-            Style::default()
-                .fg(u.dialog_border)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  ({} rows)", table.rows.len()),
-            Style::default().fg(u.pane_sep),
-        ),
-        Span::raw(" "),
-    ]);
-    let block = Block::default()
-        .title(title)
-        .title_bottom(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "hjkl nav · y yank · Esc close",
-                Style::default().fg(u.pane_sep),
-            ),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(u.dialog_border));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-
-    // Split inner into header (1) + separator (1) + body (rest).
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
         .split(inner);
 
-    let sep_style = Style::default().fg(u.results_sep);
-    let header_style = Style::default()
-        .fg(u.results_header_active)
-        .add_modifier(Modifier::BOLD);
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled("󰋼 Hover", bg.add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  ({} rows)", table.rows.len()), bg),
+    ]))
+    .style(bg);
+    f.render_widget(title, chunks[0]);
+
+    let sep_style = Style::default().fg(u.results_sep).bg(u.dialog_bg);
+    let header_style = bg.add_modifier(Modifier::BOLD).fg(u.results_header_active);
     let col_bg = results_cursor_bg(true);
     let cursor_bg = results_cursor_bg_strong(true);
 
@@ -5327,7 +5299,6 @@ fn draw_hover_table(
         col_bg,
     );
 
-    // Horizontal scroll so the cursor column stays visible.
     let char_offset: u16 = table
         .col_widths
         .iter()
@@ -5336,36 +5307,31 @@ fn draw_hover_table(
         .sum::<u32>() as u16;
 
     f.render_widget(
-        Paragraph::new(header_line).scroll((0, char_offset)),
-        chunks[0],
+        Paragraph::new(header_line)
+            .style(bg)
+            .scroll((0, char_offset)),
+        chunks[1],
     );
     let hr: String = "─".repeat(inner.width as usize);
-    f.render_widget(Paragraph::new(hr).style(sep_style), chunks[1]);
+    f.render_widget(Paragraph::new(hr).style(sep_style), chunks[2]);
     f.render_widget(
-        Paragraph::new(body_lines).scroll((0, char_offset)),
-        chunks[2],
+        Paragraph::new(body_lines)
+            .style(bg)
+            .scroll((0, char_offset)),
+        chunks[3],
     );
 }
 
-fn draw_hover_popup(
-    f: &mut ratatui::Frame<'_>,
-    editor_area: Rect,
-    cur_row: usize,
-    cur_col: usize,
-    text: &str,
-) {
-    let inner_x = editor_area.x + 1;
-    let inner_y = editor_area.y + 1;
-    let inner_w = editor_area.width.saturating_sub(2);
-    let inner_h = editor_area.height.saturating_sub(2);
-    if inner_w < 10 || inner_h < 3 {
+/// Plain-text (or lightly-markdown) hover payload. Same borderless
+/// dialog_bg chrome as the table form; supports j/k scroll via the
+/// passed-in `scroll` offset.
+fn draw_hover_popup(f: &mut ratatui::Frame<'_>, area: Rect, scroll: usize, text: &str) {
+    if area.width < 10 || area.height < 5 {
         return;
     }
-
+    let u = ui();
+    let bg = Style::default().fg(u.dialog_fg).bg(u.dialog_bg);
     let lines = format_hover_lines(text);
-    // Visual width of each rendered line (strip ANSI-style markers
-    // already consumed by the span builder — we only see the plain
-    // chars here).
     let longest = lines
         .iter()
         .map(|l| {
@@ -5376,51 +5342,40 @@ fn draw_hover_popup(
         })
         .max()
         .unwrap_or(0);
-    // Leave room for borders (2) + side padding (2). Cap at 80 cols or
-    // whatever the editor can fit.
-    let target_w = (longest + 4).clamp(24, inner_w.min(80));
-    let target_h = (lines.len() as u16 + 2).clamp(3, inner_h.min(20));
-
-    let cx = inner_x.saturating_add(cur_col as u16);
-    let cy = inner_y.saturating_add(cur_row as u16);
-    // Prefer rendering below the cursor; flip above when the popup
-    // would clip the bottom of the editor.
-    let popup_y = if cy + 2 + target_h <= inner_y + inner_h {
-        cy + 2
-    } else {
-        cy.saturating_sub(target_h)
-    };
-    let popup_x = cx.min((inner_x + inner_w).saturating_sub(target_w));
+    let popup_w = (longest + 4).clamp(30, area.width.saturating_sub(4).min(80));
+    let content_h = (lines.len() as u16 + 1).min(area.height.saturating_sub(4));
+    let popup_h = (content_h + 3).min(area.height.saturating_sub(2));
 
     let popup = Rect {
-        x: popup_x,
-        y: popup_y,
-        width: target_w,
-        height: target_h,
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+        width: popup_w,
+        height: popup_h,
     };
     f.render_widget(Clear, popup);
-    let u = ui();
-    let title = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "󰋼 Hover",
-            Style::default()
-                .fg(u.dialog_border)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ]);
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(u.dialog_border))
-        .padding(ratatui::widgets::Padding::horizontal(1));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
+    f.render_widget(Block::default().style(bg), popup);
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+    let title = Paragraph::new(Line::from(Span::styled(
+        "󰋼 Hover",
+        bg.add_modifier(Modifier::BOLD),
+    )))
+    .style(bg);
+    f.render_widget(title, chunks[0]);
     f.render_widget(
-        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
-        inner,
+        Paragraph::new(lines)
+            .style(bg)
+            .scroll((scroll as u16, 0))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        chunks[1],
     );
 }
 
@@ -5579,16 +5534,23 @@ fn draw_completions(
         height: popup_h.min(inner_h),
     };
 
+    // Borderless — match command palette / hover / help styling. A bg
+    // fill + 1-col horizontal padding inside replaces the old border
+    // frame so the overlay reads as one unified chrome.
+    let bg = Style::default().fg(ui().dialog_fg).bg(ui().dialog_bg);
     f.render_widget(Clear, popup);
+    f.render_widget(Block::default().style(bg), popup);
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(ui().completion_border)),
-        )
+        .style(bg)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y,
+        width: popup.width.saturating_sub(2),
+        height: popup.height,
+    };
     let mut list_state = ListState::default().with_selected(Some(cursor));
-    f.render_stateful_widget(list, popup, &mut list_state);
+    f.render_stateful_widget(list, inner, &mut list_state);
 }
 
 /// Small borderless centered dialog: 2-col horizontal padding, 1-row vertical
@@ -5900,13 +5862,18 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> u16 {
         ),
     ];
 
+    let u = ui();
+    let bg = Style::default().fg(u.dialog_fg).bg(u.dialog_bg);
+    // Borderless dialog styling: same 2-col / 1-row padding idiom as
+    // the command palette and hover popups. Two extra rows reserved
+    // for the title + trailing pad, so content height = total_rows.
     let width = 62.min(area.width.saturating_sub(4));
     let total_rows: u16 = SECTIONS
         .iter()
         .map(|(_, items)| items.len() as u16 + 2)
         .sum::<u16>()
         + 1;
-    let height = total_rows.min(area.height.saturating_sub(4));
+    let height = (total_rows + 4).min(area.height.saturating_sub(4));
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -5915,41 +5882,54 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> u16 {
     };
 
     f.render_widget(Clear, popup);
+    f.render_widget(Block::default().style(bg), popup);
 
-    let block = Block::default()
-        .title(" Help  (Esc to close) ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ui().dialog_border));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-    let scroll = scroll.min(total_rows.saturating_sub(inner.height));
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    let title = Paragraph::new(Line::from(Span::styled(
+        " Help",
+        bg.add_modifier(Modifier::BOLD),
+    )))
+    .style(bg);
+    f.render_widget(title, chunks[0]);
+
+    let max_scroll = total_rows.saturating_sub(chunks[1].height);
+    let scroll = scroll.min(max_scroll);
 
     let mut lines: Vec<ratatui::text::Line<'static>> = vec![];
     for (section, items) in SECTIONS {
         lines.push(ratatui::text::Line::from(Span::styled(
             format!(" {section}"),
-            Style::default()
-                .fg(ui().dialog_border)
-                .add_modifier(Modifier::BOLD),
+            bg.add_modifier(Modifier::BOLD),
         )));
         for (key, desc) in *items {
             let pad = 20usize.saturating_sub(key.len());
             lines.push(ratatui::text::Line::from(vec![
-                Span::styled(format!("  {key}"), Style::default().fg(ui().completion_key)),
-                Span::raw(" ".repeat(pad)),
-                Span::raw(*desc),
+                Span::styled(
+                    format!("  {key}"),
+                    Style::default().fg(u.completion_key).bg(u.dialog_bg),
+                ),
+                Span::styled(" ".repeat(pad), bg),
+                Span::styled((*desc).to_string(), bg),
             ]));
         }
         lines.push(ratatui::text::Line::raw(""));
     }
 
     f.render_widget(
-        Paragraph::new(lines)
-            .style(Style::default())
-            .scroll((scroll, 0)),
-        inner,
+        Paragraph::new(lines).style(bg).scroll((scroll, 0)),
+        chunks[1],
     );
-    total_rows.saturating_sub(inner.height)
+    max_scroll
 }
 
 fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) -> (u16, u16) {
