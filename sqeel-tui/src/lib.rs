@@ -353,6 +353,12 @@ async fn run_loop(
     // to `usize::MAX` so the first iteration always triggers an initial
     // window highlight.
     let mut last_highlight_top: usize = usize::MAX;
+    // Dialect of the last highlight submission. When the DB connection
+    // resolves and `active_dialect` flips from `Generic` to a concrete
+    // dialect, force a re-submit so the worker re-parses with the right
+    // dialect-specific keyword promotions.
+    let mut last_highlight_dialect: sqeel_core::highlight::Dialect =
+        sqeel_core::highlight::Dialect::Generic;
     // Cached last highlight result so we can re-apply marker overlays
     // when the cursor line or insert-mode flips, without re-parsing.
     let mut last_highlight_result: Option<HighlightResult> = None;
@@ -545,9 +551,11 @@ async fn run_loop(
         const HIGHLIGHT_WINDOW_MARGIN: usize = 500;
         let viewport_top = editor.textarea.viewport_top_row();
         let viewport_height = editor.viewport_height_value() as usize;
+        let current_dialect = state.lock().unwrap().active_dialect;
+        let dialect_changed = current_dialect != last_highlight_dialect;
         let viewport_scrolled = last_highlight_top == usize::MAX
             || viewport_top.abs_diff(last_highlight_top) >= HIGHLIGHT_WINDOW_MARGIN / 2;
-        if (content_changed || viewport_scrolled) && viewport_height > 0 {
+        if (content_changed || viewport_scrolled || dialect_changed) && viewport_height > 0 {
             let lines = editor.textarea.lines();
             if !lines.is_empty() {
                 let start = viewport_top.saturating_sub(HIGHLIGHT_WINDOW_MARGIN);
@@ -561,8 +569,8 @@ async fn run_loop(
                     }
                     src.push_str(l);
                 }
-                let dialect = state.lock().unwrap().active_dialect;
-                highlight_thread.submit(Arc::new(src), start, slice.len(), dialect);
+                highlight_thread.submit(Arc::new(src), start, slice.len(), current_dialect);
+                last_highlight_dialect = current_dialect;
                 last_highlight_top = viewport_top;
             }
         }
@@ -3834,41 +3842,6 @@ fn apply_window_spans(
     // Sort each touched row so `line_spans` sees them in start-byte order.
     for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
         row_spans.sort_by_key(|&(s, _, _)| s);
-    }
-    // Opt-in debug dump: set SQEEL_DEBUG_HL_DUMP=/path/to/file and the
-    // post-apply span table will be appended there each call. Used to
-    // diagnose why live rendering differs from library unit tests.
-    if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            let _ = writeln!(
-                f,
-                "--- apply_window_spans window=[{window_start},{window_end}) cursor_row={cursor_row}"
-            );
-            for (row, spans) in by_row
-                .iter()
-                .enumerate()
-                .take(window_end)
-                .skip(window_start)
-            {
-                let line_preview: String = textarea_lines
-                    .get(row)
-                    .map(|l| l.chars().take(80).collect())
-                    .unwrap_or_default();
-                let line_bytes: Vec<u8> = textarea_lines
-                    .get(row)
-                    .map(|l| l.bytes().collect())
-                    .unwrap_or_default();
-                let _ = writeln!(
-                    f,
-                    "row {row} [{line_preview:?}] bytes={line_bytes:?}: {spans:?}"
-                );
-            }
-        }
     }
     textarea.set_syntax_spans(by_row);
 }
