@@ -248,12 +248,6 @@ impl<'a> Editor<'a> {
         self.viewport_height.load(Ordering::Relaxed)
     }
 
-    /// Calls `f` on the textarea and marks the content dirty.
-    pub(super) fn mutate<R>(&mut self, f: impl FnOnce(&mut TextArea<'a>) -> R) -> R {
-        self.mark_content_dirty();
-        f(&mut self.textarea)
-    }
-
     /// Phase 7f edit funnel: apply `edit` to the migration buffer
     /// (the eventual edit authority), mirror the result back into
     /// the textarea so the still-textarea-driven paths (insert mode,
@@ -604,26 +598,45 @@ impl<'a> Editor<'a> {
     }
 
     pub fn insert_str(&mut self, text: &str) {
-        self.mutate(|t| t.insert_str(text));
+        let pos = self.buffer.cursor();
+        self.buffer.apply_edit(sqeel_buffer::Edit::InsertStr {
+            at: pos,
+            text: text.to_string(),
+        });
+        self.push_buffer_content_to_textarea();
+        self.mark_content_dirty();
     }
 
     pub fn accept_completion(&mut self, completion: &str) {
-        let (row, col) = self.textarea.cursor();
-        let line = self.textarea.lines()[row].clone();
-        let before = &line[..col.min(line.len())];
-        let prefix_len = before
-            .chars()
+        use sqeel_buffer::{Edit, MotionKind, Position};
+        let cursor = self.buffer.cursor();
+        let line = self.buffer.line(cursor.row).unwrap_or("").to_string();
+        let chars: Vec<char> = line.chars().collect();
+        let prefix_len = chars[..cursor.col.min(chars.len())]
+            .iter()
             .rev()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .take_while(|c| c.is_alphanumeric() || **c == '_')
             .count();
-        for _ in 0..prefix_len {
-            self.mutate(|t| t.delete_char());
+        if prefix_len > 0 {
+            let start = Position::new(cursor.row, cursor.col - prefix_len);
+            self.buffer.apply_edit(Edit::DeleteRange {
+                start,
+                end: cursor,
+                kind: MotionKind::Char,
+            });
         }
-        self.mutate(|t| t.insert_str(completion));
+        let cursor = self.buffer.cursor();
+        self.buffer.apply_edit(Edit::InsertStr {
+            at: cursor,
+            text: completion.to_string(),
+        });
+        self.push_buffer_content_to_textarea();
+        self.mark_content_dirty();
     }
 
     pub(super) fn snapshot(&self) -> (Vec<String>, (usize, usize)) {
-        (self.textarea.lines().to_vec(), self.textarea.cursor())
+        let pos = self.buffer.cursor();
+        (self.buffer.lines().to_vec(), (pos.row, pos.col))
     }
 
     pub(super) fn push_undo(&mut self) {
