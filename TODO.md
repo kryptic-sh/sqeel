@@ -240,35 +240,21 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
 
 ## Render polish (M–L)
 
-- **Soft-wrap render (L).** Long SQL lines often blow past terminal width. Add a
-  `wrap: Wrap::None | Wrap::Char | Wrap::Word` enum on `BufferView`; the render
-  walks a synthetic "screen line" stream. Affects motion (`gj`/`gk` start to
-  matter), gutter (line numbers on continuation rows), cursor placement. _Phase
-  1 (render path) shipped._ `Wrap` enum + `BufferView::wrap` field +
-  `wrap_segments` helper. Render walks doc rows, splits each into char- or
-  word-broken segments that fit `text_area.width`, paints the gutter line number
+- ~~**Soft-wrap render (L).**~~ Done. Shipped in four phases. (1) `Wrap` enum in
+  `mod wrap` + `wrap_segments` splitter; render walks doc rows, splits each into
+  char- or word-broken segments that fit the text area, paints the line number
   on the first segment and a blank gutter on continuations. Cursor highlight +
   EOL placeholder land on the right segment. Cursorcolumn pass skipped under
-  wrap. `Wrap::None` is the default and preserves the existing horizontal-scroll
-  path. _Phase 2 (viewport scroll) shipped._ `Wrap` and `wrap_segments` moved
-  into a shared `mod wrap`; `Viewport` now carries `wrap: Wrap` and
-  `text_width: u16` so motion + scroll see the same source of truth as render
-  (the `BufferView::wrap` field is gone — `BufferView` reads from
-  `buffer.viewport().wrap`). `Buffer::ensure_cursor_visible` is screen-line
-  aware: when wrap is on it walks doc rows from `top_row`, sums their segment
-  counts, and pushes `top_row` past visible rows until the cursor's screen row
-  fits inside `viewport.height`. sqeel-tui publishes `text_width = area.width
-  - gutter*width` each frame. \_Phase 3 (visual-line motion) shipped.*
-    `Buffer::move_screen_down` / `move_screen_up` walk one screen segment at a
-    time under wrap, falling back to `move_down` / `move_up` when wrap is off so
-    the existing `j` / `k` semantics survive untouched. The visual col (cursor
-    col minus segment start) is snapshotted up front so a chain of `gj` / `gk`
-    presses preserves the same display column even when crossing short visual
-    lines. New `Motion::ScreenDown` / `ScreenUp` wired into
-    `apply_motion_cursor`, the `g`-prefix chord registry (replaces the old
-    `gj`→`Down` aliases), and `handle_op_after_g` so `dgj` / `dgk` work as
-    linewise operator motions. Still TODO: `:set wrap` ex command + Editor
-    settings plumbing, scrolloff under wrap.
+  wrap. (2) `Viewport` carries `wrap: Wrap` and `text_width: u16` so motion +
+  scroll + render share one source of truth (the `BufferView::wrap` field is
+  gone). `Buffer::ensure_cursor_visible` is screen-line aware: walks segments
+  from `top_row`, pushes top forward until the cursor's screen row fits inside
+  `viewport.height`. sqeel-tui publishes `text_width = area.width
+  - gutter_width`each frame. (3)`Buffer::move_screen_down`/`move_screen_up`walk one segment at a time, falling back to`move_down`/`move_up`when wrap is off. The visual col (cursor col minus segment start) is snapshotted up front so chained`gj`/`gk`presses preserve the same display column. New`Motion::ScreenDown`/`ScreenUp`wired into the motion dispatcher, the`g`-prefix chord registry, and `handle_op_after_g`so`dgj`/`dgk`work as linewise operator motions. (4)`Settings::wrap`ships through`:set
+    wrap`/`:set nowrap`/`:set linebreak`/`:set
+    nolinebreak`; sqeel-tui mirrors it onto `viewport.wrap`each frame.`Editor::ensure_cursor_in_scrolloff`short-circuits to`Buffer::ensure_cursor_visible`
+    under wrap (the doc-row scrolloff math doesn't translate to screen lines yet
+    — pragmatic gap).
 - ~~**Concealed regions (M).**~~ Done. `BufferView` takes a `conceals` slice;
   each entry is `Conceal { row, start_byte, end_byte, replacement }`. The render
   walker checks each row's conceal list, paints the replacement when entering a

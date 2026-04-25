@@ -4169,11 +4169,13 @@ fn draw_editor(
     let line_count = editor.buffer().row_count().max(1);
     let digits = line_count.to_string().len() as u16;
     let gutter_width = digits.saturating_add(2);
+    let wrap_mode = editor.settings().wrap;
     {
         let v = editor.buffer_mut().viewport_mut();
         v.width = chunks[1].width;
         v.height = chunks[1].height;
         v.text_width = chunks[1].width.saturating_sub(gutter_width);
+        v.wrap = wrap_mode;
     }
 
     // Plumb the host's `/` search regex into the buffer so

@@ -673,12 +673,18 @@ fn apply_set(editor: &mut Editor<'_>, body: &str) -> ExEffect {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         let s = editor.settings();
+        let wrap = match s.wrap {
+            sqeel_buffer::Wrap::None => "off",
+            sqeel_buffer::Wrap::Char => "char",
+            sqeel_buffer::Wrap::Word => "word",
+        };
         return ExEffect::Info(format!(
-            "shiftwidth={}  tabstop={}  textwidth={}  ignorecase={}",
+            "shiftwidth={}  tabstop={}  textwidth={}  ignorecase={}  wrap={}",
             s.shiftwidth,
             s.tabstop,
             s.textwidth,
-            if s.ignore_case { "on" } else { "off" }
+            if s.ignore_case { "on" } else { "off" },
+            wrap,
         ));
     }
     for token in trimmed.split_whitespace() {
@@ -726,6 +732,30 @@ fn apply_set_token(editor: &mut Editor<'_>, token: &str) -> Result<(), String> {
     };
     match name {
         "ignorecase" | "ic" => editor.settings_mut().ignore_case = value,
+        "wrap" => {
+            editor.settings_mut().wrap = if value {
+                // Preserve `Wrap::Word` if `linebreak` already flipped
+                // word-mode on; otherwise default `set wrap` to char.
+                match editor.settings().wrap {
+                    sqeel_buffer::Wrap::Word => sqeel_buffer::Wrap::Word,
+                    _ => sqeel_buffer::Wrap::Char,
+                }
+            } else {
+                sqeel_buffer::Wrap::None
+            };
+        }
+        "linebreak" | "lbr" => {
+            editor.settings_mut().wrap = if value {
+                sqeel_buffer::Wrap::Word
+            } else {
+                // `nolinebreak` drops back to char wrap when wrap is on,
+                // otherwise stays off.
+                match editor.settings().wrap {
+                    sqeel_buffer::Wrap::None => sqeel_buffer::Wrap::None,
+                    _ => sqeel_buffer::Wrap::Char,
+                }
+            };
+        }
         // Booleans we don't (yet) honour: accept silently so :set lines
         // copied from a vimrc don't error out. `foldenable` falls here.
         "foldenable" | "fen" => {}
@@ -1517,9 +1547,48 @@ mod tests {
             ExEffect::Info(msg) => {
                 assert!(msg.contains("shiftwidth=2"));
                 assert!(msg.contains("ignorecase=off"));
+                assert!(msg.contains("wrap=off"));
             }
             other => panic!("expected Info, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn set_wrap_flips_to_char_mode() {
+        let mut e = new("x");
+        run(&mut e, "set wrap");
+        assert_eq!(e.settings().wrap, sqeel_buffer::Wrap::Char);
+    }
+
+    #[test]
+    fn set_nowrap_resets() {
+        let mut e = new("x");
+        run(&mut e, "set wrap");
+        run(&mut e, "set nowrap");
+        assert_eq!(e.settings().wrap, sqeel_buffer::Wrap::None);
+    }
+
+    #[test]
+    fn set_linebreak_flips_to_word_mode() {
+        let mut e = new("x");
+        run(&mut e, "set linebreak");
+        assert_eq!(e.settings().wrap, sqeel_buffer::Wrap::Word);
+    }
+
+    #[test]
+    fn set_wrap_after_linebreak_keeps_word_mode() {
+        let mut e = new("x");
+        run(&mut e, "set linebreak");
+        run(&mut e, "set wrap");
+        assert_eq!(e.settings().wrap, sqeel_buffer::Wrap::Word);
+    }
+
+    #[test]
+    fn set_nolinebreak_drops_to_char_when_wrap_on() {
+        let mut e = new("x");
+        run(&mut e, "set linebreak");
+        run(&mut e, "set nolinebreak");
+        assert_eq!(e.settings().wrap, sqeel_buffer::Wrap::Char);
     }
 
     #[test]

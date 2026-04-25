@@ -9,7 +9,8 @@ Fast, vim-native SQL client. No Electron. No JVM.
 
 - Native Rust — instant startup
 - Vim bindings — first class (operators, text objects, visual modes, marks,
-  jumplist, page scroll, H/M/L, case/indent ops, dot-repeat)
+  jumplist, page scroll, H/M/L, case/indent ops, dot-repeat, soft-wrap with
+  `:set wrap` / `:set linebreak` and `gj`/`gk`)
 - Mouse support in all panes
 - Two UIs: terminal (`sqeel`) or native GUI (`sqeel-gui`)
 - MySQL, SQLite, PostgreSQL via sqlx
@@ -156,6 +157,7 @@ features that go beyond basic vim.
 | `Ctrl+d` / `Ctrl+u`     | Half-page scroll (cursor follows)         |
 | `Ctrl+f` / `Ctrl+b`     | Full-page scroll                          |
 | `H` / `M` / `L`         | Cursor to viewport top / middle / bottom  |
+| `gj` / `gk`             | Visual-line down / up (under `:set wrap`) |
 | `gg` / `G`              | First / last line                         |
 | `zz` / `zt` / `zb`      | Center / top / bottom viewport on cursor  |
 | `m{a-z}`                | Set mark                                  |

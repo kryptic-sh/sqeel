@@ -105,6 +105,12 @@ pub struct Settings {
     pub ignore_case: bool,
     /// Wrap column for `gq{motion}` text reflow. Vim's default is 79.
     pub textwidth: usize,
+    /// Soft-wrap mode the renderer + scroll math + `gj` / `gk` use.
+    /// Default is [`sqeel_buffer::Wrap::None`] — long lines extend
+    /// past the right edge and `top_col` clips the left side.
+    /// `:set wrap` flips to char-break wrap; `:set linebreak` flips
+    /// to word-break wrap; `:set nowrap` resets.
+    pub wrap: sqeel_buffer::Wrap,
 }
 
 impl Default for Settings {
@@ -114,6 +120,7 @@ impl Default for Settings {
             tabstop: 8,
             ignore_case: false,
             textwidth: 79,
+            wrap: sqeel_buffer::Wrap::None,
         }
     }
 }
@@ -705,6 +712,17 @@ impl<'a> Editor<'a> {
     pub(crate) fn ensure_cursor_in_scrolloff(&mut self) {
         let height = self.viewport_height.load(Ordering::Relaxed) as usize;
         if height == 0 {
+            self.buffer.ensure_cursor_visible();
+            return;
+        }
+        // Under soft-wrap the doc-row scrolloff math below is wrong:
+        // a wrapped doc row spans many screen rows, so adding `margin`
+        // doc rows can still leave the cursor's screen row below the
+        // viewport. Defer to `Buffer::ensure_cursor_visible`, which is
+        // screen-line aware. Drops the scrolloff *margin* under wrap;
+        // the cursor stays visible but can sit on the very edge. Good
+        // enough for first cut — revisit if it bites.
+        if !matches!(self.buffer.viewport().wrap, sqeel_buffer::Wrap::None) {
             self.buffer.ensure_cursor_visible();
             return;
         }
