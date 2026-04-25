@@ -71,6 +71,13 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         _ => {}
     }
 
+    // `:g/pat/cmd` (and `:g!/pat/cmd` / `:v/pat/cmd` for the
+    // inverse). Only `cmd = d` is supported today — the most useful
+    // application in a SQL editor is "delete every line matching".
+    if let Some((negate, rest)) = parse_global_prefix(cmd) {
+        return apply_global(editor, rest, negate);
+    }
+
     // `:s/...` or `:%s/...` substitute.
     let (scope, rest) = if let Some(rest) = cmd.strip_prefix("%s") {
         (SubScope::Whole, rest)
@@ -86,6 +93,96 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         },
         Err(e) => ExEffect::Error(e),
     }
+}
+
+/// Detect a `:g/pat/cmd`, `:g!/pat/cmd`, or `:v/pat/cmd` prefix.
+/// Returns `(negate, body_after_prefix)` where `body_after_prefix`
+/// still has the leading separator + pattern + cmd attached.
+fn parse_global_prefix(cmd: &str) -> Option<(bool, &str)> {
+    if let Some(rest) = cmd.strip_prefix("g!") {
+        return Some((true, rest));
+    }
+    if let Some(rest) = cmd.strip_prefix('v') {
+        return Some((true, rest));
+    }
+    if let Some(rest) = cmd.strip_prefix('g') {
+        return Some((false, rest));
+    }
+    None
+}
+
+/// Run `:g/pat/d` (or its negated variants). Walks the buffer's
+/// rows, collects matches, then drops them in reverse so row indices
+/// stay valid through the cascade of deletes.
+fn apply_global(editor: &mut Editor<'_>, body: &str, negate: bool) -> ExEffect {
+    use sqeel_buffer::{Edit, MotionKind, Position};
+    let mut chars = body.chars();
+    let sep = match chars.next() {
+        Some(c) => c,
+        None => return ExEffect::Error("empty :g pattern".into()),
+    };
+    if sep.is_alphanumeric() || sep == '\\' {
+        return ExEffect::Error("global needs a separator, e.g. :g/foo/d".into());
+    }
+    let rest: String = chars.collect();
+    let parts = split_unescaped(&rest, sep);
+    if parts.len() < 2 {
+        return ExEffect::Error("global needs /pattern/cmd".into());
+    }
+    let pattern = unescape(&parts[0], sep);
+    let cmd = parts[1].trim();
+    if cmd != "d" {
+        return ExEffect::Error(format!(":g supports only `d` today, got `{cmd}`"));
+    }
+    let regex = match regex::Regex::new(&pattern) {
+        Ok(r) => r,
+        Err(e) => return ExEffect::Error(format!("bad pattern: {e}")),
+    };
+
+    editor.push_undo();
+    // Identify rows to drop (newest-first so multi-line drops don't
+    // shift indices under us).
+    let row_count = editor.buffer().row_count();
+    let mut targets: Vec<usize> = Vec::new();
+    for row in 0..row_count {
+        let line = editor.buffer().line(row).unwrap_or("");
+        let matches = regex.is_match(line);
+        if matches != negate {
+            targets.push(row);
+        }
+    }
+    if targets.is_empty() {
+        editor.undo_stack.pop();
+        return ExEffect::Substituted { count: 0 };
+    }
+    let count = targets.len();
+    for row in targets.iter().rev() {
+        let row = *row;
+        // Last row in a 1-row buffer can't be removed (Buffer keeps
+        // the one-empty-row invariant); just clear it instead.
+        if editor.buffer().row_count() == 1 {
+            let line_chars = editor
+                .buffer()
+                .line(0)
+                .map(|l| l.chars().count())
+                .unwrap_or(0);
+            if line_chars > 0 {
+                editor.mutate_edit(Edit::DeleteRange {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, line_chars),
+                    kind: MotionKind::Char,
+                });
+            }
+            continue;
+        }
+        editor.mutate_edit(Edit::DeleteRange {
+            start: Position::new(row, 0),
+            end: Position::new(row, 0),
+            kind: MotionKind::Line,
+        });
+    }
+    editor.mark_dirty_after_ex();
+    ExEffect::Substituted { count }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,5 +514,58 @@ mod tests {
         let effect = run(&mut e, "s/\\//-/g");
         assert_eq!(effect, ExEffect::Substituted { count: 2 });
         assert_eq!(e.buffer().lines()[0], "a-b-c");
+    }
+
+    #[test]
+    fn global_delete_drops_matching_rows() {
+        let mut e = new("keep1\nDROP1\nkeep2\nDROP2\nkeep3");
+        let effect = run(&mut e, "g/DROP/d");
+        assert_eq!(effect, ExEffect::Substituted { count: 2 });
+        assert_eq!(
+            e.buffer().lines(),
+            &[
+                "keep1".to_string(),
+                "keep2".to_string(),
+                "keep3".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn global_negated_drops_non_matching_rows() {
+        let mut e = new("keep1\nother\nkeep2");
+        let effect = run(&mut e, "v/keep/d");
+        assert_eq!(effect, ExEffect::Substituted { count: 1 });
+        assert_eq!(
+            e.buffer().lines(),
+            &["keep1".to_string(), "keep2".to_string()]
+        );
+    }
+
+    #[test]
+    fn global_with_regex_pattern() {
+        let mut e = new("foo bar\nbaz qux\nfoo baz\nbaz");
+        // Drop lines starting with "foo".
+        let effect = run(&mut e, r"g/^foo/d");
+        assert_eq!(effect, ExEffect::Substituted { count: 2 });
+        assert_eq!(
+            e.buffer().lines(),
+            &["baz qux".to_string(), "baz".to_string()]
+        );
+    }
+
+    #[test]
+    fn global_no_matches_reports_zero() {
+        let mut e = new("hello\nworld");
+        let effect = run(&mut e, "g/xyz/d");
+        assert_eq!(effect, ExEffect::Substituted { count: 0 });
+        assert_eq!(e.buffer().lines().len(), 2);
+    }
+
+    #[test]
+    fn global_unsupported_command_errors_out() {
+        let mut e = new("foo\nbar");
+        let effect = run(&mut e, "g/foo/p");
+        assert!(matches!(effect, ExEffect::Error(_)));
     }
 }
