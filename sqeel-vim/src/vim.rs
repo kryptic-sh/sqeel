@@ -2760,7 +2760,7 @@ fn transform_block_case(
 }
 
 fn block_yank(ed: &Editor<'_>, top: usize, bot: usize, left: usize, right: usize) -> String {
-    let lines = ed.textarea.lines();
+    let lines = ed.buffer().lines();
     let mut rows: Vec<String> = Vec::new();
     for r in top..=bot {
         let line = match lines.get(r) {
@@ -2779,25 +2779,26 @@ fn block_yank(ed: &Editor<'_>, top: usize, bot: usize, left: usize, right: usize
 }
 
 fn delete_block_contents(ed: &mut Editor<'_>, top: usize, bot: usize, left: usize, right: usize) {
-    let mut lines: Vec<String> = ed.textarea.lines().to_vec();
-    for r in top..=bot.min(lines.len().saturating_sub(1)) {
-        let chars: Vec<char> = lines[r].chars().collect();
-        if left >= chars.len() {
-            continue;
-        }
-        let end = (right + 1).min(chars.len());
-        let before: String = chars[..left].iter().collect();
-        let after: String = chars[end..].iter().collect();
-        lines[r] = format!("{before}{after}");
+    use sqeel_buffer::{Edit, MotionKind, Position};
+    ed.sync_buffer_content_from_textarea();
+    let last_row = bot.min(ed.buffer().row_count().saturating_sub(1));
+    if last_row < top {
+        return;
     }
-    reset_textarea_lines(ed, lines);
+    ed.mutate_edit(Edit::DeleteRange {
+        start: Position::new(top, left),
+        end: Position::new(last_row, right),
+        kind: MotionKind::Block,
+    });
+    ed.push_buffer_cursor_to_textarea();
 }
 
 /// Replace each character cell in the block with `ch`.
 fn block_replace(ed: &mut Editor<'_>, ch: char) {
     let (top, bot, left, right) = block_bounds(ed);
     ed.push_undo();
-    let mut lines: Vec<String> = ed.textarea.lines().to_vec();
+    ed.sync_buffer_content_from_textarea();
+    let mut lines: Vec<String> = ed.buffer().lines().to_vec();
     for r in top..=bot.min(lines.len().saturating_sub(1)) {
         let chars: Vec<char> = lines[r].chars().collect();
         if left >= chars.len() {
@@ -2817,12 +2818,19 @@ fn block_replace(ed: &mut Editor<'_>, ch: char) {
 /// Replace the textarea's buffer with `lines` while preserving the yank
 /// register and disabling the textarea's own history (we keep our own).
 fn reset_textarea_lines(ed: &mut Editor<'_>, lines: Vec<String>) {
+    let cursor = ed.cursor();
     let carried = ed.textarea.yank_text();
-    ed.textarea = tui_textarea::TextArea::new(lines);
+    ed.textarea = tui_textarea::TextArea::new(lines.clone());
     ed.textarea.set_max_histories(0);
     if !carried.is_empty() {
         ed.textarea.set_yank_text(carried);
     }
+    // Mirror the wholesale reset into the migration buffer so any
+    // subsequent `mutate_edit` sees the same content. Keep the
+    // current cursor position (clamping handled by `set_cursor`).
+    ed.buffer_mut().replace_all(&lines.join("\n"));
+    ed.buffer_mut()
+        .set_cursor(sqeel_buffer::Position::new(cursor.0, cursor.1));
     ed.mark_content_dirty();
 }
 
