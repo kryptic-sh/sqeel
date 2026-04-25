@@ -399,7 +399,18 @@ pub struct VimState {
     /// selector. The next typed char names the register; its contents
     /// are inserted inline at the cursor and the flag clears.
     pub(super) insert_pending_register: bool,
+    /// Bounded history of committed `/` / `?` search patterns. Newest
+    /// entries are at the back; capped at [`SEARCH_HISTORY_MAX`] to
+    /// avoid unbounded growth on long sessions.
+    pub(super) search_history: Vec<String>,
+    /// Index into `search_history` while the user walks past patterns
+    /// in the prompt via `Ctrl-P` / `Ctrl-N`. `None` outside that walk
+    /// — typing or backspacing in the prompt resets it so the next
+    /// `Ctrl-P` starts from the most recent entry again.
+    pub(super) search_history_cursor: Option<usize>,
 }
+
+const SEARCH_HISTORY_MAX: usize = 100;
 
 /// Active `/` or `?` search prompt. Text mutations drive the textarea's
 /// live search pattern so matches highlight as the user types.
@@ -506,6 +517,7 @@ fn enter_search(ed: &mut Editor<'_>, forward: bool) {
         cursor: 0,
         forward,
     });
+    ed.vim.search_history_cursor = None;
     ed.buffer_mut().set_search_pattern(None);
 }
 
@@ -523,6 +535,18 @@ fn push_search_pattern(ed: &mut Editor<'_>, pattern: &str) {
 }
 
 fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
+    // Ctrl-P / Ctrl-N (and Up / Down) walk the search history. Handled
+    // before the regular char/backspace branches so `Ctrl-P` doesn't
+    // type a literal `p`.
+    let history_dir = match (input.key, input.ctrl) {
+        (Key::Char('p'), true) | (Key::Up, _) => Some(-1),
+        (Key::Char('n'), true) | (Key::Down, _) => Some(1),
+        _ => None,
+    };
+    if let Some(dir) = history_dir {
+        walk_search_history(ed, dir);
+        return true;
+    }
     match input.key {
         Key::Esc => {
             // Cancel. Drop the prompt but keep the highlighted matches
@@ -536,6 +560,7 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
             if !text.is_empty() {
                 ed.vim.last_search = Some(text);
             }
+            ed.vim.search_history_cursor = None;
         }
         Key::Enter => {
             let prompt = ed.vim.search_prompt.take();
@@ -559,11 +584,14 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
                     if ed.cursor() != pre {
                         push_jump(ed, pre);
                     }
+                    record_search_history(ed, &pattern);
                     ed.vim.last_search = Some(pattern);
                 }
             }
+            ed.vim.search_history_cursor = None;
         }
         Key::Backspace => {
+            ed.vim.search_history_cursor = None;
             let new_text = ed.vim.search_prompt.as_mut().and_then(|p| {
                 if p.text.pop().is_some() {
                     p.cursor = p.text.chars().count();
@@ -577,6 +605,7 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
             }
         }
         Key::Char(c) => {
+            ed.vim.search_history_cursor = None;
             let new_text = ed.vim.search_prompt.as_mut().map(|p| {
                 p.text.push(c);
                 p.cursor = p.text.chars().count();
@@ -589,6 +618,52 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
         _ => {}
     }
     true
+}
+
+/// Push `pattern` onto the search history. Skips the push when the
+/// most recent entry already matches (consecutive dedupe) and trims
+/// the oldest entries beyond [`SEARCH_HISTORY_MAX`].
+fn record_search_history(ed: &mut Editor<'_>, pattern: &str) {
+    if pattern.is_empty() {
+        return;
+    }
+    if ed.vim.search_history.last().map(String::as_str) == Some(pattern) {
+        return;
+    }
+    ed.vim.search_history.push(pattern.to_string());
+    let len = ed.vim.search_history.len();
+    if len > SEARCH_HISTORY_MAX {
+        ed.vim.search_history.drain(0..len - SEARCH_HISTORY_MAX);
+    }
+}
+
+/// Replace the prompt text with the next entry in the search history.
+/// `dir = -1` walks toward older entries (`Ctrl-P` / `Up`); `dir = 1`
+/// toward newer ones (`Ctrl-N` / `Down`). Stops at the ends of the
+/// history; the user can keep pressing the key without effect rather
+/// than wrapping around.
+fn walk_search_history(ed: &mut Editor<'_>, dir: isize) {
+    if ed.vim.search_history.is_empty() || ed.vim.search_prompt.is_none() {
+        return;
+    }
+    let len = ed.vim.search_history.len();
+    let next_idx = match (ed.vim.search_history_cursor, dir) {
+        (None, -1) => Some(len - 1),
+        (None, 1) => return, // already past the newest entry
+        (Some(i), -1) => i.checked_sub(1),
+        (Some(i), 1) if i + 1 < len => Some(i + 1),
+        _ => None,
+    };
+    let Some(idx) = next_idx else {
+        return;
+    };
+    ed.vim.search_history_cursor = Some(idx);
+    let text = ed.vim.search_history[idx].clone();
+    if let Some(prompt) = ed.vim.search_prompt.as_mut() {
+        prompt.cursor = text.chars().count();
+        prompt.text = text.clone();
+    }
+    push_search_pattern(ed, &text);
 }
 
 pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
@@ -5870,6 +5945,80 @@ mod tests {
         e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(e.cursor().1, 16);
         assert_eq!(e.last_search(), Some("foo"));
+    }
+
+    #[test]
+    fn search_history_records_committed_patterns() {
+        let mut e = editor_with("alpha beta gamma");
+        run_keys(&mut e, "/alpha<CR>");
+        run_keys(&mut e, "/beta<CR>");
+        // Newest entry at the back.
+        let history = e.vim.search_history.clone();
+        assert_eq!(history, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn search_history_dedupes_consecutive_repeats() {
+        let mut e = editor_with("foo bar foo");
+        run_keys(&mut e, "/foo<CR>");
+        run_keys(&mut e, "/foo<CR>");
+        run_keys(&mut e, "/bar<CR>");
+        run_keys(&mut e, "/bar<CR>");
+        // Two distinct entries; the duplicates collapsed.
+        assert_eq!(e.vim.search_history.clone(), vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn ctrl_p_walks_history_backward() {
+        let mut e = editor_with("alpha beta gamma");
+        run_keys(&mut e, "/alpha<CR>");
+        run_keys(&mut e, "/beta<CR>");
+        // Open a fresh prompt; Ctrl-P pulls in the newest entry.
+        run_keys(&mut e, "/");
+        assert_eq!(e.search_prompt().unwrap().text, "");
+        e.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "beta");
+        e.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "alpha");
+        // At the oldest entry; further Ctrl-P is a no-op.
+        e.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "alpha");
+    }
+
+    #[test]
+    fn ctrl_n_walks_history_forward_after_ctrl_p() {
+        let mut e = editor_with("a b c");
+        run_keys(&mut e, "/a<CR>");
+        run_keys(&mut e, "/b<CR>");
+        run_keys(&mut e, "/c<CR>");
+        run_keys(&mut e, "/");
+        // Walk back to "a", then forward again.
+        for _ in 0..3 {
+            e.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        }
+        assert_eq!(e.search_prompt().unwrap().text, "a");
+        e.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "b");
+        e.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "c");
+        // Past the newest — stays at "c".
+        e.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "c");
+    }
+
+    #[test]
+    fn typing_after_history_walk_resets_cursor() {
+        let mut e = editor_with("foo");
+        run_keys(&mut e, "/foo<CR>");
+        run_keys(&mut e, "/");
+        e.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "foo");
+        // User edits — append a char. Next Ctrl-P should restart from
+        // the newest entry, not continue walking older.
+        e.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(e.search_prompt().unwrap().text, "foox");
+        e.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(e.search_prompt().unwrap().text, "foo");
     }
 
     #[test]

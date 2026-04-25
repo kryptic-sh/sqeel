@@ -164,8 +164,10 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
 
 ## Search (S)
 
-- **Search history (M).** `Ctrl-P` / `Ctrl-N` in the search prompt walks past
-  patterns. Add a bounded `Vec<String>` on `VimState`.
+- ~~**Search history (M).**~~ Done. Bounded `search_history: Vec<String>` on
+  `VimState` (cap 100, consecutive-dedupe). `Ctrl-P` / `Up` walks toward older
+  entries, `Ctrl-N` / `Down` toward newer; typing or backspacing resets the walk
+  cursor.
 - **`?` — backward search prompt (audit).** Verify it commits with
   `search_backward(true)` and that `n` / `N` invert as vim expects.
 - ~~**`/<CR>` — repeat last search (S).**~~ Done. Empty `<CR>` reuses
