@@ -797,9 +797,18 @@ fn handle_insert_key(ed: &mut Editor<'_>, input: Input) -> bool {
             ed.buffer_mut().move_line_end();
             false
         }
-        Key::PageUp | Key::PageDown => {
-            // Scroll only — let the textarea handle viewport movement.
-            return ed.textarea.input(input);
+        Key::PageUp => {
+            // Vim default: PageUp scrolls a full window up, cursor
+            // tracks. Reuse the Ctrl-b scroll helper so behavior
+            // matches the normal-mode equivalent.
+            let rows = viewport_full_rows(ed, 1) as isize;
+            scroll_cursor_rows(ed, -rows);
+            return false;
+        }
+        Key::PageDown => {
+            let rows = viewport_full_rows(ed, 1) as isize;
+            scroll_cursor_rows(ed, rows);
+            return false;
         }
         // F-keys, mouse scroll, copy/cut/paste virtual keys, Null —
         // no insert-mode behaviour.
