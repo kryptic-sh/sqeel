@@ -2867,10 +2867,21 @@ impl AppState {
         } else {
             crate::config::save_connection(&name, &url)?;
             self.available_connections
-                .push(crate::config::ConnectionConfig { name, url });
+                .push(crate::config::ConnectionConfig {
+                    name: name.clone(),
+                    url: url.clone(),
+                });
         }
         self.show_add_connection = false;
         self.edit_connection_original_name = None;
+        // Plaintext-password heads-up. Save still succeeded; just
+        // surface the risk in the status bar.
+        if url_has_plaintext_password(&url) {
+            self.set_status(format!(
+                "⚠ password stored in plaintext at ~/.config/sqeel/conns/{name}.toml — chmod 0600 or use `{}://user@host`",
+                url.split_once(':').map(|(s, _)| s).unwrap_or("scheme"),
+            ));
+        }
         Ok(())
     }
 
@@ -3363,6 +3374,27 @@ impl AppState {
         self.history_cursor = Some(idx);
         self.query_history.get(idx).map(|s| s.as_str())
     }
+}
+
+/// True when `url`'s userinfo carries a non-empty password segment
+/// (`scheme://user:password@host/...`). Drives the password-warning
+/// toast on save. Query-string passwords (`?password=foo`) aren't
+/// detected — sqlx accepts them but they're rare in practice and
+/// adding a parser pulls in a dependency for one warning.
+fn url_has_plaintext_password(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    // Authority ends at the first `/`, `?`, or `#`. Anything past
+    // those bytes isn't userinfo.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let Some((userinfo, _)) = authority.rsplit_once('@') else {
+        return false;
+    };
+    let Some((_, password)) = userinfo.split_once(':') else {
+        return false;
+    };
+    !password.is_empty()
 }
 
 /// Shape-check the user's connection URL before persisting. Catches
@@ -4565,5 +4597,27 @@ trailing prose ignored";
     fn validate_connection_url_rejects_single_colon_form_for_network_schemes() {
         let err = validate_connection_url("mysql:localhost/db").unwrap_err();
         assert!(err.contains("mysql://"), "got: {err}");
+    }
+
+    #[test]
+    fn url_has_plaintext_password_detects_userinfo_password() {
+        assert!(url_has_plaintext_password("mysql://user:pass@h/db"));
+        assert!(url_has_plaintext_password("postgres://u:p@h:5432/db"));
+    }
+
+    #[test]
+    fn url_has_plaintext_password_ignores_userless_url() {
+        assert!(!url_has_plaintext_password("mysql://host/db"));
+        assert!(!url_has_plaintext_password("mysql://user@host/db"));
+        assert!(!url_has_plaintext_password("mysql://user:@host/db"));
+        assert!(!url_has_plaintext_password("sqlite:///tmp/x.db"));
+    }
+
+    #[test]
+    fn url_has_plaintext_password_ignores_path_colon_after_at() {
+        // The `:5432` in the host portion isn't a password.
+        assert!(!url_has_plaintext_password(
+            "mysql://user@host:5432/db?foo=bar"
+        ));
     }
 }

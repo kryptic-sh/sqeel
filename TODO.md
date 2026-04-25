@@ -21,14 +21,12 @@ file:line targets; each item carries them so the work is mechanical.
   "Delete `{name}`? d/Enter to confirm." while armed. Match vim's
   `:bdelete!`-style "must press twice" feel rather than a modal — modal would
   break the muscle memory of the picker.
-- **Password warning on save (S).** Adding or editing a connection whose URL has
-  a `password` userinfo segment (`mysql://user:pass@…`) writes plaintext to
-  `~/.config/sqeel/conns/<name>.toml` with zero feedback
-  (`sqeel-core/src/config.rs:177-202`). After a successful save in
-  `apply_connection_form` (`sqeel-core/src/state.rs:2843-2862`), parse the URL
-  and if `password` is non-empty show a toast: "Password stored in plaintext at
-  `~/.config/sqeel/conns/{name}.toml`. Set file mode 0600 or use
-  `mysql://user@host` to be prompted." Don't block the save — just inform.
+- ~~**Password warning on save (S).**~~ Done. New `url_has_plaintext_password`
+  parses the userinfo segment of a saved URL; on a positive hit
+  `save_new_connection` raises a status-bar warning pointing the user at the
+  toml path with a `chmod 0600` / passwordless-userinfo hint. Doesn't block the
+  save — just informs. Query-string passwords aren't detected (rare in practice;
+  would need a real URL parser to handle).
 - ~~**URL sanity check at save time (S).**~~ Done. New `validate_connection_url`
   runs in `save_new_connection` before the toml write: rejects unknown schemes
   (allowed: `mysql`, `mariadb`, `postgres`, `postgresql`, `sqlite`),
