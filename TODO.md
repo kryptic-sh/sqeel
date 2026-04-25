@@ -144,8 +144,13 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   Host-side I/O — sqeel-tui owns the path resolution.
 - **`:r !cmd` (L).** Insert shell command output. Powerful but needs a sandbox
   story; defer.
-- **`:set` (M).** Tiny subset — `shiftwidth`, `tabstop`, `foldenable`,
-  `ignorecase`. Stash a `Settings` struct on Editor.
+- ~~**`:set` (M).**~~ Done. Added
+  `Settings { shiftwidth, tabstop, ignore_case }` on Editor. `:set sw=N`,
+  `:set ts=N`, `:set [no]ignorecase` (or `ic`) all work; bare `:set` reports the
+  current values via `ExEffect::Info`. `shiftwidth` flows through `indent_rows`
+  / `outdent_rows` / `Ctrl-T`; `ignore_case` flips both `/` search and `:s`
+  substitute (explicit `i` flag still wins). `tabstop` stored but not yet wired
+  to render. `foldenable` accepted as a no-op so vimrc copies don't error.
 - **`:earlier` / `:later` (L).** Time-tree undo. Out of scope — the current undo
   is a flat stack.
 - **`:registers` / `:reg` (S).** Listed under registers.

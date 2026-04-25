@@ -74,6 +74,34 @@ pub struct Editor<'a> {
     /// the textarea used to host. The Buffer-side opaque-id spans are
     /// derived from this on every install.
     pub styled_spans: Vec<Vec<(usize, usize, ratatui::style::Style)>>,
+    /// Per-editor settings tweakable via `:set`. Exposed by reference
+    /// so handlers (indent, search) read the live value rather than a
+    /// snapshot taken at startup.
+    pub(super) settings: Settings,
+}
+
+/// Vim-style options surfaced by `:set`. New fields land here as
+/// individual ex commands gain `:set` plumbing.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    /// Spaces per shift step for `>>` / `<<` / `Ctrl-T` / `Ctrl-D`.
+    pub shiftwidth: usize,
+    /// Visual width of a `\t` character. Stored for future render
+    /// hookup; not yet consumed by the buffer renderer.
+    pub tabstop: usize,
+    /// When true, `/` / `?` patterns and `:s/.../.../` ignore case
+    /// without an explicit `i` flag.
+    pub ignore_case: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            shiftwidth: 2,
+            tabstop: 8,
+            ignore_case: false,
+        }
+    }
 }
 
 /// Host-observable LSP requests triggered by editor bindings. The
@@ -102,7 +130,18 @@ impl<'a> Editor<'a> {
             style_table: Vec::new(),
             registers: crate::registers::Registers::default(),
             styled_spans: Vec::new(),
+            settings: Settings::default(),
         }
+    }
+
+    /// Live settings (read-only). `:set` mutates these via
+    /// [`Editor::settings_mut`].
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub(super) fn settings_mut(&mut self) -> &mut Settings {
+        &mut self.settings
     }
 
     /// Install styled syntax spans into both the host-visible cache

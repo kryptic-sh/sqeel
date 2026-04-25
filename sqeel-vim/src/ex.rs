@@ -108,6 +108,20 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         return apply_sort(editor, range, rest);
     }
 
+    // `:set [option ...]` — toggle / assign vim options. Range is
+    // ignored (vim's `:set` doesn't accept one).
+    if let Some(rest) = cmd
+        .strip_prefix("set ")
+        .or_else(|| cmd.strip_prefix("se "))
+        .or(if cmd == "set" || cmd == "se" {
+            Some("")
+        } else {
+            None
+        })
+    {
+        return apply_set(editor, rest);
+    }
+
     // `:[range]g/pat/cmd` and inverse `:v/pat/cmd`.
     if let Some((negate, rest)) = parse_global_prefix(cmd) {
         return apply_global(editor, range, rest, negate);
@@ -384,6 +398,66 @@ fn apply_global(
     ExEffect::Substituted { count }
 }
 
+/// `:set [opt ...]` body. Splits on whitespace and applies each token.
+/// Bare `:set` reports the current values for the supported options.
+fn apply_set(editor: &mut Editor<'_>, body: &str) -> ExEffect {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        let s = editor.settings();
+        return ExEffect::Info(format!(
+            "shiftwidth={}  tabstop={}  ignorecase={}",
+            s.shiftwidth,
+            s.tabstop,
+            if s.ignore_case { "on" } else { "off" }
+        ));
+    }
+    for token in trimmed.split_whitespace() {
+        if let Err(e) = apply_set_token(editor, token) {
+            return ExEffect::Error(e);
+        }
+    }
+    ExEffect::Ok
+}
+
+/// Apply a single `:set` token. Supports `name=value`, bare `name`
+/// (turns booleans on), and `noname` (turns booleans off).
+fn apply_set_token(editor: &mut Editor<'_>, token: &str) -> Result<(), String> {
+    if let Some((name, value)) = token.split_once('=') {
+        let parsed: usize = value
+            .parse()
+            .map_err(|_| format!("bad value `{value}` for :set {name}"))?;
+        match name {
+            "shiftwidth" | "sw" => {
+                if parsed == 0 {
+                    return Err("shiftwidth must be > 0".into());
+                }
+                editor.settings_mut().shiftwidth = parsed;
+            }
+            "tabstop" | "ts" => {
+                if parsed == 0 {
+                    return Err("tabstop must be > 0".into());
+                }
+                editor.settings_mut().tabstop = parsed;
+            }
+            other => return Err(format!("unknown :set option `{other}`")),
+        }
+        return Ok(());
+    }
+    let (name, value) = if let Some(rest) = token.strip_prefix("no") {
+        (rest, false)
+    } else {
+        (token, true)
+    };
+    match name {
+        "ignorecase" | "ic" => editor.settings_mut().ignore_case = value,
+        // Booleans we don't (yet) honour: accept silently so :set lines
+        // copied from a vimrc don't error out. `foldenable` falls here.
+        "foldenable" | "fen" => {}
+        other => return Err(format!("unknown :set option `{other}`")),
+    }
+    Ok(())
+}
+
 /// `:[range]sort[!][iun]` body — `flags` is whatever followed the
 /// command name (e.g. `!u`, ` un`, `i`). Sorts only the rows in `range`
 /// (or the whole buffer when None).
@@ -639,7 +713,10 @@ fn apply_substitute(
     range: Option<Range>,
     sub: Substitute,
 ) -> Result<usize, String> {
-    let pattern = if sub.case_insensitive {
+    // Explicit `i` flag wins, otherwise honour the global `:set
+    // ignorecase` switch.
+    let case_insensitive = sub.case_insensitive || editor.settings().ignore_case;
+    let pattern = if case_insensitive {
         format!("(?i){}", sub.pattern)
     } else {
         sub.pattern.clone()
@@ -1095,6 +1172,76 @@ mod tests {
         let mut e = new("a\nb\nc\nd");
         run(&mut e, "3");
         assert_eq!(e.cursor().0, 2);
+    }
+
+    #[test]
+    fn set_shiftwidth_changes_indent_step() {
+        let mut e = new("hello");
+        // Default: shiftwidth = 2.
+        run(&mut e, "set sw=4");
+        assert_eq!(e.settings().shiftwidth, 4);
+        // Indent uses the new value: `>>` prepends 4 spaces now.
+        type_keys(&mut e, ">>");
+        assert_eq!(e.buffer().lines()[0], "    hello");
+    }
+
+    #[test]
+    fn set_tabstop_stored() {
+        let mut e = new("");
+        run(&mut e, "set tabstop=4");
+        assert_eq!(e.settings().tabstop, 4);
+    }
+
+    #[test]
+    fn set_ignorecase_affects_substitute() {
+        let mut e = new("Hello");
+        // Plain :s/h/X/ misses on the lowercase pattern.
+        let effect = run(&mut e, "s/h/X/");
+        assert_eq!(effect, ExEffect::Substituted { count: 0 });
+        run(&mut e, "set ignorecase");
+        assert!(e.settings().ignore_case);
+        let effect = run(&mut e, "s/h/X/");
+        assert_eq!(effect, ExEffect::Substituted { count: 1 });
+        assert_eq!(e.buffer().lines()[0], "Xello");
+    }
+
+    #[test]
+    fn set_no_prefix_disables_boolean() {
+        let mut e = new("x");
+        run(&mut e, "set ic");
+        assert!(e.settings().ignore_case);
+        run(&mut e, "set noic");
+        assert!(!e.settings().ignore_case);
+    }
+
+    #[test]
+    fn set_zero_shiftwidth_errors() {
+        let mut e = new("x");
+        match run(&mut e, "set sw=0") {
+            ExEffect::Error(msg) => assert!(msg.contains("shiftwidth")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_unknown_option_errors() {
+        let mut e = new("x");
+        match run(&mut e, "set bogus") {
+            ExEffect::Error(msg) => assert!(msg.contains("bogus")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_set_reports_current_values() {
+        let mut e = new("x");
+        match run(&mut e, "set") {
+            ExEffect::Info(msg) => {
+                assert!(msg.contains("shiftwidth=2"));
+                assert!(msg.contains("ignorecase=off"));
+            }
+            other => panic!("expected Info, got {other:?}"),
+        }
     }
 
     #[test]

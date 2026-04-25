@@ -529,7 +529,15 @@ fn push_search_pattern(ed: &mut Editor<'_>, pattern: &str) {
     let compiled = if pattern.is_empty() {
         None
     } else {
-        regex::Regex::new(pattern).ok()
+        // `:set ignorecase` flips every search pattern to case-insensitive
+        // unless the user already prefixed an explicit `(?i)` / `(?-i)`
+        // (regex crate honours those even when we layer another `(?i)`).
+        let effective: std::borrow::Cow<'_, str> = if ed.settings().ignore_case {
+            std::borrow::Cow::Owned(format!("(?i){pattern}"))
+        } else {
+            std::borrow::Cow::Borrowed(pattern)
+        };
+        regex::Regex::new(&effective).ok()
     };
     ed.buffer_mut().set_search_pattern(compiled);
 }
@@ -893,8 +901,9 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
                 // right by the same amount so the user keeps typing
                 // at their logical position.
                 let (row, col) = ed.cursor();
+                let sw = ed.settings().shiftwidth;
                 indent_rows(ed, row, row, 1);
-                ed.jump_cursor(row, col + SHIFTWIDTH);
+                ed.jump_cursor(row, col + sw);
                 return true;
             }
             Key::Char('d') => {
@@ -3042,18 +3051,13 @@ fn apply_case_op_to_selection(
     ed.vim.mode = Mode::Normal;
 }
 
-/// Shift-width for indent operators / insert-mode indent helpers.
-/// Vim is configurable via `:set shiftwidth`; we hard-code a reasonable
-/// SQL default for now. 2 spaces matches the style in the existing
-/// test fixtures.
-pub(super) const SHIFTWIDTH: usize = 2;
-
-/// Prepend `count * SHIFTWIDTH` spaces to each row in `[top, bot]`.
+/// Prepend `count * shiftwidth` spaces to each row in `[top, bot]`.
 /// Rows that are empty are skipped (vim leaves blank lines alone when
-/// indenting).
+/// indenting). `shiftwidth` is read from `editor.settings()` so
+/// `:set shiftwidth=N` takes effect on the next operation.
 fn indent_rows(ed: &mut Editor<'_>, top: usize, bot: usize, count: usize) {
     ed.sync_buffer_content_from_textarea();
-    let width = SHIFTWIDTH * count.max(1);
+    let width = ed.settings().shiftwidth * count.max(1);
     let pad: String = " ".repeat(width);
     let mut lines: Vec<String> = ed.buffer().lines().to_vec();
     let bot = bot.min(lines.len().saturating_sub(1));
@@ -3068,12 +3072,12 @@ fn indent_rows(ed: &mut Editor<'_>, top: usize, bot: usize, count: usize) {
     move_first_non_whitespace(ed);
 }
 
-/// Remove up to `count * SHIFTWIDTH` leading spaces (or tabs) from
+/// Remove up to `count * shiftwidth` leading spaces (or tabs) from
 /// each row in `[top, bot]`. Rows with less leading whitespace have
 /// all their indent stripped, not clipped to zero length.
 fn outdent_rows(ed: &mut Editor<'_>, top: usize, bot: usize, count: usize) {
     ed.sync_buffer_content_from_textarea();
-    let width = SHIFTWIDTH * count.max(1);
+    let width = ed.settings().shiftwidth * count.max(1);
     let mut lines: Vec<String> = ed.buffer().lines().to_vec();
     let bot = bot.min(lines.len().saturating_sub(1));
     for line in lines.iter_mut().take(bot + 1).skip(top) {
