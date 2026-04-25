@@ -33,7 +33,7 @@ SELECT * FROM users;
 /// Returns the sandbox root so `main()` can prompt for cleanup on
 /// exit. The tempdir uses [`tempfile::Builder::keep`] so the dir
 /// survives the process unless the user opts in to deletion.
-fn bootstrap_sandbox() -> anyhow::Result<PathBuf> {
+fn bootstrap_sandbox(empty: bool) -> anyhow::Result<PathBuf> {
     let tmp = tempfile::Builder::new()
         .prefix("sqeel-sandbox-")
         .tempdir()?;
@@ -45,35 +45,38 @@ fn bootstrap_sandbox() -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&queries)?;
     std::fs::create_dir_all(data.join("results"))?;
 
-    // Seed a sample SQLite connection pointing at a fresh DB file.
-    let db_path = data.join("sample.db");
-    let conn_toml = format!(
-        "name = \"sample\"\nurl = \"sqlite://{}\"\n",
-        db_path.display()
-    );
-    std::fs::write(config.join("conns").join("sample.toml"), conn_toml)?;
+    if !empty {
+        // Seed a sample SQLite connection pointing at a fresh DB file.
+        let db_path = data.join("sample.db");
+        let conn_toml = format!(
+            "name = \"sample\"\nurl = \"sqlite://{}\"\n",
+            db_path.display()
+        );
+        std::fs::write(config.join("conns").join("sample.toml"), conn_toml)?;
 
-    // Seed a sample SQL buffer with a CREATE TABLE for users.
-    std::fs::write(queries.join("sample_users.sql"), SAMPLE_QUERY)?;
+        // Seed a sample SQL buffer with a CREATE TABLE for users.
+        std::fs::write(queries.join("sample_users.sql"), SAMPLE_QUERY)?;
 
-    // Seed a session pointing at the sample connection so the TUI
-    // opens it on launch instead of dropping the user into "no
-    // connections selected".
-    std::fs::write(
-        config.join("session.toml"),
-        "connection = \"sample\"\n\
-         schema_cursor = 0\n\
-         schema_expanded_paths = []\n\
-         focus = \"Editor\"\n\
-         tab_cursors = []\n\
-         active_tab = 0\n\
-         result_tabs = []\n\
-         active_result_tab = 0\n",
-    )?;
+        // Seed a session pointing at the sample connection so the TUI
+        // opens it on launch instead of dropping the user into "no
+        // connections selected".
+        std::fs::write(
+            config.join("session.toml"),
+            "connection = \"sample\"\n\
+             schema_cursor = 0\n\
+             schema_expanded_paths = []\n\
+             focus = \"Editor\"\n\
+             tab_cursors = []\n\
+             active_tab = 0\n\
+             result_tabs = []\n\
+             active_result_tab = 0\n",
+        )?;
+    }
 
     sqeel_core::config::set_config_dir_override(config);
     sqeel_core::persistence::set_data_dir_override(data);
-    eprintln!("sqeel sandbox: {}", root.display());
+    let label = if empty { "sandbox (empty)" } else { "sandbox" };
+    eprintln!("sqeel {label}: {}", root.display());
     Ok(root)
 }
 
@@ -125,15 +128,24 @@ struct Args {
     /// touching your real config or for end-to-end tests.
     #[arg(long)]
     sandbox: bool,
+
+    /// Combine with `--sandbox` to skip the seeded sample connection
+    /// and SQL buffer. The sandbox dirs exist but are empty, so the
+    /// launch matches a fresh install — connection picker is empty
+    /// and the add-connection form opens automatically.
+    #[arg(long, requires = "sandbox")]
+    empty: bool,
 }
 
 fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
     let sandbox_root: Option<PathBuf> = if args.sandbox {
-        let root = bootstrap_sandbox()?;
+        let root = bootstrap_sandbox(args.empty)?;
         // Auto-select the seeded connection so first launch lands on
         // a working pane instead of the empty connection picker.
-        if args.connection.is_none() && args.url.is_none() {
+        // `--empty` skips the seed, so leave `connection` unset and
+        // let the first-run UX (open add-connection form) kick in.
+        if !args.empty && args.connection.is_none() && args.url.is_none() {
             args.connection = Some("sample".into());
         }
         Some(root)
