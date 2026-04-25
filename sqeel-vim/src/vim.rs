@@ -1436,15 +1436,14 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
 }
 
 fn move_first_non_whitespace(ed: &mut Editor<'_>) {
-    ed.textarea.move_cursor(CursorMove::Head);
-    let (row, _) = ed.textarea.cursor();
-    let indent = ed.textarea.lines()[row]
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    for _ in 0..indent {
-        ed.textarea.move_cursor(CursorMove::Forward);
-    }
+    // Some call sites invoke this right after `dd` / `<<` / `>>` etc
+    // mutates the textarea content, so the migration buffer hasn't
+    // seen the new lines OR new cursor yet. Mirror the full content
+    // across before delegating, then push the result back so the
+    // textarea reflects the resolved column too.
+    ed.sync_buffer_content_from_textarea();
+    ed.buffer_mut().move_first_non_blank();
+    ed.push_buffer_cursor_to_textarea();
 }
 
 fn find_char_on_line(ed: &mut Editor<'_>, ch: char, forward: bool, till: bool) -> bool {
