@@ -230,9 +230,13 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   `wrap: Wrap::None | Wrap::Char | Wrap::Word` enum on `BufferView`; the render
   walks a synthetic "screen line" stream. Affects motion (`gj`/`gk` start to
   matter), gutter (line numbers on continuation rows), cursor placement.
-- **Concealed regions (M).** Render-time hide/replace of byte ranges (e.g. URL
-  prettying). Buffer ignores it; `BufferView` takes a list of
-  `(row, byte_range, replacement)`.
+- ~~**Concealed regions (M).**~~ Done. `BufferView` takes a `conceals` slice;
+  each entry is `Conceal { row, start_byte, end_byte, replacement }`. The render
+  walker checks each row's conceal list, paints the replacement when entering a
+  concealed byte range, and skips the original chars until past `end_byte`.
+  Replacement cells inherit the syntax style of the concealed range's first
+  byte; cursor / selection / search highlights still attribute to the original
+  positions.
 - ~~**Cursorcolumn (S).**~~ Done. `BufferView` gains `cursor_column_bg`; the
   render walker layers that bg over the cursor's visible column after row
   painting so it composes with cursorline / syntax. sqeel-tui ties it to the

@@ -4223,6 +4223,7 @@ fn draw_editor(
             .bg(ui().editor_search_bg)
             .fg(ui().editor_search_fg),
         signs: &signs,
+        conceals: &[],
     };
     f.render_widget(view, chunks[1]);
 

@@ -64,6 +64,10 @@ pub struct BufferView<'a, R: StyleResolver> {
     /// number, so they overwrite the leading space tui-style gutters
     /// reserve. Highest-priority sign per row wins.
     pub signs: &'a [Sign],
+    /// Per-row substitutions applied at render time. Each conceal
+    /// hides the byte range `[start_byte, end_byte)` and paints
+    /// `replacement` in its place. Empty slice = no conceals.
+    pub conceals: &'a [Conceal],
 }
 
 /// Configuration for the line-number gutter rendered to the left of
@@ -86,6 +90,18 @@ pub struct Sign {
     pub ch: char,
     pub style: Style,
     pub priority: u8,
+}
+
+/// Render-time substitution that hides a byte range and paints
+/// `replacement` in its place. The buffer's content stays unchanged;
+/// only the rendered cells differ. Used by hosts to pretty-print
+/// URLs, conceal markdown markers, etc.
+#[derive(Debug, Clone)]
+pub struct Conceal {
+    pub row: usize,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub replacement: String,
 }
 
 impl<R: StyleResolver> Widget for BufferView<'_, R> {
@@ -138,6 +154,13 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
                 continue;
             }
             let search_ranges = self.row_search_ranges(line);
+            // Collect conceals for this row, sorted by start_byte.
+            let row_conceals: Vec<&Conceal> = {
+                let mut v: Vec<&Conceal> =
+                    self.conceals.iter().filter(|c| c.row == doc_row).collect();
+                v.sort_by_key(|c| c.start_byte);
+                v
+            };
             self.paint_row(
                 term_buf,
                 text_area,
@@ -149,6 +172,7 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
                 is_cursor_row,
                 cursor.col,
                 top_col,
+                &row_conceals,
             );
             screen_row += 1;
             doc_row += 1;
@@ -306,6 +330,7 @@ impl<R: StyleResolver> BufferView<'_, R> {
         is_cursor_row: bool,
         cursor_col: usize,
         top_col: usize,
+        conceals: &[&Conceal],
     ) {
         let y = area.y + screen_row;
         let mut screen_x = area.x;
@@ -323,8 +348,49 @@ impl<R: StyleResolver> BufferView<'_, R> {
         }
 
         let mut byte_offset: usize = 0;
-        for (col_idx, ch) in line.chars().enumerate() {
+        let mut chars_iter = line.chars().enumerate().peekable();
+        while let Some((col_idx, ch)) = chars_iter.next() {
             let ch_byte_len = ch.len_utf8();
+            // If a conceal starts at this byte, paint the replacement
+            // text (using this cell's style) and skip the rest of the
+            // concealed range. Cursor / selection / search highlights
+            // still attribute to the original char positions.
+            if let Some(conc) = conceals.iter().find(|c| c.start_byte == byte_offset) {
+                if col_idx >= top_col {
+                    let mut style = if is_cursor_row {
+                        self.cursor_line_bg
+                    } else {
+                        Style::default()
+                    };
+                    if let Some(span_style) = self.resolve_span_style(row_spans, byte_offset) {
+                        style = style.patch(span_style);
+                    }
+                    for rch in conc.replacement.chars() {
+                        let rwidth = rch.width().unwrap_or(1) as u16;
+                        if screen_x + rwidth > row_end_x {
+                            break;
+                        }
+                        if let Some(cell) = term_buf.cell_mut((screen_x, y)) {
+                            cell.set_char(rch);
+                            cell.set_style(style);
+                        }
+                        screen_x += rwidth;
+                    }
+                }
+                // Advance byte_offset / chars iter past the concealed
+                // range without painting the original cells.
+                let mut consumed = ch_byte_len;
+                byte_offset += ch_byte_len;
+                while byte_offset < conc.end_byte {
+                    let Some((_, next_ch)) = chars_iter.next() else {
+                        break;
+                    };
+                    consumed += next_ch.len_utf8();
+                    byte_offset = byte_offset.saturating_add(next_ch.len_utf8());
+                }
+                let _ = consumed;
+                continue;
+            }
             // Skip chars to the left of the horizontal scroll.
             if col_idx < top_col {
                 byte_offset += ch_byte_len;
@@ -428,6 +494,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 20, 5);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "h");
@@ -453,6 +520,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 10, 1);
         let cursor_cell = term.cell((1, 0)).unwrap();
@@ -479,6 +547,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 10, 1);
         assert!(term.cell((0, 0)).unwrap().bg != Color::Blue);
@@ -513,6 +582,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 20, 1);
         for x in 0..6 {
@@ -539,6 +609,7 @@ mod tests {
             }),
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 10, 3);
         // Width 4 = 3 number cells + 1 spacer; right-aligned "  1".
@@ -568,6 +639,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default().bg(Color::Magenta),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 20, 1);
         for x in 0..3 {
@@ -613,12 +685,46 @@ mod tests {
             }),
             search_bg: Style::default(),
             signs: &signs,
+            conceals: &[],
         };
         let term = run_render(view, 10, 3);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "E");
         assert_eq!(term.cell((0, 0)).unwrap().fg, Color::Red);
         // Row 1 has no sign — leftmost cell stays as gutter content.
         assert_ne!(term.cell((0, 1)).unwrap().symbol(), "E");
+    }
+
+    #[test]
+    fn conceal_replaces_byte_range() {
+        let mut b = Buffer::from_str("see https://example.com end");
+        b.viewport_mut().width = 30;
+        b.viewport_mut().height = 1;
+        let conceals = vec![Conceal {
+            row: 0,
+            start_byte: 4,                             // start of "https"
+            end_byte: 4 + "https://example.com".len(), // end of URL
+            replacement: "🔗".to_string(),
+        }];
+        let view = BufferView {
+            buffer: &b,
+            selection: None,
+            resolver: &(no_styles as fn(u32) -> Style),
+            cursor_line_bg: Style::default(),
+            cursor_column_bg: Style::default(),
+            selection_bg: Style::default(),
+            cursor_style: Style::default(),
+            gutter: None,
+            search_bg: Style::default(),
+            signs: &[],
+            conceals: &conceals,
+        };
+        let term = run_render(view, 30, 1);
+        // Cells 0..=3: "see "
+        assert_eq!(term.cell((0, 0)).unwrap().symbol(), "s");
+        assert_eq!(term.cell((3, 0)).unwrap().symbol(), " ");
+        // Cell 4: the link emoji (a wide char takes 2 cells; we just
+        // assert the first cell holds the replacement char).
+        assert_eq!(term.cell((4, 0)).unwrap().symbol(), "🔗");
     }
 
     #[test]
@@ -639,6 +745,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 30, 5);
         // Row 0: "a"
@@ -667,6 +774,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 5, 3);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "a");
@@ -691,6 +799,7 @@ mod tests {
             gutter: None,
             search_bg: Style::default(),
             signs: &[],
+            conceals: &[],
         };
         let term = run_render(view, 4, 1);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "d");
