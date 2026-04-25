@@ -112,6 +112,16 @@ impl<'a> Editor<'a> {
         &self.style_table
     }
 
+    /// Borrow the migration buffer. Host renders through this via
+    /// `sqeel_buffer::BufferView`.
+    pub fn buffer(&self) -> &sqeel_buffer::Buffer {
+        &self.buffer
+    }
+
+    pub fn buffer_mut(&mut self) -> &mut sqeel_buffer::Buffer {
+        &mut self.buffer
+    }
+
     /// Mirror the textarea's `(start, end, Style)` syntax span tuples
     /// into the migration buffer's `Vec<Vec<Span>>`. Drops zero-width
     /// runs and clamps `end` to `usize::MAX` sentinels (used by

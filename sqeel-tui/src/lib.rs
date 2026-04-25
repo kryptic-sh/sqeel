@@ -47,10 +47,7 @@ use sqeel_core::{
     schema::{self, SchemaItemKind, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
-use sqeel_vim::{
-    Editor, GutterSign, paint_block_overlay, paint_char_overlay, paint_gutter_signs,
-    paint_line_overlay,
-};
+use sqeel_vim::{Editor, GutterSign, paint_gutter_signs};
 use theme::ui;
 
 /// Bundle of schema-sidebar search state: query string, whether the input box has
@@ -4144,58 +4141,68 @@ fn draw_editor(
         chunks[0],
     );
 
-    // Pre-render a full-width strip at the cursor line so trailing empty cells
-    // also get the highlight background (tui-textarea only styles character cells).
     let cursor_line_bg = if focused {
         ui().editor_cursor_line_active
     } else {
         ui().editor_cursor_line_inactive
     };
-    let textarea_area = chunks[1];
-    let cursor_screen_row = editor.cursor_screen_row(textarea_area.height);
-    if cursor_screen_row < textarea_area.height {
-        let strip = Rect {
-            x: textarea_area.x,
-            y: textarea_area.y + cursor_screen_row,
-            width: textarea_area.width,
-            height: 1,
-        };
-        f.render_widget(
-            Block::default().style(Style::default().bg(cursor_line_bg)),
-            strip,
-        );
-    }
 
-    editor
-        .textarea
-        .set_line_number_style(Style::default().fg(ui().editor_line_num));
-    editor
-        .textarea
-        .set_cursor_line_style(Style::default().bg(cursor_line_bg));
-    // Real terminal cursor handles all cursor rendering — hide the textarea's
-    // cell-based cursor by blending it into the cursor-line background.
-    editor
-        .textarea
-        .set_cursor_style(Style::default().bg(cursor_line_bg));
-    // Search pattern is dedicated to the user's `/` query (Visual mode clears
-    // it so selection color isn't overridden by Search rank).
-    if state.vim_mode == VimMode::Visual || state.vim_mode == VimMode::VisualLine {
-        let _ = editor.textarea.set_search_pattern("");
-    } else if let Some(query) = editor_search.or(last_editor_search) {
-        let _ = editor.textarea.set_search_pattern(query);
-        editor.textarea.set_search_style(
-            Style::default()
-                .bg(ui().editor_search_bg)
-                .fg(ui().editor_search_fg),
-        );
-    } else {
-        let _ = editor.textarea.set_search_pattern("");
-    }
-
-    // Publish the editor rect's text height so scroll helpers can clamp
-    // the cursor without recomputing layout.
+    // Phase 7d-ii-c: render through `BufferView` instead of the
+    // textarea widget. The textarea field stays as the input /
+    // edit authority for now (Phase 7f rips it); the buffer mirrors
+    // its content + cursor + viewport + spans on every step, so the
+    // render is byte-for-byte derived from the buffer state.
     editor.set_viewport_height(chunks[1].height);
-    f.render_widget(&editor.textarea, chunks[1]);
+    {
+        let v = editor.buffer_mut().viewport_mut();
+        v.width = chunks[1].width;
+        v.height = chunks[1].height;
+    }
+
+    // Plumb the host's `/` search regex into the buffer so
+    // `BufferView` can paint search bg from the cached regex.
+    // Visual mode suppresses the highlight so selection isn't
+    // out-shouted by it (matches the previous textarea wiring).
+    let search_query = if state.vim_mode == VimMode::Visual || state.vim_mode == VimMode::VisualLine
+    {
+        None
+    } else {
+        editor_search.or(last_editor_search)
+    };
+    let search_pattern = search_query
+        .filter(|q| !q.is_empty())
+        .and_then(|q| regex::Regex::new(q).ok());
+    editor.buffer_mut().set_search_pattern(search_pattern);
+
+    // Gutter width matches what tui-textarea reserved: digit count
+    // for the largest line number, plus a leading + trailing space.
+    let line_count = editor.buffer().row_count().max(1);
+    let digits = line_count.to_string().len() as u16;
+    let gutter = sqeel_buffer::Gutter {
+        width: digits.saturating_add(2),
+        style: Style::default().fg(ui().editor_line_num),
+    };
+    let style_table: Vec<Style> = editor.style_table().to_vec();
+    let resolver = move |id: u32| style_table.get(id as usize).copied().unwrap_or_default();
+    let selection = editor.buffer_selection();
+    let view = sqeel_buffer::BufferView {
+        buffer: editor.buffer(),
+        selection,
+        resolver: &resolver,
+        cursor_line_bg: Style::default().bg(cursor_line_bg),
+        // Selection paint uses REVERSED to match the previous post-
+        // render overlays (paint_char/line/block_overlay) — same
+        // visual outcome on top of any syntax fg.
+        selection_bg: Style::default().add_modifier(Modifier::REVERSED),
+        // Real terminal cursor handles cursor display — keep the
+        // cell cursor invisible by blending it into cursor-line bg.
+        cursor_style: Style::default().bg(cursor_line_bg),
+        gutter: Some(gutter),
+        search_bg: Style::default()
+            .bg(ui().editor_search_bg)
+            .fg(ui().editor_search_fg),
+    };
+    f.render_widget(view, chunks[1]);
 
     // Gutter diagnostic signs: paint a severity marker in the leftmost
     // gutter cell for any row with an LSP diagnostic. Highest severity
@@ -4220,25 +4227,6 @@ fn draw_editor(
         })
         .collect();
     paint_gutter_signs(f, &editor.textarea, chunks[1], &gutter_signs);
-
-    // All three visual modes paint their highlight as a post-render
-    // overlay so the cursor can sit at its natural column (matches vim)
-    // and tree-sitter styling stays intact underneath.
-    if let Some((start, end)) = editor.char_highlight() {
-        paint_char_overlay(f, &editor.textarea, chunks[1], start, end);
-    }
-    if let Some((top, bot)) = editor.line_highlight() {
-        paint_line_overlay(f, &editor.textarea, chunks[1], top, bot);
-    }
-
-    // Visual-block selection is painted as a buffer-level overlay so it
-    // lands on top of any tree-sitter styling. Trying to do this via
-    // tui-textarea's per-row syntax spans doesn't work: `emit_with_syntax`
-    // picks the *first* span that contains the cursor position, so a
-    // second (block) span over an already-styled keyword is ignored.
-    if let Some((top, bot, left, right)) = editor.block_highlight() {
-        paint_block_overlay(f, &editor.textarea, chunks[1], top, bot, left, right);
-    }
 
     if let Some(msg) = diag_line {
         f.render_widget(
