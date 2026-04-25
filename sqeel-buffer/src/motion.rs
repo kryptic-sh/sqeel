@@ -271,6 +271,20 @@ impl Buffer {
         self.refresh_sticky_col_from_cursor();
     }
 
+    /// `ge` / `gE` — end of previous word. Walks backward until
+    /// the cursor sits on the last char of a word (the next char
+    /// is a different kind, or end-of-line).
+    pub fn move_word_end_back(&mut self, big: bool, count: usize) {
+        for _ in 0..count.max(1) {
+            let from = self.cursor();
+            match prev_word_end(self, from, big) {
+                Some(p) => self.set_cursor(p),
+                None => break,
+            }
+        }
+        self.refresh_sticky_col_from_cursor();
+    }
+
     // ── Internals ──────────────────────────────────────────────
 
     fn move_vertical(&mut self, delta: isize) {
@@ -411,6 +425,56 @@ fn prev_word_start(buf: &Buffer, from: Position, big: bool) -> Option<Position> 
         } else {
             return Some(cur);
         }
+    }
+}
+
+/// `ge` / `gE` — walk back to the end of the previous word. The
+/// stopping rule mirrors `next_word_end`'s definition of "end":
+/// non-whitespace position whose next char is a different kind
+/// (or end-of-line / end-of-buffer).
+fn prev_word_end(buf: &Buffer, from: Position, big: bool) -> Option<Position> {
+    let mut cur = step_back(buf, from)?;
+    loop {
+        // Skip whitespace; if it spans across a row boundary, the
+        // step_back walk handles the row crossing for us.
+        if char_at(buf, cur).map(|c| char_kind(c, big)) == Some(CharKind::Space) {
+            cur = step_back(buf, cur)?;
+            continue;
+        }
+        let here = char_kind_or_space(buf, cur, big);
+        let next = next_char_kind_in_row(buf, cur, big);
+        let same = if big {
+            here != CharKind::Space && next != CharKind::Space
+        } else {
+            here == next
+        };
+        if !same {
+            return Some(cur);
+        }
+        cur = step_back(buf, cur)?;
+    }
+}
+
+/// Returns the kind of the char at `pos`, treating an out-of-line
+/// position as `Space`. Used by `prev_word_end` so the stopping
+/// rule matches the original sqeel-vim helper that synthesised an
+/// implicit whitespace at end-of-line.
+fn char_kind_or_space(buf: &Buffer, pos: Position, big: bool) -> CharKind {
+    char_at(buf, pos)
+        .map(|c| char_kind(c, big))
+        .unwrap_or(CharKind::Space)
+}
+
+/// Kind of the next char on the same row as `pos`. End-of-line
+/// counts as `Space` — vim treats line breaks as separators for
+/// `e` / `ge` end-of-word detection.
+fn next_char_kind_in_row(buf: &Buffer, pos: Position, big: bool) -> CharKind {
+    let line = buf.line(pos.row).unwrap_or("");
+    let len = line_chars(line);
+    if pos.col + 1 < len {
+        char_kind_or_space(buf, Position::new(pos.row, pos.col + 1), big)
+    } else {
+        CharKind::Space
     }
 }
 
@@ -602,6 +666,32 @@ mod tests {
         let mut b = Buffer::from_str("hello");
         assert!(!b.find_char_on_line('z', true, false));
         assert_eq!(at(&b), Position::new(0, 0));
+    }
+
+    #[test]
+    fn move_word_end_back_lands_on_prev_word_end() {
+        let mut b = Buffer::from_str("foo bar baz");
+        b.set_cursor(Position::new(0, 9));
+        b.move_word_end_back(false, 1);
+        assert_eq!(at(&b), Position::new(0, 6));
+        b.move_word_end_back(false, 1);
+        assert_eq!(at(&b), Position::new(0, 2));
+    }
+
+    #[test]
+    fn move_word_end_back_big_skips_punct() {
+        let mut b = Buffer::from_str("foo-bar qux");
+        b.set_cursor(Position::new(0, 10));
+        b.move_word_end_back(true, 1);
+        assert_eq!(at(&b), Position::new(0, 6));
+    }
+
+    #[test]
+    fn move_word_end_back_crosses_lines() {
+        let mut b = Buffer::from_str("abc\ndef");
+        b.set_cursor(Position::new(1, 2));
+        b.move_word_end_back(false, 1);
+        assert_eq!(at(&b), Position::new(0, 2));
     }
 
     #[test]

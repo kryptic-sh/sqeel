@@ -1353,12 +1353,12 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
             ed.push_buffer_cursor_to_textarea();
         }
         Motion::WordEndBack => {
-            let (r, c) = word_end_back(ed, false, count);
-            ed.textarea.move_cursor(CursorMove::Jump(r, c));
+            ed.buffer_mut().move_word_end_back(false, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::BigWordEndBack => {
-            let (r, c) = word_end_back(ed, true, count);
-            ed.textarea.move_cursor(CursorMove::Jump(r, c));
+            ed.buffer_mut().move_word_end_back(true, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::LineStart => {
             ed.buffer_mut().move_line_start();
@@ -1445,102 +1445,6 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
             ed.textarea.move_cursor(CursorMove::Jump(target, 0));
             move_first_non_whitespace(ed);
         }
-    }
-}
-
-/// True when `(row, col)` lands on whitespace — including the synthetic
-/// "newline" position that sits at `col == chars().count()` for any row
-/// that is followed by another row.
-fn is_ws_at(lines: &[String], row: usize, col: usize) -> bool {
-    let Some(line) = lines.get(row) else {
-        return true;
-    };
-    let len = line.chars().count();
-    // End of line always counts as whitespace for traversal — either it's
-    // a literal newline (more rows follow) or the end of the buffer (so
-    // motions stop there). Either way we don't want WORD traversal to
-    // grab the sentinel position as part of a WORD.
-    if col >= len {
-        return true;
-    }
-    line.chars()
-        .nth(col)
-        .map(char::is_whitespace)
-        .unwrap_or(true)
-}
-
-/// Step one character backward, wrapping to the previous row's trailing
-/// "newline" position. Returns false at (0, 0).
-fn step_back(lines: &[String], row: &mut usize, col: &mut usize) -> bool {
-    if *col > 0 {
-        *col -= 1;
-        true
-    } else if *row > 0 {
-        *row -= 1;
-        *col = lines[*row].chars().count();
-        true
-    } else {
-        false
-    }
-}
-
-/// `ge` / `gE` — move cursor backward to the end of the previous word
-/// (or WORD). `big = true` treats any run of non-whitespace as one
-/// WORD; `big = false` distinguishes word-chars (alnum / `_`) from
-/// separators the way vim does. Skips blank lines.
-fn word_end_back(ed: &Editor<'_>, big: bool, count: usize) -> (usize, usize) {
-    let lines = ed.textarea.lines();
-    let (mut row, mut col) = ed.textarea.cursor();
-    for _ in 0..count.max(1) {
-        loop {
-            if !step_back(lines, &mut row, &mut col) {
-                return (row, col);
-            }
-            if is_ws_at(lines, row, col) {
-                continue;
-            }
-            // Stop when `(row, col)` is the end of a (WORD-)word run —
-            // the char immediately after it has a different class. For
-            // `big = true` everything non-whitespace is the same class.
-            let cur = char_class_at(lines, row, col);
-            let next = char_class_after(lines, row, col);
-            let same = if big {
-                cur != CharClass::Ws && next != CharClass::Ws
-            } else {
-                cur == next
-            };
-            if !same {
-                break;
-            }
-        }
-    }
-    (row, col)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CharClass {
-    Ws,
-    Word,
-    Sep,
-}
-
-fn char_class_at(lines: &[String], row: usize, col: usize) -> CharClass {
-    match lines.get(row).and_then(|l| l.chars().nth(col)) {
-        Some(c) if c.is_whitespace() => CharClass::Ws,
-        Some(c) if c.is_alphanumeric() || c == '_' => CharClass::Word,
-        Some(_) => CharClass::Sep,
-        None => CharClass::Ws,
-    }
-}
-
-fn char_class_after(lines: &[String], row: usize, col: usize) -> CharClass {
-    let line_len = lines.get(row).map(|l| l.chars().count()).unwrap_or(0);
-    if col + 1 < line_len {
-        char_class_at(lines, row, col + 1)
-    } else {
-        // Newline / end-of-buffer — treat as whitespace so the current
-        // position counts as an end-of-word.
-        CharClass::Ws
     }
 }
 
