@@ -2353,7 +2353,7 @@ fn run_operator_over_range(
             let text = read_vim_range(ed, top, bot, kind);
             if !text.is_empty() {
                 ed.last_yank = Some(text.clone());
-                ed.textarea.set_yank_text(text);
+                ed.set_yank(text);
                 ed.vim.yank_linewise = matches!(kind, MotionKind::Linewise);
             }
             ed.buffer_mut()
@@ -2402,7 +2402,7 @@ fn apply_case_op_to_selection(
 ) {
     use sqeel_buffer::{Edit, Position};
     ed.push_undo();
-    let saved_yank = ed.textarea.yank_text().to_string();
+    let saved_yank = ed.yank().to_string();
     let saved_yank_linewise = ed.vim.yank_linewise;
     let selection = cut_vim_range(ed, top, bot, kind);
     let transformed = match op {
@@ -2421,7 +2421,7 @@ fn apply_case_op_to_selection(
     ed.buffer_mut().set_cursor(Position::new(top.0, top.1));
     ed.push_buffer_cursor_to_textarea();
     ed.textarea.cancel_selection();
-    ed.textarea.set_yank_text(saved_yank);
+    ed.set_yank(saved_yank);
     ed.vim.yank_linewise = saved_yank_linewise;
     ed.vim.mode = Mode::Normal;
 }
@@ -2506,7 +2506,7 @@ fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
             let text = read_vim_range(ed, (row, col), (end_row, 0), MotionKind::Linewise);
             if !text.is_empty() {
                 ed.last_yank = Some(text.clone());
-                ed.textarea.set_yank_text(text);
+                ed.set_yank(text);
                 ed.vim.yank_linewise = true;
             }
             ed.buffer_mut()
@@ -2563,7 +2563,7 @@ fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
             }
             if !payload.is_empty() {
                 ed.last_yank = Some(payload.clone());
-                ed.textarea.set_yank_text(payload);
+                ed.set_yank(payload);
                 ed.vim.yank_linewise = true;
             }
             ed.buffer_mut().set_cursor(Position::new(row, 0));
@@ -2606,7 +2606,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     let text = read_vim_range(ed, (top, 0), (bot, 0), MotionKind::Linewise);
                     if !text.is_empty() {
                         ed.last_yank = Some(text.clone());
-                        ed.textarea.set_yank_text(text);
+                        ed.set_yank(text);
                         ed.vim.yank_linewise = true;
                     }
                     ed.buffer_mut()
@@ -2648,7 +2648,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     }
                     if !payload.is_empty() {
                         ed.last_yank = Some(payload.clone());
-                        ed.textarea.set_yank_text(payload);
+                        ed.set_yank(payload);
                         ed.vim.yank_linewise = true;
                     }
                     ed.buffer_mut().set_cursor(Position::new(top, 0));
@@ -2684,7 +2684,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     let text = read_vim_range(ed, top, bot, MotionKind::Inclusive);
                     if !text.is_empty() {
                         ed.last_yank = Some(text.clone());
-                        ed.textarea.set_yank_text(text);
+                        ed.set_yank(text);
                     }
                     ed.buffer_mut()
                         .set_cursor(sqeel_buffer::Position::new(top.0, top.1));
@@ -2785,7 +2785,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
     match op {
         Operator::Yank => {
             if !yank.is_empty() {
-                ed.textarea.set_yank_text(yank.clone());
+                ed.set_yank(yank.clone());
                 ed.last_yank = Some(yank);
             }
             ed.vim.yank_linewise = false;
@@ -2796,7 +2796,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             ed.push_undo();
             delete_block_contents(ed, top, bot, left, right);
             if !yank.is_empty() {
-                ed.textarea.set_yank_text(yank.clone());
+                ed.set_yank(yank.clone());
                 ed.last_yank = Some(yank);
             }
             ed.vim.yank_linewise = false;
@@ -2807,7 +2807,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             ed.push_undo();
             delete_block_contents(ed, top, bot, left, right);
             if !yank.is_empty() {
-                ed.textarea.set_yank_text(yank.clone());
+                ed.set_yank(yank.clone());
                 ed.last_yank = Some(yank);
             }
             ed.vim.yank_linewise = false;
@@ -2872,10 +2872,10 @@ fn transform_block_case(
         };
         lines[r] = format!("{head}{transformed}{tail}");
     }
-    let saved_yank = ed.textarea.yank_text().to_string();
+    let saved_yank = ed.yank().to_string();
     let saved_linewise = ed.vim.yank_linewise;
     ed.restore(lines, (top, left));
-    ed.textarea.set_yank_text(saved_yank);
+    ed.set_yank(saved_yank);
     ed.vim.yank_linewise = saved_linewise;
 }
 
@@ -2935,16 +2935,13 @@ fn block_replace(ed: &mut Editor<'_>, ch: char) {
     ed.textarea.move_cursor(CursorMove::Jump(top, left));
 }
 
-/// Replace the textarea's buffer with `lines` while preserving the yank
-/// register and disabling the textarea's own history (we keep our own).
+/// Replace the textarea's buffer with `lines` while disabling the
+/// textarea's own history (we keep our own). Yank survives across
+/// resets without explicit carrying since it's owned by Editor now.
 fn reset_textarea_lines(ed: &mut Editor<'_>, lines: Vec<String>) {
     let cursor = ed.cursor();
-    let carried = ed.textarea.yank_text();
     ed.textarea = tui_textarea::TextArea::new(lines.clone());
     ed.textarea.set_max_histories(0);
-    if !carried.is_empty() {
-        ed.textarea.set_yank_text(carried);
-    }
     // Mirror the wholesale reset into the migration buffer so any
     // subsequent `mutate_edit` sees the same content. Keep the
     // current cursor position (clamping handled by `set_cursor`).
@@ -3349,7 +3346,7 @@ fn cut_vim_range(
     };
     if !text.is_empty() {
         ed.last_yank = Some(text.clone());
-        ed.textarea.set_yank_text(text.clone());
+        ed.set_yank(text.clone());
         ed.vim.yank_linewise = matches!(kind, MotionKind::Linewise);
     }
     ed.push_buffer_cursor_to_textarea();
@@ -3383,7 +3380,7 @@ fn delete_to_eol(ed: &mut Editor<'_>) {
     {
         ed.last_yank = Some(text.clone());
         ed.vim.yank_linewise = false;
-        ed.textarea.set_yank_text(text);
+        ed.set_yank(text);
     }
     ed.buffer_mut().set_cursor(cursor);
     ed.push_buffer_cursor_to_textarea();
@@ -3589,7 +3586,7 @@ fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
     ed.push_undo();
     for _ in 0..count {
         ed.sync_buffer_content_from_textarea();
-        let yank = ed.textarea.yank_text();
+        let yank = ed.yank().to_string();
         if yank.is_empty() {
             continue;
         }
@@ -4289,12 +4286,12 @@ mod tests {
     fn case_op_preserves_yank_register() {
         let mut e = editor_with("target");
         run_keys(&mut e, "yy");
-        let yank_before = e.textarea.yank_text().to_string();
+        let yank_before = e.yank().to_string();
         // gUU changes the line but must not clobber the yank register.
         run_keys(&mut e, "gUU");
         assert_eq!(e.textarea.lines()[0], "TARGET");
         assert_eq!(
-            e.textarea.yank_text(),
+            e.yank(),
             yank_before,
             "case ops must preserve the yank buffer"
         );

@@ -61,6 +61,11 @@ pub struct Editor<'a> {
     /// `Style` here and storing the table index. The render path's
     /// `StyleResolver` looks the style back up by id.
     pub(super) style_table: Vec<ratatui::style::Style>,
+    /// Yank register feeding `p` / `P`. Owned by Editor (was held by
+    /// the textarea until Phase 7f). Trailing `\n` indicates a
+    /// linewise yank — `yank_linewise` carries the same bit so paste
+    /// sites don't have to re-derive it.
+    pub(super) yank: String,
 }
 
 /// Host-observable LSP requests triggered by editor bindings. The
@@ -89,7 +94,19 @@ impl<'a> Editor<'a> {
             pending_lsp: None,
             buffer: sqeel_buffer::Buffer::new(),
             style_table: Vec::new(),
+            yank: String::new(),
         }
+    }
+
+    /// Snapshot of the current yank register (the source for `p` / `P`).
+    pub fn yank(&self) -> &str {
+        &self.yank
+    }
+
+    /// Replace the yank register. Operator paths (`y`, `d`, `c`, etc.)
+    /// call this to seed `p` / `P`. Pass an empty string to clear.
+    pub fn set_yank(&mut self, text: impl Into<String>) {
+        self.yank = text.into();
     }
 
     /// Intern a `ratatui::style::Style` and return the opaque id used
@@ -255,12 +272,8 @@ impl<'a> Editor<'a> {
     /// textarea field disappears at the end of Phase 7f anyway.
     pub(crate) fn push_buffer_content_to_textarea(&mut self) {
         let lines: Vec<String> = self.buffer.lines().to_vec();
-        let yank = self.textarea.yank_text();
         self.textarea = TextArea::new(lines);
         self.textarea.set_max_histories(0);
-        if !yank.is_empty() {
-            self.textarea.set_yank_text(yank);
-        }
         let pos = self.buffer.cursor();
         self.textarea
             .move_cursor(CursorMove::Jump(pos.row, pos.col));
@@ -440,15 +453,12 @@ impl<'a> Editor<'a> {
         if lines.is_empty() {
             lines.push(String::new());
         }
-        let carried_yank = self.textarea.yank_text();
         self.textarea = TextArea::new(lines);
         self.textarea.set_max_histories(0);
-        if !carried_yank.is_empty() {
-            self.textarea.set_yank_text(carried_yank);
-        }
         // Mirror the load into the migration buffer. Phase 7a only
         // syncs on `set_content`; phases 7b-7c plumb the per-edit
-        // mutations through.
+        // mutations through. Yank survives across loads automatically
+        // since it lives on `self` now (not in the textarea).
         self.buffer = sqeel_buffer::Buffer::from_str(text);
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -460,7 +470,7 @@ impl<'a> Editor<'a> {
     /// shape their payload.
     pub fn seed_yank(&mut self, text: String) {
         self.vim.yank_linewise = text.ends_with('\n');
-        self.textarea.set_yank_text(text);
+        self.yank = text;
     }
 
     /// Scroll the viewport down by `rows`. The cursor stays on its
