@@ -1876,6 +1876,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "hjkl-buffer"
+version = "0.0.1"
+dependencies = [
+ "ratatui",
+ "regex",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "hjkl-engine"
+version = "0.0.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "crossterm",
+ "hjkl-buffer",
+ "ratatui",
+ "regex",
+ "serde",
+]
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3883,15 +3904,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqeel-buffer"
-version = "0.1.0"
-dependencies = [
- "ratatui",
- "regex",
- "unicode-width 0.2.0",
-]
-
-[[package]]
 name = "sqeel-core"
 version = "0.1.0"
 dependencies = [
@@ -3899,11 +3911,11 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "dirs",
+ "hjkl-engine",
  "lsp-types",
  "pulldown-cmark",
  "serde",
  "serde_json",
- "sqeel-vim",
  "sqlx",
  "tempfile",
  "tokio",
@@ -3931,28 +3943,17 @@ dependencies = [
  "arboard",
  "crossterm",
  "dirs",
+ "hjkl-buffer",
+ "hjkl-engine",
  "lsp-types",
  "pulldown-cmark",
  "ratatui",
  "regex",
  "serde",
- "sqeel-buffer",
  "sqeel-core",
- "sqeel-vim",
  "tokio",
  "toml",
  "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "sqeel-vim"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "ratatui",
- "regex",
- "serde",
- "sqeel-buffer",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ mod theme;
 
 // Re-export the editor crate so existing call sites like
 // `sqeel_tui::editor::ex::ExEffect` keep compiling.
-pub use sqeel_vim as editor;
+pub use hjkl_engine as editor;
 
 use clipboard::Clipboard;
 use std::io;
@@ -47,7 +47,7 @@ use sqeel_core::{
     schema::{self, SchemaItemKind, SchemaTreeItem},
     state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
 };
-use sqeel_vim::Editor;
+use hjkl_engine::Editor;
 use theme::ui;
 
 /// Bundle of schema-sidebar search state: query string, whether the input box has
@@ -3115,7 +3115,7 @@ async fn run_loop(
                         // engine (e.g. `gd` → GotoDefinition) and
                         // route it to `sqls`. Response lands on the
                         // `LspEvent` channel and jumps the cursor.
-                        if let Some(sqeel_vim::LspIntent::GotoDefinition) = editor.take_lsp_intent()
+                        if let Some(hjkl_engine::LspIntent::GotoDefinition) = editor.take_lsp_intent()
                             && let Some(ref client) = lsp
                         {
                             let (row, col) = editor.cursor();
@@ -4387,24 +4387,24 @@ fn draw_editor(
 
     // Gutter width matches what tui-textarea reserved: digit count
     // for the largest line number, plus a leading + trailing space.
-    let gutter = sqeel_buffer::Gutter {
+    let gutter = hjkl_buffer::Gutter {
         width: gutter_width,
         style: Style::default().fg(ui().editor_line_num),
     };
     // Gutter diagnostic signs: highest severity per row wins
     // (error > warning). Painted by `BufferView` as part of its
     // gutter pass — no post-render overlay.
-    let signs: Vec<sqeel_buffer::Sign> = state
+    let signs: Vec<hjkl_buffer::Sign> = state
         .lsp_diagnostics
         .iter()
         .filter_map(|d| match d.severity {
-            lsp_types::DiagnosticSeverity::ERROR => Some(sqeel_buffer::Sign {
+            lsp_types::DiagnosticSeverity::ERROR => Some(hjkl_buffer::Sign {
                 row: d.line as usize,
                 ch: '●',
                 style: Style::default().fg(ui().status_diag_error),
                 priority: 2,
             }),
-            lsp_types::DiagnosticSeverity::WARNING => Some(sqeel_buffer::Sign {
+            lsp_types::DiagnosticSeverity::WARNING => Some(hjkl_buffer::Sign {
                 row: d.line as usize,
                 ch: '⚠',
                 style: Style::default().fg(ui().status_diag_warning),
@@ -4417,7 +4417,7 @@ fn draw_editor(
     let style_table: Vec<Style> = editor.style_table().to_vec();
     let resolver = move |id: u32| style_table.get(id as usize).copied().unwrap_or_default();
     let selection = editor.buffer_selection();
-    let view = sqeel_buffer::BufferView {
+    let view = hjkl_buffer::BufferView {
         buffer: editor.buffer(),
         selection,
         resolver: &resolver,
@@ -7385,7 +7385,7 @@ mod tests {
             block_ranges: Vec::new(),
         };
 
-        let mut editor = sqeel_vim::Editor::new(sqeel_vim::KeybindingMode::Vim);
+        let mut editor = hjkl_engine::Editor::new(hjkl_engine::KeybindingMode::Vim);
         editor.set_content(&lines.join("\n"));
         super::apply_window_spans(&mut editor, &result, row_count, 0, &[]);
         let by_row = editor.styled_spans.clone();
@@ -7448,7 +7448,7 @@ mod tests {
             block_ranges: Vec::new(),
         };
 
-        let mut editor = sqeel_vim::Editor::new(sqeel_vim::KeybindingMode::Vim);
+        let mut editor = hjkl_engine::Editor::new(hjkl_engine::KeybindingMode::Vim);
         editor.set_content(&lines.join("\n"));
         super::apply_window_spans(&mut editor, &result, row_count, 0, &[]);
         let by_row = editor.styled_spans.clone();

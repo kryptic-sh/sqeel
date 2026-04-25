@@ -153,7 +153,7 @@ impl TabEntry {
 }
 
 // Re-exported from sqeel-vim so app code can keep `use sqeel_core::state::{KeybindingMode, VimMode}`.
-pub use sqeel_vim::{KeybindingMode, VimMode};
+pub use hjkl_engine::{KeybindingMode, VimMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AddConnectionField {
