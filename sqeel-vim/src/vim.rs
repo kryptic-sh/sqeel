@@ -959,14 +959,10 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
     // Common normal / visual keys.
     match input.key {
         Key::Esc => {
-            if ed.vim.is_visual() {
-                ed.textarea.cancel_selection();
-            }
             ed.vim.force_normal();
             return true;
         }
         Key::Char('v') if !input.ctrl && ed.vim.mode == Mode::Normal => {
-            ed.textarea.cancel_selection();
             ed.vim.visual_anchor = ed.textarea.cursor();
             ed.vim.mode = Mode::Visual;
             return true;
@@ -974,26 +970,21 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         Key::Char('V') if !input.ctrl && ed.vim.mode == Mode::Normal => {
             let (row, _) = ed.textarea.cursor();
             ed.vim.visual_line_anchor = row;
-            refresh_visual_line_selection(ed);
             ed.vim.mode = Mode::VisualLine;
             return true;
         }
         Key::Char('v') if !input.ctrl && ed.vim.mode == Mode::VisualLine => {
-            ed.textarea.cancel_selection();
             ed.vim.visual_anchor = ed.textarea.cursor();
             ed.vim.mode = Mode::Visual;
             return true;
         }
         Key::Char('V') if !input.ctrl && ed.vim.mode == Mode::Visual => {
-            ed.textarea.cancel_selection();
             let (row, _) = ed.textarea.cursor();
             ed.vim.visual_line_anchor = row;
-            refresh_visual_line_selection(ed);
             ed.vim.mode = Mode::VisualLine;
             return true;
         }
         Key::Char('v') if input.ctrl && ed.vim.mode == Mode::Normal => {
-            ed.textarea.cancel_selection();
             let cur = ed.textarea.cursor();
             ed.vim.block_anchor = cur;
             ed.vim.block_vcol = cur.1;
@@ -1126,9 +1117,6 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
     // Motion-only commands.
     if let Some(motion) = parse_motion(&input) {
         execute_motion(ed, motion.clone(), count);
-        if ed.vim.mode == Mode::VisualLine {
-            refresh_visual_line_selection(ed);
-        }
         // Block mode: maintain the virtual column across j/k clamps.
         if ed.vim.mode == Mode::VisualBlock {
             update_block_vcol(ed, &motion);
@@ -2067,13 +2055,11 @@ fn handle_visual_text_obj(ed: &mut Editor<'_>, input: Input, inner: bool) -> boo
     // Anchor + cursor position the char-wise highlight / operator range;
     // for linewise text-objects we switch into VisualLine with the
     // appropriate row anchor.
-    ed.textarea.cancel_selection();
     match kind {
         MotionKind::Linewise => {
             ed.vim.visual_line_anchor = start.0;
             ed.vim.mode = Mode::VisualLine;
             ed.textarea.move_cursor(CursorMove::Jump(end.0, 0));
-            refresh_visual_line_selection(ed);
         }
         _ => {
             ed.vim.mode = Mode::Visual;
@@ -2110,24 +2096,20 @@ fn handle_normal_only(ed: &mut Editor<'_>, input: &Input, count: usize) -> bool 
     }
     match input.key {
         Key::Char('i') => {
-            ed.textarea.cancel_selection();
             begin_insert(ed, count.max(1), InsertReason::Enter(InsertEntry::I));
             true
         }
         Key::Char('I') => {
-            ed.textarea.cancel_selection();
             move_first_non_whitespace(ed);
             begin_insert(ed, count.max(1), InsertReason::Enter(InsertEntry::ShiftI));
             true
         }
         Key::Char('a') => {
-            ed.textarea.cancel_selection();
             ed.textarea.move_cursor(CursorMove::Forward);
             begin_insert(ed, count.max(1), InsertReason::Enter(InsertEntry::A));
             true
         }
         Key::Char('A') => {
-            ed.textarea.cancel_selection();
             ed.textarea.move_cursor(CursorMove::End);
             begin_insert(ed, count.max(1), InsertReason::Enter(InsertEntry::ShiftA));
             true
@@ -2413,7 +2395,6 @@ fn run_operator_over_range(
             // Indent / outdent are always linewise even when triggered
             // by a char-wise motion (e.g. `>w` indents the whole line).
             ed.push_undo();
-            ed.textarea.cancel_selection();
             if op == Operator::Indent {
                 indent_rows(ed, top.0, bot.0, 1);
             } else {
@@ -2456,7 +2437,6 @@ fn apply_case_op_to_selection(
     }
     ed.buffer_mut().set_cursor(Position::new(top.0, top.1));
     ed.push_buffer_cursor_to_textarea();
-    ed.textarea.cancel_selection();
     ed.set_yank(saved_yank);
     ed.vim.yank_linewise = saved_yank_linewise;
     ed.vim.mode = Mode::Normal;
@@ -2648,7 +2628,6 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     ed.buffer_mut()
                         .set_cursor(sqeel_buffer::Position::new(top, 0));
                     ed.push_buffer_cursor_to_textarea();
-                    ed.textarea.cancel_selection();
                     ed.vim.mode = Mode::Normal;
                 }
                 Operator::Delete => {
@@ -2698,7 +2677,6 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                 }
                 Operator::Indent | Operator::Outdent => {
                     ed.push_undo();
-                    ed.textarea.cancel_selection();
                     let (cursor_row, _) = ed.textarea.cursor();
                     let bot = cursor_row.max(ed.vim.visual_line_anchor);
                     if op == Operator::Indent {
@@ -2725,7 +2703,6 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     ed.buffer_mut()
                         .set_cursor(sqeel_buffer::Position::new(top.0, top.1));
                     ed.push_buffer_cursor_to_textarea();
-                    ed.textarea.cancel_selection();
                     ed.vim.mode = Mode::Normal;
                 }
                 Operator::Delete => {
@@ -2747,7 +2724,6 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                 }
                 Operator::Indent | Operator::Outdent => {
                     ed.push_undo();
-                    ed.textarea.cancel_selection();
                     let anchor = ed.vim.visual_anchor;
                     let cursor = ed.textarea.cursor();
                     let (top, bot) = order(anchor, cursor);
@@ -2988,13 +2964,6 @@ fn reset_textarea_lines(ed: &mut Editor<'_>, lines: Vec<String>) {
 }
 
 // ─── Visual-line helpers ───────────────────────────────────────────────────
-
-/// VisualLine keeps no live tui-textarea selection — the cursor is free
-/// to sit wherever the user moved it, and the full-line highlight is
-/// painted by the buffer render path.
-fn refresh_visual_line_selection(ed: &mut Editor<'_>) {
-    ed.textarea.cancel_selection();
-}
 
 // ─── Text-object range computation ─────────────────────────────────────────
 

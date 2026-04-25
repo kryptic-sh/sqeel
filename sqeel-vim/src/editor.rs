@@ -422,7 +422,6 @@ impl<'a> Editor<'a> {
 
     /// Force back to normal mode (used when dismissing completions etc.)
     pub fn force_normal(&mut self) {
-        self.textarea.cancel_selection();
         self.vim.force_normal();
     }
 
@@ -584,7 +583,6 @@ impl<'a> Editor<'a> {
     /// Jump cursor to the terminal-space mouse position; exits Visual modes if active.
     pub fn mouse_click(&mut self, area: Rect, col: u16, row: u16) {
         if self.vim.is_visual() {
-            self.textarea.cancel_selection();
             self.vim.force_normal();
         }
         let (r, c) = self.mouse_to_doc_pos(area, col, row);
@@ -594,7 +592,6 @@ impl<'a> Editor<'a> {
     /// Begin a mouse-drag selection: anchor at current cursor and enter Visual mode.
     pub fn mouse_begin_drag(&mut self) {
         if !self.vim.is_visual_char() {
-            self.textarea.cancel_selection();
             let cursor = self.cursor();
             self.vim.enter_visual(cursor);
         }
