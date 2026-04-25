@@ -85,8 +85,9 @@ We support some `OpTextObj` chords. Audit + fill gaps:
   Document the supported set in `lib.rs`.
 - **`it` / `at` (M).** XML-tag inner / around. Less useful in SQL but cheap to
   add — find the surrounding `<…>` tags.
-- **`ip` / `ap` (S).** Paragraph (blank-line-delimited block). Useful for
-  multi-statement SQL files. Walk row by row from cursor.
+- ~~**`ip` / `ap` (S).**~~ Already done — `TextObject::Paragraph` wired,
+  `paragraph_text_object` walks blank-line boundaries, `ap` includes one
+  trailing blank. Verified by `dap_deletes_paragraph` test.
 - **`is` / `as` (M).** Sentence — split on `.`, `?`, `!`. Even less useful for
   SQL but standard.
 
@@ -98,8 +99,9 @@ We support some `OpTextObj` chords. Audit + fill gaps:
   splitter. Defer until `is`/`as` lands.
 - **`gM` (S).** Halfway across the longest line of the screen. Niche — skip
   until someone asks.
-- **`*` / `#` already exist; add `g*` / `g#` (S).** Same word search but without
-  the `\b` boundaries (substring match).
+- ~~**`*` / `#` already exist; add `g*` / `g#` (S).**~~ Done.
+  `Motion::WordAtCursor` now carries a `whole_word` flag; `*` / `#` set it, `g*`
+  / `g#` drop it for substring matches.
 
 ---
 

@@ -204,6 +204,9 @@ pub enum Motion {
     MatchBracket,
     WordAtCursor {
         forward: bool,
+        /// `*` / `#` use `\bword\b` boundaries; `g*` / `g#` drop them so
+        /// the search hits substrings (e.g. `foo` matches inside `foobar`).
+        whole_word: bool,
     },
     /// `n` / `N` — repeat the last `/` or `?` search.
     SearchNext {
@@ -1758,8 +1761,14 @@ fn parse_motion(input: &Input) -> Option<Motion> {
         Key::Char('%') => Some(Motion::MatchBracket),
         Key::Char(';') => Some(Motion::FindRepeat { reverse: false }),
         Key::Char(',') => Some(Motion::FindRepeat { reverse: true }),
-        Key::Char('*') => Some(Motion::WordAtCursor { forward: true }),
-        Key::Char('#') => Some(Motion::WordAtCursor { forward: false }),
+        Key::Char('*') => Some(Motion::WordAtCursor {
+            forward: true,
+            whole_word: true,
+        }),
+        Key::Char('#') => Some(Motion::WordAtCursor {
+            forward: false,
+            whole_word: true,
+        }),
         Key::Char('n') => Some(Motion::SearchNext { reverse: false }),
         Key::Char('N') => Some(Motion::SearchNext { reverse: true }),
         Key::Char('H') => Some(Motion::ViewportTop),
@@ -1943,8 +1952,11 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
         Motion::MatchBracket => {
             let _ = matching_bracket(ed);
         }
-        Motion::WordAtCursor { forward } => {
-            word_at_cursor_search(ed, *forward, count);
+        Motion::WordAtCursor {
+            forward,
+            whole_word,
+        } => {
+            word_at_cursor_search(ed, *forward, *whole_word, count);
         }
         Motion::SearchNext { reverse } => {
             // Re-push the last query so the buffer's search state is
@@ -2020,7 +2032,7 @@ fn matching_bracket(ed: &mut Editor<'_>) -> bool {
     moved
 }
 
-fn word_at_cursor_search(ed: &mut Editor<'_>, forward: bool, count: usize) {
+fn word_at_cursor_search(ed: &mut Editor<'_>, forward: bool, whole_word: bool, count: usize) {
     let (row, col) = ed.cursor();
     let line: String = ed.buffer().line(row).unwrap_or("").to_string();
     let chars: Vec<char> = line.chars().collect();
@@ -2041,7 +2053,12 @@ fn word_at_cursor_search(ed: &mut Editor<'_>, forward: bool, count: usize) {
         return;
     }
     let word: String = chars[start..end].iter().collect();
-    let pattern = format!(r"\b{}\b", regex_escape(&word));
+    let escaped = regex_escape(&word);
+    let pattern = if whole_word {
+        format!(r"\b{escaped}\b")
+    } else {
+        escaped
+    };
     push_search_pattern(ed, &pattern);
     if ed.buffer().search_pattern().is_none() {
         return;
@@ -2319,6 +2336,25 @@ fn handle_after_g(ed: &mut Editor<'_>, input: Input) -> bool {
             // once it has the target location.
             ed.pending_lsp = Some(crate::editor::LspIntent::GotoDefinition);
         }
+        // `g*` / `g#` — like `*` / `#` but match substrings (no `\b`
+        // boundary anchors), so the cursor on `foo` finds it inside
+        // `foobar` too.
+        Key::Char('*') => execute_motion(
+            ed,
+            Motion::WordAtCursor {
+                forward: true,
+                whole_word: false,
+            },
+            count,
+        ),
+        Key::Char('#') => execute_motion(
+            ed,
+            Motion::WordAtCursor {
+                forward: false,
+                whole_word: false,
+            },
+            count,
+        ),
         _ => {}
     }
     true
@@ -4769,6 +4805,35 @@ mod tests {
         let mut e = editor_with("foo bar foo baz");
         run_keys(&mut e, "*");
         assert_eq!(e.cursor().1, 8);
+    }
+
+    #[test]
+    fn star_skips_substring_match() {
+        // `*` uses `\bfoo\b` so `foobar` is *not* a hit; cursor wraps
+        // back to the original `foo` at col 0.
+        let mut e = editor_with("foo foobar baz");
+        run_keys(&mut e, "*");
+        assert_eq!(e.cursor().1, 0);
+    }
+
+    #[test]
+    fn g_star_matches_substring() {
+        // `g*` drops the boundary; from `foo` at col 0 the next hit is
+        // inside `foobar` (col 4).
+        let mut e = editor_with("foo foobar baz");
+        run_keys(&mut e, "g*");
+        assert_eq!(e.cursor().1, 4);
+    }
+
+    #[test]
+    fn g_pound_matches_substring_backward() {
+        // Start on the last `foo`; `g#` walks backward and lands inside
+        // `foobar` (col 4).
+        let mut e = editor_with("foo foobar baz foo");
+        run_keys(&mut e, "$b");
+        assert_eq!(e.cursor().1, 15);
+        run_keys(&mut e, "g#");
+        assert_eq!(e.cursor().1, 4);
     }
 
     #[test]
