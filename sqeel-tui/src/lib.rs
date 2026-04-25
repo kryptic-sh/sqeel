@@ -3522,8 +3522,9 @@ fn draw(
     }
 
     // Toast notifications (top-right corner, stacked vertically).
-    // Each toast is a 3-row block: 1 row top padding, 1 row message, 1 row bottom
-    // padding; message is inset by 1 column on the left and right.
+    // Each toast pads 1 row top + bottom around the message. Multi-line
+    // messages (e.g. `:reg`, `:marks`) expand the box vertically and widen
+    // it to the longest line.
     let mut y_off: u16 = 0;
     for (msg, kind) in toasts {
         let style = match kind {
@@ -3534,8 +3535,15 @@ fn draw(
                 .fg(ui().toast_info_fg)
                 .bg(ui().toast_info_bg),
         };
-        let width = (msg.len() as u16 + 4).min(area.width);
-        let height = 3u16.min(area.height.saturating_sub(y_off));
+        let msg_lines: Vec<&str> = msg.lines().collect();
+        let line_count = msg_lines.len().max(1) as u16;
+        let max_line = msg_lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0) as u16;
+        let width = (max_line + 4).min(area.width);
+        let height = (line_count + 2).min(area.height.saturating_sub(y_off));
         if height == 0 {
             break;
         }
@@ -3552,7 +3560,7 @@ fn draw(
                 x: toast_area.x + 2,
                 y: toast_area.y + 1,
                 width: toast_area.width.saturating_sub(4),
-                height: 1,
+                height: height.saturating_sub(2),
             };
             f.render_widget(Paragraph::new(msg.as_str()).style(style), msg_area);
         }

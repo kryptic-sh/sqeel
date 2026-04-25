@@ -47,8 +47,9 @@ toggle/`zR`/`zM`/`zd` chord set, and edit-side invalidation. What's left:
   cursor without leaving insert. Add a `Pending::InsertRegister` (state lives on
   the insert handler) and feed each char of the register through
   `handle_insert_key` as `Char`s.
-- **`:reg` / `:registers` ex command (S).** Tabular dump of every named slot.
-  Great for debugging macros. Returns `ExEffect::Info(table)`.
+- ~~**`:reg` / `:registers` ex command (S).**~~ Done. Returns
+  `ExEffect::Info(table)` with every non-empty slot; toast renderer now expands
+  vertically for multi-line `Info` payloads.
 - **System clipboard registers `"+` / `"*` (M).** Map the two selectors to the
   host's clipboard via the existing `last_yank` pipe (sqeel-tui drains it
   through `arboard`). Needs a paste hook too.
@@ -61,8 +62,9 @@ toggle/`zR`/`zM`/`zd` chord set, and edit-side invalidation. What's left:
   editor session. Sqeel has tabs (one buffer per tab); store global marks on
   `AppState` keyed by `(tab_id, char)` and surface via a host accessor.
   Lowercase / special marks stay buffer-local.
-- **`:marks` ex command (S).** Print every set mark + its `(row, col)` for
-  inspection.
+- ~~**`:marks` ex command (S).**~~ Done. Prints every user mark plus the special
+  `'` (last jump) and `.` (last edit), one per row; lines are 1-based to match
+  vim.
 - **Mark migration on edit (M).** When rows shift up/down via insert/delete,
   marks above the edit row stay; marks below shift. Add a
   `Buffer::shift_marks(after_row, delta)` helper, call from `apply_edit`

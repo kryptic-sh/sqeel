@@ -68,6 +68,8 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
             editor.buffer_mut().set_search_pattern(None);
             return ExEffect::Ok;
         }
+        "reg" | "registers" => return ExEffect::Info(format_registers(editor)),
+        "marks" => return ExEffect::Info(format_marks(editor)),
         _ => {}
     }
 
@@ -183,6 +185,80 @@ fn apply_global(editor: &mut Editor<'_>, body: &str, negate: bool) -> ExEffect {
     }
     editor.mark_dirty_after_ex();
     ExEffect::Substituted { count }
+}
+
+/// `:reg` / `:registers` — tabular dump of every non-empty register slot.
+fn format_registers(editor: &Editor<'_>) -> String {
+    let r = editor.registers();
+    let mut lines = vec!["--- Registers ---".to_string()];
+    let mut push = |sel: &str, text: &str, linewise: bool| {
+        if text.is_empty() {
+            return;
+        }
+        let marker = if linewise { "L" } else { " " };
+        lines.push(format!("{sel:<3} {marker} {}", display_register(text)));
+    };
+    push("\"\"", &r.unnamed.text, r.unnamed.linewise);
+    push("\"0", &r.yank_zero.text, r.yank_zero.linewise);
+    for (i, slot) in r.delete_ring.iter().enumerate() {
+        let sel = format!("\"{}", i + 1);
+        push(&sel, &slot.text, slot.linewise);
+    }
+    for (i, slot) in r.named.iter().enumerate() {
+        let sel = format!("\"{}", (b'a' + i as u8) as char);
+        push(&sel, &slot.text, slot.linewise);
+    }
+    if lines.len() == 1 {
+        lines.push("(no registers set)".to_string());
+    }
+    lines.join("\n")
+}
+
+/// Escape control chars + truncate so a multi-line register fits a single row
+/// of the toast table.
+fn display_register(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .map(|c| match c {
+            '\n' => "\\n".to_string(),
+            '\t' => "\\t".to_string(),
+            '\r' => "\\r".to_string(),
+            c => c.to_string(),
+        })
+        .collect();
+    const MAX: usize = 60;
+    if escaped.chars().count() > MAX {
+        let head: String = escaped.chars().take(MAX - 3).collect();
+        format!("{head}...")
+    } else {
+        escaped
+    }
+}
+
+/// `:marks` — list every set mark with `(line, col)`. Lines are 1-based to
+/// match vim; cols are 0-based.
+fn format_marks(editor: &Editor<'_>) -> String {
+    let mut lines = vec!["--- Marks ---".to_string(), "mark  line  col".to_string()];
+    let mut entries: Vec<(char, usize, usize)> = editor
+        .vim
+        .marks
+        .iter()
+        .map(|(c, (r, col))| (*c, *r, *col))
+        .collect();
+    entries.sort_by_key(|(c, _, _)| *c);
+    for (c, r, col) in entries {
+        lines.push(format!(" {c}    {:>4}  {col:>3}", r + 1));
+    }
+    if let Some((r, col)) = editor.vim.jump_back.last() {
+        lines.push(format!(" '    {:>4}  {col:>3}", r + 1));
+    }
+    if let Some((r, col)) = editor.vim.last_edit_pos {
+        lines.push(format!(" .    {:>4}  {col:>3}", r + 1));
+    }
+    if lines.len() == 2 {
+        lines.push("(no marks set)".to_string());
+    }
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,11 +457,23 @@ mod tests {
     use super::*;
     use crate::KeybindingMode;
     use crate::editor::Editor;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn new(content: &str) -> Editor<'static> {
         let mut e = Editor::new(KeybindingMode::Vim);
         e.set_content(content);
         e
+    }
+
+    fn type_keys(e: &mut Editor<'_>, keys: &str) {
+        for c in keys.chars() {
+            let ev = match c {
+                '\n' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                '\x1b' => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                ch => KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            };
+            e.handle_key(ev);
+        }
     }
 
     #[test]
@@ -488,6 +576,61 @@ mod tests {
     fn noh_is_ok() {
         let mut e = new("");
         assert_eq!(run(&mut e, "noh"), ExEffect::Ok);
+    }
+
+    #[test]
+    fn registers_lists_unnamed_and_named() {
+        let mut e = new("hello world");
+        // `yw` populates `"` and `"0`; `"ayw` also fills `"a`.
+        type_keys(&mut e, "yw");
+        type_keys(&mut e, "\"ayw");
+        let info = match run(&mut e, "reg") {
+            ExEffect::Info(s) => s,
+            other => panic!("expected Info, got {other:?}"),
+        };
+        assert!(info.starts_with("--- Registers ---"));
+        assert!(info.contains("\"\""));
+        assert!(info.contains("\"0"));
+        assert!(info.contains("\"a"));
+        // Alias resolves to same command.
+        assert_eq!(run(&mut e, "registers"), ExEffect::Info(info));
+    }
+
+    #[test]
+    fn registers_empty_state() {
+        let mut e = new("hi");
+        let info = match run(&mut e, "reg") {
+            ExEffect::Info(s) => s,
+            other => panic!("expected Info, got {other:?}"),
+        };
+        assert!(info.contains("(no registers set)"));
+    }
+
+    #[test]
+    fn marks_lists_user_and_special() {
+        let mut e = new("alpha\nbeta\ngamma");
+        type_keys(&mut e, "ma");
+        type_keys(&mut e, "jjmb");
+        // `iX<Esc>` produces a last_edit_pos.
+        type_keys(&mut e, "iX");
+        let info = match run(&mut e, "marks") {
+            ExEffect::Info(s) => s,
+            other => panic!("expected Info, got {other:?}"),
+        };
+        assert!(info.starts_with("--- Marks ---"));
+        assert!(info.contains(" a "));
+        assert!(info.contains(" b "));
+        assert!(info.contains(" . "));
+    }
+
+    #[test]
+    fn marks_empty_state() {
+        let mut e = new("hi");
+        let info = match run(&mut e, "marks") {
+            ExEffect::Info(s) => s,
+            other => panic!("expected Info, got {other:?}"),
+        };
+        assert!(info.contains("(no marks set)"));
     }
 
     #[test]
