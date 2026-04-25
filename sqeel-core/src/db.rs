@@ -1,6 +1,12 @@
 use crate::schema::SchemaNode;
 use crate::state::QueryResult;
-use sqlx::{Column, Row, TypeInfo, mysql::MySqlPool, postgres::PgPool, sqlite::SqlitePool};
+use sqlx::{
+    Column, Row, TypeInfo,
+    mysql::MySqlPool,
+    postgres::PgPool,
+    sqlite::{SqliteConnectOptions, SqlitePool},
+};
+use std::str::FromStr;
 
 /// Per-engine connection pool. Sqeel dispatches typed queries through the
 /// matching variant so each engine can decode its native column types
@@ -23,7 +29,14 @@ impl DbConnection {
         } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
             Pool::Pg(PgPool::connect(url).await?)
         } else if url.starts_with("sqlite://") || url.starts_with("sqlite:") {
-            Pool::Sqlite(SqlitePool::connect(url).await?)
+            // Match what every other SQL client does for sqlite: create
+            // the DB file if it doesn't exist yet. Stops `--sandbox`
+            // and "open my new project DB" both from failing on
+            // first launch with a confusing "file not found" error.
+            // Users who want strict "must exist" semantics can pass
+            // `?mode=ro` or `?mode=rw` in the URL to override.
+            let opts = SqliteConnectOptions::from_str(url)?.create_if_missing(true);
+            Pool::Sqlite(SqlitePool::connect_with(opts).await?)
         } else {
             anyhow::bail!("Unsupported URL scheme: {url}");
         };
