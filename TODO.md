@@ -90,8 +90,10 @@ We support some `OpTextObj` chords. Audit + fill gaps:
 - **Audit existing.** Run through `i{`, `i(`, `i[`, `i<`, `i"`, `i'`, `it`,
   `ip`, `iw`, `iW` and the matching `a*` variants. Add a test per shape.
   Document the supported set in `lib.rs`.
-- **`it` / `at` (M).** XML-tag inner / around. Less useful in SQL but cheap to
-  add — find the surrounding `<…>` tags.
+- ~~**`it` / `at` (M).**~~ Done. Added `TextObject::XmlTag` with a stack-based
+  `tag_text_object` that flattens the buffer, walks `<…>` tokens, pairs opens to
+  closes, and returns the innermost pair containing the cursor. Skips
+  `<!--`/`<?` and self-closing `<x/>`.
 - ~~**`ip` / `ap` (S).**~~ Already done — `TextObject::Paragraph` wired,
   `paragraph_text_object` walks blank-line boundaries, `ap` includes one
   trailing blank. Verified by `dap_deletes_paragraph` test.

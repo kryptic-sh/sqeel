@@ -235,10 +235,16 @@ pub enum Motion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObject {
-    Word { big: bool },
+    Word {
+        big: bool,
+    },
     Quote(char),
     Bracket(char),
     Paragraph,
+    /// `it` / `at` — XML/HTML-style tag pair. `inner = true` covers
+    /// content between `>` and `</`; `inner = false` covers the open
+    /// tag through the close tag inclusive.
+    XmlTag,
 }
 
 /// Classification determines how operators treat the range end.
@@ -2687,6 +2693,7 @@ fn handle_text_object(
         '{' | '}' | 'B' => TextObject::Bracket('{'),
         '<' | '>' => TextObject::Bracket('<'),
         'p' => TextObject::Paragraph,
+        't' => TextObject::XmlTag,
         _ => return true,
     };
     apply_op_with_text_object(ed, op, obj, inner);
@@ -2714,6 +2721,7 @@ fn handle_visual_text_obj(ed: &mut Editor<'_>, input: Input, inner: bool) -> boo
         '{' | '}' | 'B' => TextObject::Bracket('{'),
         '<' | '>' => TextObject::Bracket('<'),
         'p' => TextObject::Paragraph,
+        't' => TextObject::XmlTag,
         _ => return true,
     };
     let Some((start, end, kind)) = text_object_range(ed, obj, inner) else {
@@ -3668,6 +3676,113 @@ fn text_object_range(
         TextObject::Paragraph => {
             paragraph_text_object(ed, inner).map(|(s, e)| (s, e, MotionKind::Linewise))
         }
+        TextObject::XmlTag => {
+            tag_text_object(ed, inner).map(|(s, e)| (s, e, MotionKind::Exclusive))
+        }
+    }
+}
+
+/// `it` / `at` — XML tag pair text object. Builds a flat char index of
+/// the buffer, walks `<...>` tokens to pair tags via a stack, and
+/// returns the innermost pair containing the cursor.
+fn tag_text_object(ed: &Editor<'_>, inner: bool) -> Option<((usize, usize), (usize, usize))> {
+    let lines = ed.buffer().lines();
+    if lines.is_empty() {
+        return None;
+    }
+    // Flatten char positions so we can compare cursor against tag
+    // ranges without per-row arithmetic. `\n` between lines counts as
+    // a single char.
+    let pos_to_idx = |pos: (usize, usize)| -> usize {
+        let mut idx = 0;
+        for line in lines.iter().take(pos.0) {
+            idx += line.chars().count() + 1;
+        }
+        idx + pos.1
+    };
+    let idx_to_pos = |mut idx: usize| -> (usize, usize) {
+        for (r, line) in lines.iter().enumerate() {
+            let len = line.chars().count();
+            if idx <= len {
+                return (r, idx);
+            }
+            idx -= len + 1;
+        }
+        let last = lines.len().saturating_sub(1);
+        (last, lines[last].chars().count())
+    };
+    let mut chars: Vec<char> = Vec::new();
+    for (r, line) in lines.iter().enumerate() {
+        chars.extend(line.chars());
+        if r + 1 < lines.len() {
+            chars.push('\n');
+        }
+    }
+    let cursor_idx = pos_to_idx(ed.cursor());
+
+    // Walk `<...>` tokens. Track open tags on a stack; on a matching
+    // close pop and consider the pair a candidate when the cursor lies
+    // inside its content range. Innermost wins (replace whenever a
+    // tighter range turns up).
+    let mut stack: Vec<(usize, usize, String)> = Vec::new(); // (open_start, content_start, name)
+    let mut innermost: Option<(usize, usize, usize, usize)> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '<' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != '>' {
+            j += 1;
+        }
+        if j >= chars.len() {
+            break;
+        }
+        let inside: String = chars[i + 1..j].iter().collect();
+        let close_end = j + 1;
+        let trimmed = inside.trim();
+        if trimmed.starts_with('!') || trimmed.starts_with('?') {
+            i = close_end;
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix('/') {
+            let name = rest.split_whitespace().next().unwrap_or("").to_string();
+            if !name.is_empty()
+                && let Some(stack_idx) = stack.iter().rposition(|(_, _, n)| *n == name)
+            {
+                let (open_start, content_start, _) = stack[stack_idx].clone();
+                stack.truncate(stack_idx);
+                let content_end = i;
+                if cursor_idx >= content_start && cursor_idx <= content_end {
+                    let candidate = (open_start, content_start, content_end, close_end);
+                    innermost = match innermost {
+                        Some((_, cs, ce, _)) if cs <= content_start && content_end <= ce => {
+                            Some(candidate)
+                        }
+                        None => Some(candidate),
+                        existing => existing,
+                    };
+                }
+            }
+        } else if !trimmed.ends_with('/') {
+            let name: String = trimmed
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !name.is_empty() {
+                stack.push((i, close_end, name));
+            }
+        }
+        i = close_end;
+    }
+
+    let (open_start, content_start, content_end, close_end) = innermost?;
+    if inner {
+        Some((idx_to_pos(content_start), idx_to_pos(content_end)))
+    } else {
+        Some((idx_to_pos(open_start), idx_to_pos(close_end)))
     }
 }
 
@@ -5007,6 +5122,50 @@ mod tests {
         let mut e = editor_with("a\nb\n\nc\nd");
         run_keys(&mut e, "dap");
         assert_eq!(e.buffer().lines().first().map(String::as_str), Some("c"));
+    }
+
+    #[test]
+    fn dit_deletes_inner_tag_content() {
+        let mut e = editor_with("<b>hello</b>");
+        // Cursor on `e`.
+        e.jump_cursor(0, 4);
+        run_keys(&mut e, "dit");
+        assert_eq!(e.buffer().lines()[0], "<b></b>");
+    }
+
+    #[test]
+    fn dat_deletes_around_tag() {
+        let mut e = editor_with("hi <b>foo</b> bye");
+        e.jump_cursor(0, 6);
+        run_keys(&mut e, "dat");
+        assert_eq!(e.buffer().lines()[0], "hi  bye");
+    }
+
+    #[test]
+    fn dit_picks_innermost_tag() {
+        let mut e = editor_with("<a><b>x</b></a>");
+        // Cursor on `x`.
+        e.jump_cursor(0, 6);
+        run_keys(&mut e, "dit");
+        // Inner of <b> is removed; <a> wrapping stays.
+        assert_eq!(e.buffer().lines()[0], "<a><b></b></a>");
+    }
+
+    #[test]
+    fn dat_innermost_tag_pair() {
+        let mut e = editor_with("<a><b>x</b></a>");
+        e.jump_cursor(0, 6);
+        run_keys(&mut e, "dat");
+        assert_eq!(e.buffer().lines()[0], "<a></a>");
+    }
+
+    #[test]
+    fn dit_outside_any_tag_no_op() {
+        let mut e = editor_with("plain text");
+        e.jump_cursor(0, 3);
+        run_keys(&mut e, "dit");
+        // No tag pair surrounds the cursor — buffer unchanged.
+        assert_eq!(e.buffer().lines()[0], "plain text");
     }
 
     #[test]
