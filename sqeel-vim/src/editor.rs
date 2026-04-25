@@ -150,6 +150,19 @@ impl<'a> Editor<'a> {
             .move_cursor(CursorMove::Jump(pos.row, pos.col));
     }
 
+    /// Force the buffer viewport's top row without touching the
+    /// cursor. Used by tests that simulate a scroll without the
+    /// SCROLLOFF cursor adjustment that `scroll_down` / `scroll_up`
+    /// apply. Note: does not touch the textarea — the migration
+    /// buffer's viewport is what `BufferView` renders from, and the
+    /// textarea's own scroll path would clamp the cursor into its
+    /// (often-zero) visible window.
+    pub fn set_viewport_top(&mut self, row: usize) {
+        let last = self.buffer.row_count().saturating_sub(1);
+        let target = row.min(last);
+        self.buffer.viewport_mut().top_row = target;
+    }
+
     /// Set the cursor to `(row, col)` (clamped to the buffer's
     /// content) and mirror it into the textarea. Replaces the
     /// scattered `ed.textarea.move_cursor(CursorMove::Jump(r, c))`
@@ -219,10 +232,12 @@ impl<'a> Editor<'a> {
             .set_cursor(sqeel_buffer::Position::new(row, col));
         self.buffer.set_sticky_col(self.vim.sticky_col);
         let height = self.viewport_height_value();
-        let viewport = self.buffer.viewport_mut();
-        viewport.top_row = self.textarea.viewport_top_row();
-        viewport.top_col = self.textarea.viewport_top_col();
-        viewport.height = height;
+        // Buffer is now authoritative for viewport top — only height
+        // gets refreshed from the host. Pulling viewport top from the
+        // textarea would clobber `set_viewport_top` and any
+        // buffer-side scroll done while the textarea's viewport
+        // height is still 0.
+        self.buffer.viewport_mut().height = height;
     }
 
     /// Full content sync — mirrors lines + cursor + sticky col +
