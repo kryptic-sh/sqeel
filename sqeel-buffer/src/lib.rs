@@ -13,6 +13,7 @@
 //! at once. See `TODO.md` at the repo root for the migration plan.
 
 mod buffer;
+mod edit;
 mod motion;
 mod position;
 mod selection;
@@ -20,6 +21,7 @@ mod span;
 mod viewport;
 
 pub use buffer::Buffer;
+pub use edit::{Edit, MotionKind};
 pub use position::Position;
 pub use selection::{RowSpan, Selection};
 pub use span::Span;

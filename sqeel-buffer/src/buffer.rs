@@ -134,6 +134,29 @@ impl Buffer {
         self.viewport.ensure_visible(cursor);
     }
 
+    /// Clamp `pos` to the buffer's content. Out-of-range row gets
+    /// pulled to the last row; out-of-range col gets pulled to the
+    /// row's char count (one past last char — insertion point).
+    pub fn clamp_position(&self, pos: Position) -> Position {
+        let last_row = self.lines.len().saturating_sub(1);
+        let row = pos.row.min(last_row);
+        let line_chars = self.lines[row].chars().count();
+        let col = pos.col.min(line_chars);
+        Position::new(row, col)
+    }
+
+    /// Mutable access to the lines. Crate-internal — edit code uses
+    /// this; outside callers go through [`Buffer::apply_edit`].
+    pub(crate) fn lines_mut(&mut self) -> &mut Vec<String> {
+        &mut self.lines
+    }
+
+    /// Bump the render-cache generation. Crate-internal — every
+    /// content mutation calls this so render fingerprints invalidate.
+    pub(crate) fn dirty_gen_bump(&mut self) {
+        self.dirty_gen = self.dirty_gen.wrapping_add(1);
+    }
+
     pub fn marks(&self) -> &BTreeMap<char, Position> {
         &self.marks
     }
