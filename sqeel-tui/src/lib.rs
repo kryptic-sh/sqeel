@@ -3600,7 +3600,11 @@ fn draw(
         && let Some(err) = state.schema_connect_error.as_deref()
     {
         let name = state.active_connection.as_deref();
-        draw_connect_error_popup(f, area, err, name);
+        let headline = state
+            .schema_connect_error_kind
+            .map(|k| k.headline())
+            .unwrap_or("Connection failed");
+        draw_connect_error_popup(f, area, headline, err, name);
     }
 
     // LSP warning bar (above status bar)
@@ -4199,7 +4203,11 @@ fn draw_schema(
                 Some(n) => format!("\n[r] retry {n}"),
                 None => "\n[r] retry".into(),
             };
-            format!("Connection failed\n[Enter] details{retry_hint}")
+            let headline = state
+                .schema_connect_error_kind
+                .map(|k| k.headline())
+                .unwrap_or("Connection failed");
+            format!("{headline}\n[Enter] details{retry_hint}")
         } else if state.schema_connecting {
             match state.active_connection.as_deref() {
                 Some(name) => format!("Connecting to {name}..."),
@@ -6658,12 +6666,18 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> u16 {
     max_scroll
 }
 
-fn draw_connect_error_popup(f: &mut ratatui::Frame<'_>, area: Rect, err: &str, name: Option<&str>) {
+fn draw_connect_error_popup(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    headline: &str,
+    err: &str,
+    name: Option<&str>,
+) {
     let u = ui();
     let bg = Style::default().fg(u.dialog_fg).bg(u.dialog_bg);
     let title = match name {
-        Some(n) => format!(" Connection failed — {n}"),
-        None => " Connection failed".into(),
+        Some(n) => format!(" {headline} — {n}"),
+        None => format!(" {headline}"),
     };
     let footer = "[r] retry  [Esc/Enter] close";
 

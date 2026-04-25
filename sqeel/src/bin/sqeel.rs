@@ -476,6 +476,7 @@ async fn connect_and_spawn(
                 // Wipe any previous failure now that we're back online.
                 s.schema_connecting = false;
                 s.schema_connect_error = None;
+                s.schema_connect_error_kind = None;
                 s.schema_connect_url = None;
                 s.show_connect_error_popup = false;
                 s.set_status(format!("Connected: {conn_name}"));
@@ -513,6 +514,7 @@ async fn connect_and_spawn(
             );
         }
         Err(e) => {
+            let kind = e.kind;
             let msg = format!("{e}");
             let mut s = state.lock().unwrap();
             // Cancel pending "connecting"/"loading" state and surface
@@ -525,6 +527,7 @@ async fn connect_and_spawn(
             s.schema_connecting = false;
             s.schema_loading = false;
             s.schema_connect_error = Some(msg);
+            s.schema_connect_error_kind = Some(kind);
             s.schema_connect_url = Some(url.to_string());
         }
     }

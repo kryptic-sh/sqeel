@@ -449,6 +449,11 @@ pub struct AppState {
     /// the full message stays here for the details popup. Cleared on
     /// a successful connect or when the user switches connections.
     pub schema_connect_error: Option<String>,
+    /// Classified kind of the last connect failure. Drives the
+    /// short headline in the sidebar ("Auth failed" vs "Host not
+    /// found" etc); `None` falls back to a generic "Connection
+    /// failed". Cleared in lockstep with `schema_connect_error`.
+    pub schema_connect_error_kind: Option<crate::db::ConnectErrorKind>,
     /// URL of the last failed connection. Stashed alongside
     /// `schema_connect_error` so `retry_connection` can re-issue
     /// the handshake without round-tripping through the switcher.
@@ -2744,6 +2749,7 @@ impl AppState {
             // watcher loop picks up `pending_reconnect`.
             self.schema_connecting = true;
             self.schema_connect_error = None;
+            self.schema_connect_error_kind = None;
             self.show_connect_error_popup = false;
             self.schema_nodes.clear();
             self.mark_schema_cache_dirty();
@@ -2786,6 +2792,7 @@ impl AppState {
             .or_else(|| self.active_connection.clone())
             .unwrap_or_else(|| url.clone());
         self.schema_connect_error = None;
+        self.schema_connect_error_kind = None;
         self.show_connect_error_popup = false;
         self.schema_connecting = true;
         self.pending_reconnect = Some(url);

@@ -18,6 +18,142 @@ pub enum ExecOutcome {
     NonQuery { verb: String, rows_affected: u64 },
 }
 
+/// Classification of a failed `DbConnection::connect`. Lets the
+/// sidebar render a short headline ("Auth failed" vs "Host not
+/// found") and the details popup show the underlying message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectErrorKind {
+    /// Could reach the network but auth was rejected (bad password,
+    /// access denied, role doesn't exist).
+    Auth,
+    /// TCP refused / unreachable / reset.
+    Network,
+    /// DNS lookup failed — host doesn't resolve.
+    Dns,
+    /// TLS handshake / cert validation failure.
+    Tls,
+    /// URL is unparseable or scheme is unsupported.
+    Config,
+    /// Anything else — sqlx surfaced an error we don't classify.
+    Other,
+}
+
+impl ConnectErrorKind {
+    /// Headline shown in the sidebar placeholder.
+    pub fn headline(self) -> &'static str {
+        match self {
+            ConnectErrorKind::Auth => "Auth failed",
+            ConnectErrorKind::Network => "Network unreachable",
+            ConnectErrorKind::Dns => "Host not found",
+            ConnectErrorKind::Tls => "TLS error",
+            ConnectErrorKind::Config => "Bad connection URL",
+            ConnectErrorKind::Other => "Connection failed",
+        }
+    }
+
+    /// Short tag used as the popup title prefix.
+    pub fn label(self) -> &'static str {
+        match self {
+            ConnectErrorKind::Auth => "Auth",
+            ConnectErrorKind::Network => "Network",
+            ConnectErrorKind::Dns => "DNS",
+            ConnectErrorKind::Tls => "TLS",
+            ConnectErrorKind::Config => "Config",
+            ConnectErrorKind::Other => "Connection",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectError {
+    pub kind: ConnectErrorKind,
+    pub detail: String,
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind.label(), self.detail)
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+impl From<sqlx::Error> for ConnectError {
+    fn from(e: sqlx::Error) -> Self {
+        // sqlx 0.8's Error is non_exhaustive — match the variants we
+        // can classify and let everything else fall through to
+        // `Other`. Heuristic message-sniffing inside `Io` covers DNS,
+        // which sqlx doesn't surface as its own variant.
+        match &e {
+            sqlx::Error::Io(io_err) => classify_io(io_err, &e),
+            sqlx::Error::Database(db_err) => {
+                let msg = db_err.message().to_string();
+                let lower = msg.to_lowercase();
+                let kind = if lower.contains("password")
+                    || lower.contains("authentication")
+                    || lower.contains("access denied")
+                    || lower.contains("role")
+                    || lower.contains("permission denied")
+                {
+                    ConnectErrorKind::Auth
+                } else {
+                    ConnectErrorKind::Other
+                };
+                ConnectError { kind, detail: msg }
+            }
+            sqlx::Error::Tls(t) => ConnectError {
+                kind: ConnectErrorKind::Tls,
+                detail: t.to_string(),
+            },
+            sqlx::Error::Configuration(c) => ConnectError {
+                kind: ConnectErrorKind::Config,
+                detail: c.to_string(),
+            },
+            sqlx::Error::PoolTimedOut => ConnectError {
+                kind: ConnectErrorKind::Network,
+                detail: "pool timed out".into(),
+            },
+            _ => ConnectError {
+                kind: ConnectErrorKind::Other,
+                detail: e.to_string(),
+            },
+        }
+    }
+}
+
+fn classify_io(io_err: &std::io::Error, sqlx_err: &sqlx::Error) -> ConnectError {
+    use std::io::ErrorKind as K;
+    let detail = sqlx_err.to_string();
+    let lower = detail.to_lowercase();
+    // sqlx wraps the resolver error in an opaque `Io(Other)` whose
+    // formatted form contains "failed to lookup address" / "name
+    // resolution" / "nodename nor servname". Match the message
+    // before we fall back on the io kind.
+    if lower.contains("lookup address")
+        || lower.contains("name resolution")
+        || lower.contains("nodename nor servname")
+        || lower.contains("temporary failure in name resolution")
+        || lower.contains("no such host")
+    {
+        return ConnectError {
+            kind: ConnectErrorKind::Dns,
+            detail,
+        };
+    }
+    let kind = match io_err.kind() {
+        K::ConnectionRefused
+        | K::ConnectionReset
+        | K::ConnectionAborted
+        | K::NotConnected
+        | K::TimedOut
+        | K::HostUnreachable
+        | K::NetworkUnreachable => ConnectErrorKind::Network,
+        K::NotFound => ConnectErrorKind::Dns,
+        _ => ConnectErrorKind::Network,
+    };
+    ConnectError { kind, detail }
+}
+
 /// Per-engine connection pool. Sqeel dispatches typed queries through the
 /// matching variant so each engine can decode its native column types
 /// (DATETIME, DECIMAL, JSON, BYTEA, UUID, …) without going through `sqlx::Any`.
@@ -33,7 +169,7 @@ pub struct DbConnection {
 }
 
 impl DbConnection {
-    pub async fn connect(url: &str) -> anyhow::Result<Self> {
+    pub async fn connect(url: &str) -> Result<Self, ConnectError> {
         let pool = if url.starts_with("mysql://") || url.starts_with("mariadb://") {
             Pool::MySql(MySqlPool::connect(url).await?)
         } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
@@ -48,7 +184,10 @@ impl DbConnection {
             let opts = SqliteConnectOptions::from_str(url)?.create_if_missing(true);
             Pool::Sqlite(SqlitePool::connect_with(opts).await?)
         } else {
-            anyhow::bail!("Unsupported URL scheme: {url}");
+            return Err(ConnectError {
+                kind: ConnectErrorKind::Config,
+                detail: format!("Unsupported URL scheme: {url}"),
+            });
         };
         Ok(Self {
             pool,

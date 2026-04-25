@@ -47,14 +47,17 @@ file:line targets; each item carries them so the work is mechanical.
   rendered list — e.g. `● mysql-prod` (green) for connected, `◌ mysql-staging`
   (yellow) for connecting, `✗ broken-conn` (red) for the last-tried connection
   that failed. State already lives in core; switcher just doesn't read it yet.
-- **Better connection error messages (S).** The placeholder shows the raw `{e}`
-  from sqlx (`sqeel-tui/src/lib.rs:4025-4031`). Wrap the error in a
-  `ConnectError { kind: Network | Auth | Dns | Tls | Other, detail: String }` in
-  `sqeel/src/bin/sqeel.rs` so the placeholder can render
-  `Auth failed: bad password` vs `Network: connection refused` vs
-  `DNS: host not found`. Pattern-match on sqlx's `Error::Database`,
-  `Error::Io(io::ErrorKind::ConnectionRefused | NotFound)`, etc. Falls back to
-  `Other` for anything unrecognised.
+- ~~**Better connection error messages (S).**~~ Done. New `ConnectError` plus
+  `ConnectErrorKind { Auth, Network, Dns, Tls, Config, Other }` in
+  `sqeel-core/src/db.rs`; `DbConnection::connect` returns this instead of
+  `anyhow::Result`. Classifier pattern-matches on `sqlx::Error::Io` (with a
+  message-sniff for DNS lookup failures since sqlx doesn't surface DNS as its
+  own variant), `Error::Database` (auth-keyword sniff: password / authentication
+  / access denied / role / permission), `Error::Tls`, `Error::Configuration`,
+  and `PoolTimedOut`. Sidebar headline now reflects the kind ("Auth failed",
+  "Host not found", "Network unreachable", "TLS error", "Bad connection URL")
+  instead of a flat "Connection failed"; popup title uses the same headline with
+  the connection name.
 - **Manual schema refresh (S).** Schema TTL is 300s
   (`sqeel-core/src/config.rs:24`); after a `CREATE TABLE` the browser shows
   stale state until expiry or reconnect. Add ex command `:refreshschema` /
