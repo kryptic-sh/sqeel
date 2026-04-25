@@ -159,9 +159,12 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   caveats.
 - ~~**`:undo` / `:redo` (S).**~~ Done. `:undo` / `:u` and `:redo` / `:red` drive
   the same `do_undo` / `do_redo` paths as `u` / `Ctrl-R`.
-- **Range support before commands (M).** Vim accepts `:5,10s/…/` and `:5,10d`.
-  Today scope is hard-coded (current-line vs whole). Add a tiny range parser
-  (`N,M`, `.`, `$`, `'a`).
+- ~~**Range support before commands (M).**~~ Done. `parse_range` strips a
+  leading address pair (`N`, `N,M`, `.`, `$`, `'a`, `%`) and resolves to a
+  0-based inclusive `Range`. `:[range]s/…`, `:[range]sort`, `:[range]g/`, and a
+  new `:[range]d` all honour it. No range = each command's natural scope
+  (current line for `:s`, whole buffer for `:sort` / `:g`). Address arithmetic
+  (`+N` / `-N`) deferred.
 
 ---
 

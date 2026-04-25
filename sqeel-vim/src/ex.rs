@@ -36,10 +36,31 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         return ExEffect::None;
     }
 
-    // Bare line number — jump there.
-    if let Ok(line) = cmd.parse::<usize>() {
-        editor.goto_line(line);
-        return ExEffect::Ok;
+    // Strip a leading range (`5,10`, `.,$`, `'a,'b`, `%`). `range` is
+    // None when the user typed no addresses; the handler defaults to
+    // the command's natural scope (current line for `:s`, whole buffer
+    // for `:sort` / `:g`). Resolution errors surface as ExEffect::Error.
+    let (range, cmd) = match parse_range(cmd, editor) {
+        Ok(pair) => pair,
+        Err(e) => return ExEffect::Error(e),
+    };
+
+    // Bare line number — jump there. (Only when no range was parsed,
+    // since `parse_range` already consumes a leading number as an
+    // address; a bare `:5` falls through with `range = Some(5..=5)`
+    // and an empty `cmd`.)
+    if range.is_none() {
+        if let Ok(line) = cmd.parse::<usize>() {
+            editor.goto_line(line);
+            return ExEffect::Ok;
+        }
+    } else if cmd.is_empty() {
+        // `:5` jumps to line 5; `:5,10` lands on the start of the
+        // range (vim's behaviour for a bare-range command).
+        if let Some(r) = range {
+            editor.goto_line(r.start_one_based());
+            return ExEffect::Ok;
+        }
     }
 
     // `:q`, `:q!`, `:w`, `:wq`, `:x`.
@@ -81,35 +102,188 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         _ => {}
     }
 
-    // `:sort[!][iun]` — sort the whole buffer. Flags follow the vim
-    // convention: `!` reverses, `i` ignores case, `u` keeps the first
-    // occurrence of each line (unique), `n` sorts numerically.
+    // `:[range]sort[!][iun]` — defaults to the whole buffer when no
+    // range is given.
     if let Some(rest) = cmd.strip_prefix("sort").or_else(|| cmd.strip_prefix("sor")) {
-        return apply_sort(editor, rest);
+        return apply_sort(editor, range, rest);
     }
 
-    // `:g/pat/cmd` (and `:g!/pat/cmd` / `:v/pat/cmd` for the
-    // inverse). Only `cmd = d` is supported today — the most useful
-    // application in a SQL editor is "delete every line matching".
+    // `:[range]g/pat/cmd` and inverse `:v/pat/cmd`.
     if let Some((negate, rest)) = parse_global_prefix(cmd) {
-        return apply_global(editor, rest, negate);
+        return apply_global(editor, range, rest, negate);
     }
 
-    // `:s/...` or `:%s/...` substitute.
-    let (scope, rest) = if let Some(rest) = cmd.strip_prefix("%s") {
-        (SubScope::Whole, rest)
-    } else if let Some(rest) = cmd.strip_prefix('s') {
-        (SubScope::CurrentLine, rest)
-    } else {
-        return ExEffect::Unknown(cmd.to_string());
-    };
-    match parse_substitute_body(rest) {
-        Ok(sub) => match apply_substitute(editor, scope, sub) {
-            Ok(count) => ExEffect::Substituted { count },
+    // `:[range]s/...` substitute. The legacy `:%s/...` form (no
+    // separate range) still works because `%` is parsed by
+    // `parse_range` above and consumed before we get here.
+    if let Some(rest) = cmd.strip_prefix('s') {
+        return match parse_substitute_body(rest) {
+            Ok(sub) => match apply_substitute(editor, range, sub) {
+                Ok(count) => ExEffect::Substituted { count },
+                Err(e) => ExEffect::Error(e),
+            },
             Err(e) => ExEffect::Error(e),
-        },
-        Err(e) => ExEffect::Error(e),
+        };
     }
+
+    // `:[range]d` — delete the range. Reuses :g/pat/d's row-drop loop.
+    if cmd == "d" {
+        return apply_delete_range(editor, range);
+    }
+
+    ExEffect::Unknown(cmd.to_string())
+}
+
+/// 0-based, inclusive line range over the buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Range {
+    start: usize,
+    end: usize,
+}
+
+impl Range {
+    fn whole(editor: &Editor<'_>) -> Self {
+        let last = editor.buffer().lines().len().saturating_sub(1);
+        Self {
+            start: 0,
+            end: last,
+        }
+    }
+
+    fn single(row: usize) -> Self {
+        Self {
+            start: row,
+            end: row,
+        }
+    }
+
+    fn start_one_based(&self) -> usize {
+        self.start + 1
+    }
+
+    fn or_default(opt: Option<Self>, default: Self) -> Self {
+        opt.unwrap_or(default)
+    }
+}
+
+/// Single ex-mode address: `5`, `.`, `$`, `'a`. No `+/-` offset arith
+/// yet — keeps the parser tight.
+#[derive(Debug, Clone, Copy)]
+enum Address {
+    Number(usize), // 1-based, as the user typed it
+    Current,
+    Last,
+    Mark(char),
+}
+
+/// Strip a leading address from `s` and return it plus the remainder.
+/// Returns `None` when `s` doesn't start with one — the caller treats
+/// that as "no range provided".
+fn parse_address(s: &str) -> Option<(Address, &str)> {
+    let mut chars = s.char_indices();
+    let (_, first) = chars.next()?;
+    match first {
+        '.' => Some((Address::Current, &s[1..])),
+        '$' => Some((Address::Last, &s[1..])),
+        '\'' => {
+            let (_, mark) = chars.next()?;
+            Some((Address::Mark(mark), &s[2..]))
+        }
+        '0'..='9' => {
+            let mut end = 1;
+            for (i, c) in s.char_indices().skip(1) {
+                if c.is_ascii_digit() {
+                    end = i + c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let n: usize = s[..end].parse().ok()?;
+            Some((Address::Number(n), &s[end..]))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a parsed address against the current editor state. Numeric
+/// addresses are clamped to the buffer; bad marks return an error.
+fn resolve_address(addr: Address, editor: &Editor<'_>) -> Result<usize, String> {
+    let last = editor.buffer().lines().len().saturating_sub(1);
+    match addr {
+        Address::Number(n) => Ok(n.saturating_sub(1).min(last)),
+        Address::Current => Ok(editor.cursor().0),
+        Address::Last => Ok(last),
+        Address::Mark(c) => editor
+            .vim
+            .marks
+            .get(&c)
+            .map(|(r, _)| (*r).min(last))
+            .ok_or_else(|| format!("mark `{c}` not set")),
+    }
+}
+
+/// Strip a leading range (`%`, `N`, `N,M`, `.,$`, `'a,'b`) from `cmd`.
+/// Returns the resolved 0-based inclusive range plus the remainder.
+fn parse_range<'a>(cmd: &'a str, editor: &Editor<'_>) -> Result<(Option<Range>, &'a str), String> {
+    if let Some(rest) = cmd.strip_prefix('%') {
+        return Ok((Some(Range::whole(editor)), rest));
+    }
+    let Some((start_addr, after_start)) = parse_address(cmd) else {
+        return Ok((None, cmd));
+    };
+    let start = resolve_address(start_addr, editor)?;
+    if let Some(after_comma) = after_start.strip_prefix(',') {
+        let (end_addr, rest) =
+            parse_address(after_comma).unwrap_or((Address::Number(start + 1), after_comma));
+        let end = resolve_address(end_addr, editor)?;
+        let (lo, hi) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        return Ok((Some(Range { start: lo, end: hi }), rest));
+    }
+    Ok((Some(Range::single(start)), after_start))
+}
+
+/// `:[range]d` — drop every row in the range.
+fn apply_delete_range(editor: &mut Editor<'_>, range: Option<Range>) -> ExEffect {
+    use sqeel_buffer::{Edit, MotionKind, Position};
+    let r = Range::or_default(range, Range::single(editor.cursor().0));
+    let total = editor.buffer().row_count();
+    if total == 0 {
+        return ExEffect::Ok;
+    }
+    let bot = r.end.min(total.saturating_sub(1));
+    if r.start > bot {
+        return ExEffect::Ok;
+    }
+    editor.push_undo();
+    // Delete bottom-up so row indices stay valid.
+    for row in (r.start..=bot).rev() {
+        if editor.buffer().row_count() == 1 {
+            let line_chars = editor
+                .buffer()
+                .line(0)
+                .map(|l| l.chars().count())
+                .unwrap_or(0);
+            if line_chars > 0 {
+                editor.mutate_edit(Edit::DeleteRange {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, line_chars),
+                    kind: MotionKind::Char,
+                });
+            }
+            continue;
+        }
+        editor.mutate_edit(Edit::DeleteRange {
+            start: Position::new(row, 0),
+            end: Position::new(row, 0),
+            kind: MotionKind::Line,
+        });
+    }
+    editor.mark_dirty_after_ex();
+    ExEffect::Ok
 }
 
 /// Detect a `:g/pat/cmd`, `:g!/pat/cmd`, or `:v/pat/cmd` prefix.
@@ -128,10 +302,15 @@ fn parse_global_prefix(cmd: &str) -> Option<(bool, &str)> {
     None
 }
 
-/// Run `:g/pat/d` (or its negated variants). Walks the buffer's
-/// rows, collects matches, then drops them in reverse so row indices
-/// stay valid through the cascade of deletes.
-fn apply_global(editor: &mut Editor<'_>, body: &str, negate: bool) -> ExEffect {
+/// Run `:[range]g/pat/d` (or its negated variants). Walks the rows in
+/// `range` (whole buffer when None), collects matches, then drops them
+/// in reverse so row indices stay valid through the cascade of deletes.
+fn apply_global(
+    editor: &mut Editor<'_>,
+    range: Option<Range>,
+    body: &str,
+    negate: bool,
+) -> ExEffect {
     use sqeel_buffer::{Edit, MotionKind, Position};
     let mut chars = body.chars();
     let sep = match chars.next() {
@@ -158,10 +337,13 @@ fn apply_global(editor: &mut Editor<'_>, body: &str, negate: bool) -> ExEffect {
 
     editor.push_undo();
     // Identify rows to drop (newest-first so multi-line drops don't
-    // shift indices under us).
+    // shift indices under us). Default to the whole buffer when no
+    // range was supplied — matches vim's `:g/pat/d` (no range = `%`).
+    let scope = Range::or_default(range, Range::whole(editor));
     let row_count = editor.buffer().row_count();
+    let bot = scope.end.min(row_count.saturating_sub(1));
     let mut targets: Vec<usize> = Vec::new();
-    for row in 0..row_count {
+    for row in scope.start..=bot {
         let line = editor.buffer().line(row).unwrap_or("");
         let matches = regex.is_match(line);
         if matches != negate {
@@ -202,9 +384,10 @@ fn apply_global(editor: &mut Editor<'_>, body: &str, negate: bool) -> ExEffect {
     ExEffect::Substituted { count }
 }
 
-/// `:sort[!][iun]` body — `flags` is whatever followed the command name
-/// (e.g. `!u`, ` un`, `i`). Sorts the whole buffer in place.
-fn apply_sort(editor: &mut Editor<'_>, flags: &str) -> ExEffect {
+/// `:[range]sort[!][iun]` body — `flags` is whatever followed the
+/// command name (e.g. `!u`, ` un`, `i`). Sorts only the rows in `range`
+/// (or the whole buffer when None).
+fn apply_sort(editor: &mut Editor<'_>, range: Option<Range>, flags: &str) -> ExEffect {
     let trimmed = flags.trim();
     let mut reverse = false;
     let mut unique = false;
@@ -221,19 +404,30 @@ fn apply_sort(editor: &mut Editor<'_>, flags: &str) -> ExEffect {
         }
     }
 
-    let mut lines: Vec<String> = editor.buffer().lines().to_vec();
+    let mut all_lines: Vec<String> = editor.buffer().lines().to_vec();
+    let total = all_lines.len();
+    if total == 0 {
+        return ExEffect::Ok;
+    }
+    let scope = Range::or_default(range, Range::whole(editor));
+    let bot = scope.end.min(total - 1);
+    if scope.start > bot {
+        return ExEffect::Ok;
+    }
+    // Sort only the slice in range; keep the rest of the buffer intact.
+    let mut slice: Vec<String> = all_lines[scope.start..=bot].to_vec();
     if numeric {
         // Vim's `:sort n`: extract the first decimal integer (with
-        // optional leading `-`) on each line; lines with no number sort
-        // first, in original order.
-        lines.sort_by_key(|l| extract_leading_number(l));
+        // optional leading `-`) on each line; lines with no number
+        // sort first, in original order.
+        slice.sort_by_key(|l| extract_leading_number(l));
     } else if ignore_case {
-        lines.sort_by_key(|s| s.to_lowercase());
+        slice.sort_by_key(|s| s.to_lowercase());
     } else {
-        lines.sort();
+        slice.sort();
     }
     if reverse {
-        lines.reverse();
+        slice.reverse();
     }
     if unique {
         let cmp_key = |s: &str| -> String {
@@ -244,11 +438,16 @@ fn apply_sort(editor: &mut Editor<'_>, flags: &str) -> ExEffect {
             }
         };
         let mut seen = std::collections::HashSet::new();
-        lines.retain(|line| seen.insert(cmp_key(line)));
+        slice.retain(|line| seen.insert(cmp_key(line)));
     }
+    // Splice the sorted slice back. `unique` may have shortened it.
+    let after: Vec<String> = all_lines.split_off(bot + 1);
+    all_lines.truncate(scope.start);
+    all_lines.extend(slice);
+    all_lines.extend(after);
 
     editor.push_undo();
-    editor.restore(lines, (0, 0));
+    editor.restore(all_lines, (scope.start, 0));
     editor.mark_dirty_after_ex();
     ExEffect::Ok
 }
@@ -353,12 +552,6 @@ fn format_marks(editor: &Editor<'_>) -> String {
     lines.join("\n")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubScope {
-    CurrentLine,
-    Whole,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Substitute {
     pattern: String,
@@ -443,7 +636,7 @@ fn unescape(s: &str, _sep: char) -> String {
 
 fn apply_substitute(
     editor: &mut Editor<'_>,
-    scope: SubScope,
+    range: Option<Range>,
     sub: Substitute,
 ) -> Result<usize, String> {
     let pattern = if sub.case_insensitive {
@@ -455,13 +648,9 @@ fn apply_substitute(
 
     editor.push_undo();
 
-    let (range_start, range_end) = match scope {
-        SubScope::CurrentLine => {
-            let r = editor.cursor().0;
-            (r, r)
-        }
-        SubScope::Whole => (0, editor.buffer().lines().len().saturating_sub(1)),
-    };
+    // No range = current line only — matches vim's `:s` default.
+    let scope = Range::or_default(range, Range::single(editor.cursor().0));
+    let (range_start, range_end) = (scope.start, scope.end);
 
     let mut new_lines: Vec<String> = editor.buffer().lines().to_vec();
     let mut count = 0usize;
@@ -823,6 +1012,89 @@ mod tests {
             ExEffect::Error(msg) => assert!(msg.contains("z")),
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn range_sort_partial() {
+        // `:2,4sort` sorts rows 1..=3 (1-based 2..=4) only.
+        let mut e = new("z\nc\nb\na\nx");
+        run(&mut e, "2,4sort");
+        assert_eq!(
+            e.buffer().lines(),
+            vec![
+                "z".to_string(),
+                "a".into(),
+                "b".into(),
+                "c".into(),
+                "x".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn range_substitute_partial() {
+        let mut e = new("foo\nfoo\nfoo\nfoo");
+        // `:2,3s/foo/bar/` only replaces lines 2 and 3.
+        let effect = run(&mut e, "2,3s/foo/bar/");
+        assert_eq!(effect, ExEffect::Substituted { count: 2 });
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["foo".to_string(), "bar".into(), "bar".into(), "foo".into(),]
+        );
+    }
+
+    #[test]
+    fn range_delete_drops_lines() {
+        let mut e = new("a\nb\nc\nd\ne");
+        run(&mut e, "2,4d");
+        assert_eq!(e.buffer().lines(), vec!["a".to_string(), "e".into()]);
+    }
+
+    #[test]
+    fn percent_substitute_still_works() {
+        let mut e = new("foo\nfoo");
+        let effect = run(&mut e, "%s/foo/bar/");
+        assert_eq!(effect, ExEffect::Substituted { count: 2 });
+        assert_eq!(e.buffer().lines(), vec!["bar".to_string(), "bar".into()]);
+    }
+
+    #[test]
+    fn dot_dollar_addresses_resolve() {
+        let mut e = new("a\nb\nc\nd");
+        e.jump_cursor(1, 0);
+        // `.,$d` deletes from the current row to the bottom.
+        run(&mut e, ".,$d");
+        assert_eq!(e.buffer().lines(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn mark_address_resolves() {
+        let mut e = new("a\nb\nc\nd\ne");
+        // Set marks `a` on row 1, `b` on row 3.
+        e.jump_cursor(1, 0);
+        type_keys(&mut e, "ma");
+        e.jump_cursor(3, 0);
+        type_keys(&mut e, "mb");
+        run(&mut e, "'a,'bd");
+        assert_eq!(e.buffer().lines(), vec!["a".to_string(), "e".into()]);
+    }
+
+    #[test]
+    fn range_global_partial() {
+        let mut e = new("foo\nfoo\nbar\nfoo\nfoo");
+        // Only delete `foo` lines in rows 2..=4.
+        run(&mut e, "2,4g/foo/d");
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["foo".to_string(), "bar".into(), "foo".into()]
+        );
+    }
+
+    #[test]
+    fn bare_line_number_jumps() {
+        let mut e = new("a\nb\nc\nd");
+        run(&mut e, "3");
+        assert_eq!(e.cursor().0, 2);
     }
 
     #[test]
