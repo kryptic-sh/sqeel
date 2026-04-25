@@ -144,6 +144,10 @@ enum Pending {
     /// `count` is the prefix multiplier (`3@a` plays the macro 3
     /// times); 0 means "no prefix" and is treated as 1.
     PlayMacroTarget { count: usize },
+    /// `zf` in normal mode — waiting for a motion. The next motion's
+    /// row span (`min(start_row, end_row)..=max(...)`) becomes a fold.
+    /// `count1` is any count typed before `zf`.
+    FoldMotion { count1: usize },
 }
 
 // ─── Operator / Motion / TextObject ────────────────────────────────────────
@@ -1174,6 +1178,7 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         Pending::SelectRegister => return handle_select_register(ed, input),
         Pending::RecordMacroTarget => return handle_record_macro_target(ed, input),
         Pending::PlayMacroTarget { count } => return handle_play_macro_target(ed, input, count),
+        Pending::FoldMotion { count1 } => return handle_fold_motion(ed, input, count1),
         Pending::None => {}
     }
 
@@ -2399,28 +2404,66 @@ fn handle_after_z(ed: &mut Editor<'_>, input: Input) -> bool {
         Key::Char('d') => {
             ed.buffer_mut().remove_fold_at(row);
         }
-        Key::Char('f')
+        Key::Char('f') => {
             if matches!(
                 ed.vim.mode,
                 Mode::Visual | Mode::VisualLine | Mode::VisualBlock
-            ) =>
-        {
-            // `zf` over a Visual selection creates a fold. Outside
-            // visual mode it's a no-op for now (vim's `zf{motion}`
-            // chord would need a pending-state extension).
-            let anchor_row = match ed.vim.mode {
-                Mode::VisualLine => ed.vim.visual_line_anchor,
-                Mode::VisualBlock => ed.vim.block_anchor.0,
-                _ => ed.vim.visual_anchor.0,
-            };
-            let cur = ed.cursor().0;
-            let top = anchor_row.min(cur);
-            let bot = anchor_row.max(cur);
-            ed.buffer_mut().add_fold(top, bot, true);
-            ed.vim.mode = Mode::Normal;
+            ) {
+                // `zf` over a Visual selection creates a fold spanning
+                // anchor → cursor.
+                let anchor_row = match ed.vim.mode {
+                    Mode::VisualLine => ed.vim.visual_line_anchor,
+                    Mode::VisualBlock => ed.vim.block_anchor.0,
+                    _ => ed.vim.visual_anchor.0,
+                };
+                let cur = ed.cursor().0;
+                let top = anchor_row.min(cur);
+                let bot = anchor_row.max(cur);
+                ed.buffer_mut().add_fold(top, bot, true);
+                ed.vim.mode = Mode::Normal;
+            } else {
+                // `zf{motion}` — wait for the motion. The motion's
+                // resulting row span becomes the fold.
+                let count = take_count(&mut ed.vim);
+                ed.vim.pending = Pending::FoldMotion { count1: count };
+            }
         }
         _ => {}
     }
+    true
+}
+
+/// `zf{motion}` body. Parses the motion, executes it to discover the
+/// destination row, restores the cursor, then folds the spanned rows.
+fn handle_fold_motion(ed: &mut Editor<'_>, input: Input, count1: usize) -> bool {
+    // Inner count after `zf` (e.g. `zf3j`): accumulate digits.
+    if let Key::Char(d @ '0'..='9') = input.key
+        && (count1 > 0 || d != '0')
+    {
+        ed.vim.count = ed
+            .vim
+            .count
+            .saturating_mul(10)
+            .saturating_add(d.to_digit(10).unwrap() as usize);
+        ed.vim.pending = Pending::FoldMotion { count1 };
+        return true;
+    }
+    let inner = take_count(&mut ed.vim);
+    let count = count1.max(1).saturating_mul(inner.max(1));
+    let Some(motion) = parse_motion(&input) else {
+        return true;
+    };
+    let start_row = ed.cursor().0;
+    let start_cursor = ed.cursor();
+    execute_motion(ed, motion, count);
+    let end_row = ed.cursor().0;
+    let top = start_row.min(end_row);
+    let bot = start_row.max(end_row);
+    if bot >= top {
+        ed.buffer_mut().add_fold(top, bot, true);
+    }
+    // Vim leaves the cursor at the fold start; matches Visual `zf` too.
+    ed.jump_cursor(start_cursor.0, start_cursor.1);
     true
 }
 
@@ -6571,6 +6614,54 @@ mod tests {
         assert_eq!(f.start_row, 1);
         assert_eq!(f.end_row, 3);
         assert!(f.closed);
+    }
+
+    #[test]
+    fn zfj_in_normal_creates_two_row_fold() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        e.jump_cursor(1, 0);
+        run_keys(&mut e, "zfj");
+        assert_eq!(e.buffer().folds().len(), 1);
+        let f = e.buffer().folds()[0];
+        assert_eq!(f.start_row, 1);
+        assert_eq!(f.end_row, 2);
+        assert!(f.closed);
+        // Cursor stays where it started.
+        assert_eq!(e.cursor().0, 1);
+    }
+
+    #[test]
+    fn zf_with_count_folds_count_rows() {
+        let mut e = editor_with("a\nb\nc\nd\ne\nf");
+        e.jump_cursor(0, 0);
+        // `zf3j` — fold rows 0..=3.
+        run_keys(&mut e, "zf3j");
+        assert_eq!(e.buffer().folds().len(), 1);
+        let f = e.buffer().folds()[0];
+        assert_eq!(f.start_row, 0);
+        assert_eq!(f.end_row, 3);
+    }
+
+    #[test]
+    fn zfk_folds_upward_range() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        e.jump_cursor(3, 0);
+        run_keys(&mut e, "zfk");
+        let f = e.buffer().folds()[0];
+        // start_row = min(3, 2) = 2, end_row = max(3, 2) = 3.
+        assert_eq!(f.start_row, 2);
+        assert_eq!(f.end_row, 3);
+    }
+
+    #[test]
+    fn zf_capital_g_folds_to_bottom() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        e.jump_cursor(1, 0);
+        // `G` is a single-char motion; folds rows 1..=4.
+        run_keys(&mut e, "zfG");
+        let f = e.buffer().folds()[0];
+        assert_eq!(f.start_row, 1);
+        assert_eq!(f.end_row, 4);
     }
 
     #[test]
