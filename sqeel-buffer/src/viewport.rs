@@ -1,4 +1,4 @@
-use crate::Position;
+use crate::{Position, Wrap};
 
 /// Where the buffer is scrolled to and how big the visible area is.
 ///
@@ -7,12 +7,25 @@ use crate::Position;
 /// uses the cached values to clamp the cursor / scroll offsets when
 /// motions ask for it. `top_row` and `top_col` are the first visible
 /// row / column; `top_col` is a char index, matching [`Position`].
+///
+/// `wrap` and `text_width` together drive soft-wrap-aware scrolling
+/// and motion. `text_width` is the cell width of the text area
+/// (i.e. `width` minus any gutter the host renders) so the buffer
+/// can compute screen-line splits without duplicating gutter logic.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Viewport {
     pub top_row: usize,
     pub top_col: usize,
     pub width: u16,
     pub height: u16,
+    /// Soft-wrap mode the renderer + scroll math is using. Default
+    /// is [`Wrap::None`] (no wrap, horizontal scroll via `top_col`).
+    pub wrap: Wrap,
+    /// Cell width of the text area (after the host's gutter is
+    /// subtracted from the editor area). Used by wrap-aware scroll
+    /// and motion code; ignored when `wrap == Wrap::None`. Set to 0
+    /// before the first frame; wrap math falls back to no-op then.
+    pub text_width: u16,
 }
 
 impl Viewport {
@@ -22,6 +35,8 @@ impl Viewport {
             top_col: 0,
             width: 0,
             height: 0,
+            wrap: Wrap::None,
+            text_width: 0,
         }
     }
 
@@ -73,6 +88,8 @@ mod tests {
             top_col: 0,
             width: 80,
             height,
+            wrap: Wrap::None,
+            text_width: 80,
         }
     }
 

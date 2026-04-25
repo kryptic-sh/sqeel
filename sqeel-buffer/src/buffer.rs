@@ -140,10 +140,76 @@ impl Buffer {
     }
 
     /// Bring the cursor into the visible viewport, scrolling by the
-    /// minimum amount needed.
+    /// minimum amount needed. When `viewport.wrap != Wrap::None` and
+    /// `viewport.text_width > 0`, scrolling is screen-line aware:
+    /// `top_row` is advanced one visible doc row at a time until the
+    /// cursor's screen row falls inside the viewport's height.
     pub fn ensure_cursor_visible(&mut self) {
         let cursor = self.cursor;
-        self.viewport.ensure_visible(cursor);
+        let v = self.viewport;
+        let wrap_active = !matches!(v.wrap, crate::Wrap::None) && v.text_width > 0;
+        if !wrap_active {
+            self.viewport.ensure_visible(cursor);
+            return;
+        }
+        if v.height == 0 {
+            return;
+        }
+        // Cursor above the visible region: snap top_row to it.
+        if cursor.row < v.top_row {
+            self.viewport.top_row = cursor.row;
+            self.viewport.top_col = 0;
+            return;
+        }
+        let height = v.height as usize;
+        // Push top_row forward (one visible doc row per iteration)
+        // until the cursor's screen row sits inside [0, height).
+        loop {
+            let csr = self.cursor_screen_row_from(self.viewport.top_row);
+            match csr {
+                Some(row) if row < height => break,
+                _ => {}
+            }
+            // Advance to the next non-folded doc row up to (but not
+            // past) the cursor row. Stop if we ran out of room.
+            let mut next = self.viewport.top_row + 1;
+            while next <= cursor.row && self.folds.iter().any(|f| f.hides(next)) {
+                next += 1;
+            }
+            if next > cursor.row {
+                // Last resort — pin top_row to the cursor row so the
+                // cursor lands at the top edge.
+                self.viewport.top_row = cursor.row;
+                break;
+            }
+            self.viewport.top_row = next;
+        }
+        self.viewport.top_col = 0;
+    }
+
+    /// Returns the cursor's screen row (0-based, relative to `top`)
+    /// under the current wrap mode + text width. `None` when the
+    /// cursor row is hidden by a fold or sits above `top`.
+    fn cursor_screen_row_from(&self, top: usize) -> Option<usize> {
+        let cursor = self.cursor;
+        if cursor.row < top {
+            return None;
+        }
+        let v = self.viewport;
+        let mut screen = 0usize;
+        for r in top..=cursor.row {
+            if self.folds.iter().any(|f| f.hides(r)) {
+                continue;
+            }
+            let line = self.lines.get(r).map(String::as_str).unwrap_or("");
+            let segs = crate::wrap::wrap_segments(line, v.text_width, v.wrap);
+            if r == cursor.row {
+                let seg_idx = crate::wrap::segment_for_col(&segs, cursor.col);
+                return Some(screen + seg_idx);
+            }
+            screen += segs.len();
+        }
+        None
     }
 
     /// Clamp `pos` to the buffer's content. Out-of-range row gets
@@ -277,5 +343,73 @@ mod tests {
     #[test]
     fn dirty_gen_starts_at_zero() {
         assert_eq!(Buffer::new().dirty_gen(), 0);
+    }
+
+    #[test]
+    fn ensure_cursor_visible_wrap_scrolls_when_cursor_below_screen() {
+        let mut b = Buffer::from_str("aaaaaaaaaa\nb\nc");
+        {
+            let v = b.viewport_mut();
+            v.height = 3;
+            v.width = 4;
+            v.text_width = 4;
+            v.wrap = crate::Wrap::Char;
+        }
+        // Cursor on row 2 col 0. Doc rows 0-2 occupy 3+1+1=5 screen
+        // rows; only 3 fit. ensure_cursor_visible should advance
+        // top_row past row 0 so cursor lands inside the viewport.
+        b.set_cursor(Position::new(2, 0));
+        b.ensure_cursor_visible();
+        assert_eq!(b.viewport().top_row, 1);
+    }
+
+    #[test]
+    fn ensure_cursor_visible_wrap_no_scroll_when_visible() {
+        let mut b = Buffer::from_str("aaaaaaaaaa\nb");
+        {
+            let v = b.viewport_mut();
+            v.height = 4;
+            v.width = 4;
+            v.text_width = 4;
+            v.wrap = crate::Wrap::Char;
+        }
+        // Cursor in row 0 segment 1 (col 5). Doc row 0 wraps to 3
+        // screen rows; cursor's screen row is 1 (< height). No scroll.
+        b.set_cursor(Position::new(0, 5));
+        b.ensure_cursor_visible();
+        assert_eq!(b.viewport().top_row, 0);
+    }
+
+    #[test]
+    fn ensure_cursor_visible_wrap_snaps_top_when_cursor_above() {
+        let mut b = Buffer::from_str("a\nb\nc\nd\ne");
+        {
+            let v = b.viewport_mut();
+            v.height = 2;
+            v.width = 4;
+            v.text_width = 4;
+            v.wrap = crate::Wrap::Char;
+            v.top_row = 3;
+        }
+        b.set_cursor(Position::new(1, 0));
+        b.ensure_cursor_visible();
+        assert_eq!(b.viewport().top_row, 1);
+    }
+
+    #[test]
+    fn ensure_cursor_visible_falls_back_when_wrap_disabled() {
+        let mut b = Buffer::from_str("a\nb\nc\nd\ne");
+        {
+            let v = b.viewport_mut();
+            v.height = 2;
+            v.width = 4;
+            v.text_width = 4;
+            v.wrap = crate::Wrap::None;
+        }
+        b.set_cursor(Position::new(4, 0));
+        b.ensure_cursor_visible();
+        // Without wrap the existing doc-row math runs: cursor at row 4
+        // with height 2 → top_row = 3.
+        assert_eq!(b.viewport().top_row, 3);
     }
 }

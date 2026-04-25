@@ -250,8 +250,16 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   on the first segment and a blank gutter on continuations. Cursor highlight +
   EOL placeholder land on the right segment. Cursorcolumn pass skipped under
   wrap. `Wrap::None` is the default and preserves the existing horizontal-scroll
-  path. Still TODO: `ensure_visible` accounting for wrapped rows, `gj`/`gk`
-  visual-line motion, `:set wrap` ex command + Editor settings plumbing.
+  path. _Phase 2 (viewport scroll) shipped._ `Wrap` and `wrap_segments` moved
+  into a shared `mod wrap`; `Viewport` now carries `wrap: Wrap` and
+  `text_width: u16` so motion + scroll see the same source of truth as render
+  (the `BufferView::wrap` field is gone — `BufferView` reads from
+  `buffer.viewport().wrap`). `Buffer::ensure_cursor_visible` is screen-line
+  aware: when wrap is on it walks doc rows from `top_row`, sums their segment
+  counts, and pushes `top_row` past visible rows until the cursor's screen row
+  fits inside `viewport.height`. sqeel-tui publishes `text_width = area.width
+  - gutter_width`each frame. Still TODO:`gj`/`gk`visual-line motion,`:set wrap`
+    ex command + Editor settings plumbing, scrolloff under wrap.
 - ~~**Concealed regions (M).**~~ Done. `BufferView` takes a `conceals` slice;
   each entry is `Conceal { row, start_byte, end_byte, replacement }`. The render
   walker checks each row's conceal list, paints the replacement when entering a

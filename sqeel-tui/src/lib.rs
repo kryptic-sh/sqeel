@@ -4163,10 +4163,17 @@ fn draw_editor(
     // its content + cursor + viewport + spans on every step, so the
     // render is byte-for-byte derived from the buffer state.
     editor.set_viewport_height(chunks[1].height);
+    // Gutter width is digit count + 2 spaces; text area = full editor
+    // area minus gutter. Compute up here so we can also publish
+    // `text_width` to the buffer's viewport for wrap-aware scroll.
+    let line_count = editor.buffer().row_count().max(1);
+    let digits = line_count.to_string().len() as u16;
+    let gutter_width = digits.saturating_add(2);
     {
         let v = editor.buffer_mut().viewport_mut();
         v.width = chunks[1].width;
         v.height = chunks[1].height;
+        v.text_width = chunks[1].width.saturating_sub(gutter_width);
     }
 
     // Plumb the host's `/` search regex into the buffer so
@@ -4186,10 +4193,8 @@ fn draw_editor(
 
     // Gutter width matches what tui-textarea reserved: digit count
     // for the largest line number, plus a leading + trailing space.
-    let line_count = editor.buffer().row_count().max(1);
-    let digits = line_count.to_string().len() as u16;
     let gutter = sqeel_buffer::Gutter {
-        width: digits.saturating_add(2),
+        width: gutter_width,
         style: Style::default().fg(ui().editor_line_num),
     };
     // Gutter diagnostic signs: highest severity per row wins
@@ -4232,7 +4237,6 @@ fn draw_editor(
             .fg(ui().editor_search_fg),
         signs: &signs,
         conceals: &[],
-        wrap: sqeel_buffer::Wrap::None,
     };
     f.render_widget(view, chunks[1]);
 
