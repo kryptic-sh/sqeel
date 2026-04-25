@@ -3169,22 +3169,40 @@ fn adjust_number(ed: &mut Editor<'_>, delta: i64) -> bool {
 }
 
 fn replace_char(ed: &mut Editor<'_>, ch: char, count: usize) {
+    use sqeel_buffer::{Edit, MotionKind, Position};
     ed.push_undo();
+    ed.sync_buffer_content_from_textarea();
     for _ in 0..count {
-        ed.mutate(|t| t.delete_next_char());
-        ed.mutate(|t| t.insert_char(ch));
+        let cursor = ed.buffer().cursor();
+        let line_chars = ed
+            .buffer()
+            .line(cursor.row)
+            .map(|l| l.chars().count())
+            .unwrap_or(0);
+        if cursor.col >= line_chars {
+            break;
+        }
+        ed.mutate_edit(Edit::DeleteRange {
+            start: cursor,
+            end: Position::new(cursor.row, cursor.col + 1),
+            kind: MotionKind::Char,
+        });
+        ed.mutate_edit(Edit::InsertChar { at: cursor, ch });
     }
     // Vim leaves the cursor on the last replaced char.
-    ed.textarea.move_cursor(CursorMove::Back);
+    ed.buffer_mut().move_left(1);
+    ed.push_buffer_cursor_to_textarea();
 }
 
 fn toggle_case_at_cursor(ed: &mut Editor<'_>) {
-    let (row, col) = ed.textarea.cursor();
-    let lines = ed.textarea.lines();
-    if row >= lines.len() {
-        return;
-    }
-    let Some(c) = lines[row][col..].chars().next() else {
+    use sqeel_buffer::{Edit, MotionKind, Position};
+    ed.sync_buffer_content_from_textarea();
+    let cursor = ed.buffer().cursor();
+    let Some(c) = ed
+        .buffer()
+        .line(cursor.row)
+        .and_then(|l| l.chars().nth(cursor.col))
+    else {
         return;
     };
     let toggled = if c.is_uppercase() {
@@ -3192,8 +3210,15 @@ fn toggle_case_at_cursor(ed: &mut Editor<'_>) {
     } else {
         c.to_uppercase().next().unwrap_or(c)
     };
-    ed.mutate(|t| t.delete_next_char());
-    ed.mutate(|t| t.insert_char(toggled));
+    ed.mutate_edit(Edit::DeleteRange {
+        start: cursor,
+        end: Position::new(cursor.row, cursor.col + 1),
+        kind: MotionKind::Char,
+    });
+    ed.mutate_edit(Edit::InsertChar {
+        at: cursor,
+        ch: toggled,
+    });
 }
 
 fn join_line(ed: &mut Editor<'_>) {

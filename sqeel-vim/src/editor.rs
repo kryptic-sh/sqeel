@@ -237,6 +237,35 @@ impl<'a> Editor<'a> {
         f(&mut self.textarea)
     }
 
+    /// Phase 7f edit funnel: apply `edit` to the migration buffer
+    /// (the eventual edit authority), mirror the result back into
+    /// the textarea so the still-textarea-driven paths (insert mode,
+    /// yank pipe) keep observing the same content. Returns the
+    /// inverse for the host's undo stack.
+    pub(super) fn mutate_edit(&mut self, edit: sqeel_buffer::Edit) -> sqeel_buffer::Edit {
+        let inverse = self.buffer.apply_edit(edit);
+        self.push_buffer_content_to_textarea();
+        self.mark_content_dirty();
+        inverse
+    }
+
+    /// Reverse-sync helper paired with [`Editor::mutate_edit`]: rebuild
+    /// the textarea from the buffer's lines + cursor, preserving yank
+    /// text. Heavy (allocates a fresh `TextArea`) but correct; the
+    /// textarea field disappears at the end of Phase 7f anyway.
+    pub(crate) fn push_buffer_content_to_textarea(&mut self) {
+        let lines: Vec<String> = self.buffer.lines().to_vec();
+        let yank = self.textarea.yank_text();
+        self.textarea = TextArea::new(lines);
+        self.textarea.set_max_histories(0);
+        if !yank.is_empty() {
+            self.textarea.set_yank_text(yank);
+        }
+        let pos = self.buffer.cursor();
+        self.textarea
+            .move_cursor(CursorMove::Jump(pos.row, pos.col));
+    }
+
     /// Single choke-point for "the buffer just changed". Sets the
     /// dirty flag and drops the cached `content_arc` snapshot so
     /// subsequent reads rebuild from the live textarea. Callers
