@@ -271,6 +271,39 @@ impl Buffer {
         self.refresh_sticky_col_from_cursor();
     }
 
+    /// `H` — top of the visible viewport plus `offset` rows
+    /// (0-based; vim uses 1-based count where bare `H` = 0). Lands
+    /// on the first non-blank of the resolved row.
+    pub fn move_viewport_top(&mut self, offset: usize) {
+        let v = self.viewport();
+        let last = self.row_count().saturating_sub(1);
+        let target = v.top_row.saturating_add(offset).min(last);
+        self.set_cursor(Position::new(target, 0));
+        self.move_first_non_blank();
+    }
+
+    /// `M` — middle row of the visible viewport.
+    pub fn move_viewport_middle(&mut self) {
+        let v = self.viewport();
+        let last = self.row_count().saturating_sub(1);
+        let height = v.height as usize;
+        let visible_bot = v.top_row.saturating_add(height.saturating_sub(1)).min(last);
+        let mid = v.top_row + (visible_bot - v.top_row) / 2;
+        self.set_cursor(Position::new(mid, 0));
+        self.move_first_non_blank();
+    }
+
+    /// `L` — bottom of the visible viewport, minus `offset` rows.
+    pub fn move_viewport_bottom(&mut self, offset: usize) {
+        let v = self.viewport();
+        let last = self.row_count().saturating_sub(1);
+        let height = v.height as usize;
+        let visible_bot = v.top_row.saturating_add(height.saturating_sub(1)).min(last);
+        let target = visible_bot.saturating_sub(offset).max(v.top_row);
+        self.set_cursor(Position::new(target, 0));
+        self.move_first_non_blank();
+    }
+
     /// `ge` / `gE` — end of previous word. Walks backward until
     /// the cursor sits on the last char of a word (the next char
     /// is a different kind, or end-of-line).
@@ -666,6 +699,33 @@ mod tests {
         let mut b = Buffer::from_str("hello");
         assert!(!b.find_char_on_line('z', true, false));
         assert_eq!(at(&b), Position::new(0, 0));
+    }
+
+    #[test]
+    fn move_viewport_top_with_offset() {
+        let mut b = Buffer::from_str("a\nb\nc\nd\ne\nf");
+        b.viewport_mut().top_row = 1;
+        b.viewport_mut().height = 4;
+        b.move_viewport_top(2);
+        assert_eq!(at(&b), Position::new(3, 0));
+    }
+
+    #[test]
+    fn move_viewport_middle_picks_center_of_visible() {
+        let mut b = Buffer::from_str("a\nb\nc\nd\ne");
+        b.viewport_mut().top_row = 0;
+        b.viewport_mut().height = 5;
+        b.move_viewport_middle();
+        assert_eq!(at(&b), Position::new(2, 0));
+    }
+
+    #[test]
+    fn move_viewport_bottom_with_offset() {
+        let mut b = Buffer::from_str("a\nb\nc\nd\ne");
+        b.viewport_mut().top_row = 0;
+        b.viewport_mut().height = 5;
+        b.move_viewport_bottom(1);
+        assert_eq!(at(&b), Position::new(3, 0));
     }
 
     #[test]

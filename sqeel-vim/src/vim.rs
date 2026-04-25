@@ -1420,30 +1420,17 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
             }
         }
         Motion::ViewportTop => {
-            let top = ed.textarea.viewport_top_row();
-            let target = top.saturating_add(count.saturating_sub(1));
-            let last = ed.textarea.lines().len().saturating_sub(1);
-            ed.textarea
-                .move_cursor(CursorMove::Jump(target.min(last), 0));
-            move_first_non_whitespace(ed);
+            ed.buffer_mut().move_viewport_top(count.saturating_sub(1));
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::ViewportMiddle => {
-            let top = ed.textarea.viewport_top_row();
-            let h = ed.viewport_height_value() as usize;
-            let last = ed.textarea.lines().len().saturating_sub(1);
-            let visible_bot = (top + h.saturating_sub(1)).min(last);
-            let mid = top + (visible_bot - top) / 2;
-            ed.textarea.move_cursor(CursorMove::Jump(mid, 0));
-            move_first_non_whitespace(ed);
+            ed.buffer_mut().move_viewport_middle();
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::ViewportBottom => {
-            let top = ed.textarea.viewport_top_row();
-            let h = ed.viewport_height_value() as usize;
-            let last = ed.textarea.lines().len().saturating_sub(1);
-            let visible_bot = (top + h.saturating_sub(1)).min(last);
-            let target = visible_bot.saturating_sub(count.saturating_sub(1)).max(top);
-            ed.textarea.move_cursor(CursorMove::Jump(target, 0));
-            move_first_non_whitespace(ed);
+            ed.buffer_mut()
+                .move_viewport_bottom(count.saturating_sub(1));
+            ed.push_buffer_cursor_to_textarea();
         }
     }
 }
