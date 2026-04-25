@@ -136,6 +136,14 @@ enum Pending {
     /// `"` pressed — waiting for the register selector. The next char
     /// (`a`–`z`, `A`–`Z`, `0`–`9`, or `"`) sets `pending_register`.
     SelectRegister,
+    /// `q` pressed (not currently recording) — waiting for the macro
+    /// register name. The macro records every key after the chord
+    /// resolves, until a bare `q` ends the recording.
+    RecordMacroTarget,
+    /// `@` pressed — waiting for the macro register name to play.
+    /// `count` is the prefix multiplier (`3@a` plays the macro 3
+    /// times); 0 means "no prefix" and is treated as 1.
+    PlayMacroTarget { count: usize },
 }
 
 // ─── Operator / Motion / TextObject ────────────────────────────────────────
@@ -323,6 +331,20 @@ pub struct VimState {
     /// Active register selector — set by `"reg` prefix, consumed by
     /// the next y / d / c / p. `None` falls back to the unnamed `"`.
     pub(super) pending_register: Option<char>,
+    /// Recording target — set by `q{reg}`, cleared by a bare `q`.
+    /// While `Some`, every consumed `Input` is appended to
+    /// `recording_keys`.
+    pub(super) recording_macro: Option<char>,
+    /// Keys recorded into the in-progress macro. Stored on
+    /// `vim.macros[reg]` when recording stops.
+    pub(super) recording_keys: Vec<crate::input::Input>,
+    /// Replayed macros' keystrokes. Indexed by register letter.
+    pub(super) macros: std::collections::HashMap<char, Vec<crate::input::Input>>,
+    /// Set during `@reg` replay so the recorder doesn't capture the
+    /// replayed keystrokes a second time.
+    pub(super) replaying_macro: bool,
+    /// Last register played via `@reg`. `@@` re-plays this one.
+    pub(super) last_macro: Option<char>,
     /// Set while replaying `.` / last-change so we don't re-record it.
     replaying: bool,
     /// Entered Normal from Insert via `Ctrl-o`; after the next complete
@@ -526,10 +548,34 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
     // to land in the migration buffer before motion handlers that
     // call into `Buffer::move_*` see a stale state.
     ed.sync_buffer_content_from_textarea();
+    // Macro stop: a bare `q` ends an active recording before any
+    // other handler sees the key (so `q` itself doesn't get
+    // recorded). Replays don't trigger this — they finish on their
+    // own when the captured key list runs out.
+    if ed.vim.recording_macro.is_some()
+        && !ed.vim.replaying_macro
+        && matches!(ed.vim.pending, Pending::None)
+        && ed.vim.mode != Mode::Insert
+        && input.key == Key::Char('q')
+        && !input.ctrl
+        && !input.alt
+    {
+        let reg = ed.vim.recording_macro.take().unwrap();
+        let keys = std::mem::take(&mut ed.vim.recording_keys);
+        ed.vim.macros.insert(reg.to_ascii_lowercase(), keys);
+        return true;
+    }
     // Search prompt eats all keys until Enter / Esc.
     if ed.vim.search_prompt.is_some() {
         return step_search_prompt(ed, input);
     }
+    // Snapshot whether this step is consuming the register-name half
+    // of a macro chord. The recorder hook below uses this to skip
+    // the chord's bookkeeping keys (`q{reg}` open and `@{reg}` open).
+    let pending_was_macro_chord = matches!(
+        ed.vim.pending,
+        Pending::RecordMacroTarget | Pending::PlayMacroTarget { .. }
+    );
     let was_insert = ed.vim.mode == Mode::Insert;
     let consumed = match ed.vim.mode {
         Mode::Insert => step_insert(ed, input),
@@ -552,6 +598,17 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
     // `step_normal` thus all flow through here without each call
     // site needing to remember to sync.
     ed.sync_buffer_content_from_textarea();
+    // Recorder hook: append every consumed input to the active
+    // recording (if any) so the replay reproduces the same sequence.
+    // Skip the chord that started the recording (`q{reg}` open) and
+    // skip during replay so a macro doesn't capture itself.
+    if ed.vim.recording_macro.is_some()
+        && !ed.vim.replaying_macro
+        && input.key != Key::Char('q')
+        && !pending_was_macro_chord
+    {
+        ed.vim.recording_keys.push(input);
+    }
     consumed
 }
 
@@ -979,6 +1036,8 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         Pending::GotoMarkLine => return handle_goto_mark(ed, input, true),
         Pending::GotoMarkChar => return handle_goto_mark(ed, input, false),
         Pending::SelectRegister => return handle_select_register(ed, input),
+        Pending::RecordMacroTarget => return handle_record_macro_target(ed, input),
+        Pending::PlayMacroTarget { count } => return handle_play_macro_target(ed, input, count),
         Pending::None => {}
     }
 
@@ -1215,6 +1274,21 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
                 ed.vim.pending = Pending::SelectRegister;
                 return true;
             }
+            Key::Char('@') => {
+                // Open the macro-play chord. Next char names the
+                // register; `@@` re-plays the last-played macro.
+                // Stash any count so the chord can multiply replays.
+                ed.vim.pending = Pending::PlayMacroTarget { count };
+                return true;
+            }
+            Key::Char('q') if ed.vim.recording_macro.is_none() => {
+                // Open the macro-record chord. The bare-q stop is
+                // handled at the top of `step` so it's not consumed
+                // as another open. Recording-in-progress falls through
+                // here and is treated as a no-op (matches vim).
+                ed.vim.pending = Pending::RecordMacroTarget;
+                return true;
+            }
             _ => {}
         }
     }
@@ -1241,6 +1315,59 @@ fn handle_select_register(ed: &mut Editor<'_>, input: Input) -> bool {
     {
         ed.vim.pending_register = Some(c);
     }
+    true
+}
+
+/// `q{reg}` — start recording into `reg`. The recording session
+/// captures every consumed `Input` until a bare `q` ends it (handled
+/// inline at the top of `step`). Capital letters append to the
+/// matching lowercase register, mirroring named-register semantics.
+fn handle_record_macro_target(ed: &mut Editor<'_>, input: Input) -> bool {
+    if let Key::Char(c) = input.key
+        && (c.is_ascii_alphabetic() || c.is_ascii_digit())
+    {
+        ed.vim.recording_macro = Some(c);
+        // For `qA` (capital), seed the buffer with the existing
+        // lowercase recording so the new keystrokes append.
+        if c.is_ascii_uppercase() {
+            let lower = c.to_ascii_lowercase();
+            ed.vim.recording_keys = ed.vim.macros.get(&lower).cloned().unwrap_or_default();
+        } else {
+            ed.vim.recording_keys.clear();
+        }
+    }
+    true
+}
+
+/// `@{reg}` — replay the macro recorded under `reg`. `@@` re-plays
+/// the last-played macro. The replay re-feeds each captured `Input`
+/// through `step`, with `replaying_macro` flagged so the recorder
+/// (if active) doesn't double-capture. Honours the count prefix:
+/// `3@a` plays the macro three times.
+fn handle_play_macro_target(ed: &mut Editor<'_>, input: Input, count: usize) -> bool {
+    let reg = match input.key {
+        Key::Char('@') => ed.vim.last_macro,
+        Key::Char(c) if c.is_ascii_alphabetic() || c.is_ascii_digit() => {
+            Some(c.to_ascii_lowercase())
+        }
+        _ => None,
+    };
+    let Some(reg) = reg else {
+        return true;
+    };
+    let Some(keys) = ed.vim.macros.get(&reg).cloned() else {
+        return true;
+    };
+    ed.vim.last_macro = Some(reg);
+    let times = count.max(1);
+    let was_replaying = ed.vim.replaying_macro;
+    ed.vim.replaying_macro = true;
+    for _ in 0..times {
+        for k in keys.iter().copied() {
+            step(ed, k);
+        }
+    }
+    ed.vim.replaying_macro = was_replaying;
     true
 }
 
@@ -6006,6 +6133,41 @@ mod tests {
         let combined = e.registers().read('a').unwrap().text.clone();
         assert!(combined.starts_with(&first));
         assert!(combined.contains("bar"));
+    }
+
+    #[test]
+    fn macro_record_and_replay_basic() {
+        let mut e = editor_with("foo\nbar\nbaz");
+        // Record into "a": insert "X" at line start, exit insert.
+        run_keys(&mut e, "qaIX<Esc>jq");
+        assert_eq!(e.buffer().lines()[0], "Xfoo");
+        // Replay on the next two lines.
+        run_keys(&mut e, "@a");
+        assert_eq!(e.buffer().lines()[1], "Xbar");
+        // @@ replays the last-played macro.
+        run_keys(&mut e, "j@@");
+        assert_eq!(e.buffer().lines()[2], "Xbaz");
+    }
+
+    #[test]
+    fn macro_count_replays_n_times() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        // Record "j" — move down once.
+        run_keys(&mut e, "qajq");
+        assert_eq!(e.cursor().0, 1);
+        // Replay 3 times via 3@a.
+        run_keys(&mut e, "3@a");
+        assert_eq!(e.cursor().0, 4);
+    }
+
+    #[test]
+    fn macro_capital_q_appends_to_lowercase_register() {
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "qall<Esc>q");
+        run_keys(&mut e, "qAhh<Esc>q");
+        // "a now holds the original `ll<Esc>` followed by `hh<Esc>`.
+        let recorded = e.vim.macros.get(&'a').unwrap();
+        assert!(recorded.len() >= 4);
     }
 
     #[test]

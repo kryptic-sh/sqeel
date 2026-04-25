@@ -8,7 +8,7 @@
 /// the vim engine actually consumes. `Null` is the conventional
 /// sentinel for "no input" (matching the previous `tui_textarea::Key`
 /// shape) so call sites can early-return on unsupported keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum Key {
     Char(char),
     Backspace,
@@ -30,7 +30,7 @@ pub enum Key {
 
 /// A key press with modifier flags. The vim engine reads modifiers
 /// directly off this struct (e.g. `input.ctrl && input.key == Key::Char('d')`).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Input {
     pub key: Key,
     pub ctrl: bool,
