@@ -1318,14 +1318,15 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
             ed.push_buffer_cursor_to_textarea();
         }
         Motion::Up => {
-            for _ in 0..count {
-                ed.textarea.move_cursor(CursorMove::Up);
-            }
+            // Final col is set by `apply_sticky_col` below — push the
+            // post-move row to the textarea and let sticky tracking
+            // finish the work.
+            ed.buffer_mut().move_up(count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::Down => {
-            for _ in 0..count {
-                ed.textarea.move_cursor(CursorMove::Down);
-            }
+            ed.buffer_mut().move_down(count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::WordFwd => {
             for _ in 0..count {
@@ -1362,14 +1363,18 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
             let (r, c) = word_end_back(ed, true, count);
             ed.textarea.move_cursor(CursorMove::Jump(r, c));
         }
-        Motion::LineStart => ed.textarea.move_cursor(CursorMove::Head),
-        Motion::FirstNonBlank => move_first_non_whitespace(ed),
+        Motion::LineStart => {
+            ed.buffer_mut().move_line_start();
+            ed.push_buffer_cursor_to_textarea();
+        }
+        Motion::FirstNonBlank => {
+            ed.buffer_mut().move_first_non_blank();
+            ed.push_buffer_cursor_to_textarea();
+        }
         Motion::LineEnd => {
             // Vim normal-mode `$` lands on the last char, not one past it.
-            let (row, _) = ed.textarea.cursor();
-            let len = ed.textarea.lines()[row].chars().count();
-            let col = len.saturating_sub(1);
-            ed.textarea.move_cursor(CursorMove::Jump(row, col));
+            ed.buffer_mut().move_line_end();
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::FileTop => {
             // `count G` / `count gg` jumps to line `count`.
