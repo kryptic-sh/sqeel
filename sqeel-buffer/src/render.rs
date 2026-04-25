@@ -132,6 +132,12 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
         } else {
             text_area.width
         };
+        // Per-screen-row flag: true when the cell at the cursor's
+        // column on that screen row is part of an active `/` search
+        // match. The cursorcolumn pass uses this to skip cells that
+        // search bg already painted, so search highlight wins over
+        // the column bg.
+        let mut search_hit_at_cursor_col: Vec<bool> = Vec::new();
         // Walk the document forward, skipping rows hidden by closed
         // folds. Emit the start row of a closed fold as a marker
         // line instead of its actual content.
@@ -156,11 +162,15 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
                     self.paint_signs(term_buf, area, screen_row, doc_row);
                 }
                 self.paint_fold_marker(term_buf, text_area, screen_row, fold, line, is_cursor_row);
+                search_hit_at_cursor_col.push(false);
                 screen_row += 1;
                 doc_row = fold.end_row + 1;
                 continue;
             }
             let search_ranges = self.row_search_ranges(line);
+            let row_has_hit_at_cursor_col = search_ranges
+                .iter()
+                .any(|&(s, e)| cursor.col >= s && cursor.col < e);
             // Collect conceals for this row, sorted by start_byte.
             let row_conceals: Vec<&Conceal> = {
                 let mut v: Vec<&Conceal> =
@@ -207,6 +217,7 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
                     seg_idx == last_seg_idx,
                     &row_conceals,
                 );
+                search_hit_at_cursor_col.push(row_has_hit_at_cursor_col);
                 screen_row += 1;
             }
             doc_row += 1;
@@ -224,6 +235,16 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
         {
             let x = text_area.x + (cursor.col - top_col) as u16;
             for sy in 0..screen_row {
+                // Skip rows where search bg already painted this cell —
+                // search highlight wins over cursorcolumn so `/foo`
+                // matches stay readable when the cursor sits on them.
+                if search_hit_at_cursor_col
+                    .get(sy as usize)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let y = text_area.y + sy;
                 if let Some(cell) = term_buf.cell_mut((x, y)) {
                     cell.set_style(cell.style().patch(self.cursor_column_bg));
@@ -718,6 +739,36 @@ mod tests {
         for x in 8..11 {
             assert_eq!(term.cell((x, 0)).unwrap().bg, Color::Magenta);
         }
+    }
+
+    #[test]
+    fn search_bg_survives_cursorcolumn_overlay() {
+        use regex::Regex;
+        // Cursor sits on a `/foo` match. The cursorcolumn pass would
+        // otherwise overwrite the search bg with column bg — verify
+        // the match cells keep their search colour.
+        let mut b = Buffer::from_str("foo bar foo");
+        b.viewport_mut().width = 20;
+        b.viewport_mut().height = 1;
+        b.set_search_pattern(Some(Regex::new("foo").unwrap()));
+        // Cursor on column 1 (inside first `foo` match).
+        b.set_cursor(crate::Position::new(0, 1));
+        let view = BufferView {
+            buffer: &b,
+            selection: None,
+            resolver: &(no_styles as fn(u32) -> Style),
+            cursor_line_bg: Style::default(),
+            cursor_column_bg: Style::default().bg(Color::DarkGray),
+            selection_bg: Style::default().bg(Color::Blue),
+            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
+            gutter: None,
+            search_bg: Style::default().bg(Color::Magenta),
+            signs: &[],
+            conceals: &[],
+        };
+        let term = run_render(view, 20, 1);
+        // Cursor cell at (1, 0) is in the search match. Search wins.
+        assert_eq!(term.cell((1, 0)).unwrap().bg, Color::Magenta);
     }
 
     #[test]
