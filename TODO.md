@@ -152,8 +152,12 @@ We support some `OpTextObj` chords. Audit + fill gaps:
 Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
 (line jump). Backlog:
 
-- **`:read file` / `:r file` (M).** Insert file contents below the cursor.
-  Host-side I/O — sqeel-tui owns the path resolution.
+- ~~**`:read file` / `:r file` (M).**~~ Done. `apply_read_file` calls
+  `std::fs::read_to_string`, drops the file's trailing newline, and inserts the
+  content below the current row via a single `Edit::InsertStr`. Cursor lands on
+  the first inserted row. Failures surface as `ExEffect::Error`. Path resolution
+  stays the user's responsibility — pass an absolute path or a path relative to
+  the process CWD.
 - **`:r !cmd` (L).** Insert shell command output. Powerful but needs a sandbox
   story; defer.
 - ~~**`:set` (M).**~~ Done. Added

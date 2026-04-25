@@ -145,7 +145,49 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         return apply_delete_range(editor, range);
     }
 
+    // `:r path` / `:read path` — insert file contents below the
+    // current line. Range is currently ignored; vim's `:Nr file`
+    // semantics (insert below row N) can land later if needed.
+    if let Some(path) = cmd.strip_prefix("read ").or_else(|| cmd.strip_prefix("r ")) {
+        return apply_read_file(editor, path.trim());
+    }
+
     ExEffect::Unknown(cmd.to_string())
+}
+
+/// `:r file` — read `path` from disk and insert below the current
+/// row. Cursor lands on the first row of the inserted content.
+/// Failures (missing file, permission denied) surface as
+/// `ExEffect::Error` toasts.
+fn apply_read_file(editor: &mut Editor<'_>, path: &str) -> ExEffect {
+    use sqeel_buffer::{Edit, Position};
+    if path.is_empty() {
+        return ExEffect::Error(":r needs a file path".into());
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => return ExEffect::Error(format!("cannot read `{path}`: {e}")),
+    };
+    // Vim's `:r` inserts after the current row; trailing newline in
+    // the file is dropped to avoid a stray blank tail (vim does the
+    // same).
+    let trimmed = content.strip_suffix('\n').unwrap_or(&content);
+    editor.push_undo();
+    let row = editor.cursor().0;
+    let line_chars = editor
+        .buffer()
+        .line(row)
+        .map(|l| l.chars().count())
+        .unwrap_or(0);
+    let insert_text = format!("\n{trimmed}");
+    editor.mutate_edit(Edit::InsertStr {
+        at: Position::new(row, line_chars),
+        text: insert_text,
+    });
+    // Cursor lands on the first inserted row (row + 1) at col 0.
+    editor.jump_cursor(row + 1, 0);
+    editor.mark_dirty_after_ex();
+    ExEffect::Ok
 }
 
 /// 0-based, inclusive line range over the buffer.
@@ -1242,6 +1284,65 @@ mod tests {
             }
             other => panic!("expected Info, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_file_inserts_below_current_row() {
+        // Write a temp file with two rows.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("sqeel_read_{}.sql", std::process::id()));
+        std::fs::write(&path, "SELECT 1;\nSELECT 2;\n").unwrap();
+        let mut e = new("alpha\nbeta");
+        e.jump_cursor(0, 0);
+        let cmd = format!("r {}", path.display());
+        assert_eq!(run(&mut e, &cmd), ExEffect::Ok);
+        assert_eq!(
+            e.buffer().lines(),
+            vec![
+                "alpha".to_string(),
+                "SELECT 1;".into(),
+                "SELECT 2;".into(),
+                "beta".into(),
+            ]
+        );
+        // Cursor sits on the first inserted row.
+        assert_eq!(e.cursor(), (1, 0));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_file_alias_read_works() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("sqeel_read_alias_{}.sql", std::process::id()));
+        std::fs::write(&path, "x").unwrap();
+        let mut e = new("");
+        let cmd = format!("read {}", path.display());
+        run(&mut e, &cmd);
+        assert_eq!(e.buffer().lines(), vec!["".to_string(), "x".into()]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_file_missing_path_errors() {
+        let mut e = new("a");
+        match run(&mut e, "r /nonexistent/path/sqeel_test_xyzzy") {
+            ExEffect::Error(msg) => assert!(msg.contains("cannot read")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_file_undo_restores() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("sqeel_read_undo_{}.sql", std::process::id()));
+        std::fs::write(&path, "ins\n").unwrap();
+        let mut e = new("a\nb");
+        e.jump_cursor(0, 0);
+        run(&mut e, &format!("r {}", path.display()));
+        assert_eq!(e.buffer().lines().len(), 3);
+        crate::vim::do_undo(&mut e);
+        assert_eq!(e.buffer().lines(), vec!["a".to_string(), "b".into()]);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
