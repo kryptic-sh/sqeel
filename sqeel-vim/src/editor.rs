@@ -90,6 +90,26 @@ impl<'a> Editor<'a> {
         self.pending_lsp.take()
     }
 
+    /// Mirror the textarea's current cursor + sticky col into the
+    /// migration buffer. Called after every motion / edit so the
+    /// buffer stays in sync with the still-authoritative textarea
+    /// during phases 7b-7e of the migration.
+    ///
+    /// Once the per-edit + per-motion call sites are ported in
+    /// later phases, this drops out — the buffer becomes the source
+    /// of truth and the textarea is mirrored from it instead.
+    pub(crate) fn sync_buffer_from_textarea(&mut self) {
+        let (row, col) = self.textarea.cursor();
+        self.buffer
+            .set_cursor(sqeel_buffer::Position::new(row, col));
+        self.buffer.set_sticky_col(self.vim.sticky_col);
+        let height = self.viewport_height_value();
+        let viewport = self.buffer.viewport_mut();
+        viewport.top_row = self.textarea.viewport_top_row();
+        viewport.top_col = self.textarea.viewport_top_col();
+        viewport.height = height;
+    }
+
     /// Push a `(row, col)` onto the back-jumplist so `Ctrl-o` returns
     /// to it later. Used by host-driven jumps (e.g. `gd`) that move
     /// the cursor without going through the vim engine's motion

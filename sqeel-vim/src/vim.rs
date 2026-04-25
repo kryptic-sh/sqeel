@@ -314,7 +314,7 @@ pub struct VimState {
     /// cursor on the destination row when that row is long enough,
     /// so bouncing through a shorter or empty line doesn't drag the
     /// cursor back to column 0.
-    sticky_col: Option<usize>,
+    pub(super) sticky_col: Option<usize>,
     /// Track whether the last yank/cut was linewise (drives `p`/`P` layout).
     pub(super) yank_linewise: bool,
     /// Set while replaying `.` / last-change so we don't re-record it.
@@ -1245,6 +1245,11 @@ fn execute_motion(ed: &mut Editor<'_>, motion: Motion, count: usize) {
         push_jump(ed, pre_pos);
     }
     apply_sticky_col(ed, &motion, pre_col);
+    // Phase 7b: keep the migration buffer's cursor + viewport in
+    // lockstep with the textarea after every motion. Once 7c lands
+    // (motions ported onto the buffer's API), this flips: the
+    // buffer becomes authoritative and the textarea mirrors it.
+    ed.sync_buffer_from_textarea();
 }
 
 /// Restore the cursor to the sticky column after vertical motions and
@@ -5605,5 +5610,52 @@ mod tests {
         run_keys(&mut e, "/zzznotfound<CR>");
         // No match → cursor stays, jumplist shouldn't grow.
         assert_eq!(e.vim.jump_back.len(), pre_len);
+    }
+
+    // ─── Phase 7b: migration buffer cursor sync ──────────────────────
+
+    #[test]
+    fn buffer_cursor_mirrors_textarea_after_horizontal_motion() {
+        let mut e = editor_with("hello world");
+        run_keys(&mut e, "lll");
+        let (row, col) = e.textarea.cursor();
+        assert_eq!(e.buffer.cursor().row, row);
+        assert_eq!(e.buffer.cursor().col, col);
+    }
+
+    #[test]
+    fn buffer_cursor_mirrors_textarea_after_vertical_motion() {
+        let mut e = editor_with("aaaa\nbbbb\ncccc");
+        run_keys(&mut e, "jj");
+        let (row, col) = e.textarea.cursor();
+        assert_eq!(e.buffer.cursor().row, row);
+        assert_eq!(e.buffer.cursor().col, col);
+    }
+
+    #[test]
+    fn buffer_cursor_mirrors_textarea_after_word_motion() {
+        let mut e = editor_with("foo bar baz");
+        run_keys(&mut e, "ww");
+        let (row, col) = e.textarea.cursor();
+        assert_eq!(e.buffer.cursor().row, row);
+        assert_eq!(e.buffer.cursor().col, col);
+    }
+
+    #[test]
+    fn buffer_cursor_mirrors_textarea_after_jump_motion() {
+        let mut e = editor_with("a\nb\nc\nd\ne");
+        run_keys(&mut e, "G");
+        let (row, col) = e.textarea.cursor();
+        assert_eq!(e.buffer.cursor().row, row);
+        assert_eq!(e.buffer.cursor().col, col);
+    }
+
+    #[test]
+    fn buffer_sticky_col_mirrors_vim_state() {
+        let mut e = editor_with("longline\nhi\nlongline");
+        run_keys(&mut e, "fl");
+        run_keys(&mut e, "j");
+        // Sticky col should be set; buffer carries the same value.
+        assert_eq!(e.buffer.sticky_col(), e.vim.sticky_col);
     }
 }
