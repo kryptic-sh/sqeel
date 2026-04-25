@@ -143,6 +143,121 @@ impl Buffer {
         self.refresh_sticky_col_from_cursor();
     }
 
+    /// `%` — jump to the matching bracket. Walks the buffer
+    /// counting nesting depth so nested pairs resolve correctly.
+    /// Returns `true` when the cursor moved.
+    pub fn match_bracket(&mut self) -> bool {
+        let cursor = self.cursor();
+        let line = match self.line(cursor.row) {
+            Some(l) => l,
+            None => return false,
+        };
+        let ch = match line.chars().nth(cursor.col) {
+            Some(c) => c,
+            None => return false,
+        };
+        let (open, close, forward) = match ch {
+            '(' => ('(', ')', true),
+            ')' => ('(', ')', false),
+            '[' => ('[', ']', true),
+            ']' => ('[', ']', false),
+            '{' => ('{', '}', true),
+            '}' => ('{', '}', false),
+            '<' => ('<', '>', true),
+            '>' => ('<', '>', false),
+            _ => return false,
+        };
+        let mut depth: i32 = 0;
+        if forward {
+            let mut r = cursor.row;
+            let mut c = cursor.col;
+            loop {
+                let chars: Vec<char> = self.line(r).unwrap_or("").chars().collect();
+                while c < chars.len() {
+                    let here = chars[c];
+                    if here == open {
+                        depth += 1;
+                    } else if here == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            self.set_cursor(Position::new(r, c));
+                            self.refresh_sticky_col_from_cursor();
+                            return true;
+                        }
+                    }
+                    c += 1;
+                }
+                if r + 1 >= self.row_count() {
+                    return false;
+                }
+                r += 1;
+                c = 0;
+            }
+        } else {
+            let mut r = cursor.row;
+            let mut c = cursor.col as isize;
+            loop {
+                let chars: Vec<char> = self.line(r).unwrap_or("").chars().collect();
+                while c >= 0 {
+                    let here = chars[c as usize];
+                    if here == close {
+                        depth += 1;
+                    } else if here == open {
+                        depth -= 1;
+                        if depth == 0 {
+                            self.set_cursor(Position::new(r, c as usize));
+                            self.refresh_sticky_col_from_cursor();
+                            return true;
+                        }
+                    }
+                    c -= 1;
+                }
+                if r == 0 {
+                    return false;
+                }
+                r -= 1;
+                c = self.line(r).unwrap_or("").chars().count() as isize - 1;
+            }
+        }
+    }
+
+    /// `f` / `F` / `t` / `T` — find `ch` on the current row.
+    /// `forward = true` searches right of the cursor; `till = true`
+    /// stops one cell short of the match (the `t`/`T` semantic).
+    /// Returns `true` when the cursor moved.
+    pub fn find_char_on_line(&mut self, ch: char, forward: bool, till: bool) -> bool {
+        let cursor = self.cursor();
+        let line = match self.line(cursor.row) {
+            Some(l) => l,
+            None => return false,
+        };
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            return false;
+        }
+        let target_col = if forward {
+            chars
+                .iter()
+                .enumerate()
+                .skip(cursor.col + 1)
+                .find(|(_, c)| **c == ch)
+                .map(|(i, _)| if till { i.saturating_sub(1) } else { i })
+        } else {
+            (0..cursor.col)
+                .rev()
+                .find(|&i| chars[i] == ch)
+                .map(|i| if till { i + 1 } else { i })
+        };
+        match target_col {
+            Some(col) => {
+                self.set_cursor(Position::new(cursor.row, col));
+                self.refresh_sticky_col_from_cursor();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `e` / `E` — end of current/next word.
     pub fn move_word_end(&mut self, big: bool, count: usize) {
         for _ in 0..count.max(1) {
@@ -456,6 +571,69 @@ mod tests {
         assert_eq!(at(&b), Position::new(0, 2));
         b.move_word_end(false, 1);
         assert_eq!(at(&b), Position::new(0, 6));
+    }
+
+    #[test]
+    fn find_char_forward_lands_on_match() {
+        let mut b = Buffer::from_str("foo,bar,baz");
+        assert!(b.find_char_on_line(',', true, false));
+        assert_eq!(at(&b), Position::new(0, 3));
+        assert!(b.find_char_on_line(',', true, false));
+        assert_eq!(at(&b), Position::new(0, 7));
+    }
+
+    #[test]
+    fn find_char_till_stops_one_short() {
+        let mut b = Buffer::from_str("foo,bar");
+        assert!(b.find_char_on_line(',', true, true));
+        assert_eq!(at(&b), Position::new(0, 2));
+    }
+
+    #[test]
+    fn find_char_backward_lands_on_match() {
+        let mut b = Buffer::from_str("foo,bar,baz");
+        b.set_cursor(Position::new(0, 10));
+        assert!(b.find_char_on_line(',', false, false));
+        assert_eq!(at(&b), Position::new(0, 7));
+    }
+
+    #[test]
+    fn find_char_no_match_returns_false() {
+        let mut b = Buffer::from_str("hello");
+        assert!(!b.find_char_on_line('z', true, false));
+        assert_eq!(at(&b), Position::new(0, 0));
+    }
+
+    #[test]
+    fn match_bracket_pairs_within_line() {
+        let mut b = Buffer::from_str("if (x + y) {");
+        b.set_cursor(Position::new(0, 3));
+        assert!(b.match_bracket());
+        assert_eq!(at(&b), Position::new(0, 9));
+        assert!(b.match_bracket());
+        assert_eq!(at(&b), Position::new(0, 3));
+    }
+
+    #[test]
+    fn match_bracket_handles_nesting() {
+        let mut b = Buffer::from_str("((x))");
+        b.set_cursor(Position::new(0, 0));
+        assert!(b.match_bracket());
+        assert_eq!(at(&b), Position::new(0, 4));
+    }
+
+    #[test]
+    fn match_bracket_crosses_lines() {
+        let mut b = Buffer::from_str("{\n  x\n}");
+        b.set_cursor(Position::new(0, 0));
+        assert!(b.match_bracket());
+        assert_eq!(at(&b), Position::new(2, 0));
+    }
+
+    #[test]
+    fn match_bracket_returns_false_off_bracket() {
+        let mut b = Buffer::from_str("hello");
+        assert!(!b.match_bracket());
     }
 
     #[test]

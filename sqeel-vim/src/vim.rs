@@ -1557,103 +1557,19 @@ fn move_first_non_whitespace(ed: &mut Editor<'_>) {
 }
 
 fn find_char_on_line(ed: &mut Editor<'_>, ch: char, forward: bool, till: bool) -> bool {
-    let (row, col) = ed.textarea.cursor();
-    let line = &ed.textarea.lines()[row];
-    let chars: Vec<char> = line.chars().collect();
-    if chars.is_empty() {
-        return false;
+    let moved = ed.buffer_mut().find_char_on_line(ch, forward, till);
+    if moved {
+        ed.push_buffer_cursor_to_textarea();
     }
-    if forward {
-        for (i, c) in chars.iter().enumerate().skip(col + 1) {
-            if *c == ch {
-                let target = if till { i.saturating_sub(1) } else { i };
-                ed.textarea.move_cursor(CursorMove::Jump(row, target));
-                return true;
-            }
-        }
-    } else {
-        for i in (0..col).rev() {
-            if chars[i] == ch {
-                let target = if till { i + 1 } else { i };
-                ed.textarea.move_cursor(CursorMove::Jump(row, target));
-                return true;
-            }
-        }
-    }
-    false
+    moved
 }
 
 fn matching_bracket(ed: &mut Editor<'_>) -> bool {
-    let (row, col) = ed.textarea.cursor();
-    let lines = ed.textarea.lines();
-    let line = &lines[row];
-    let ch = match line[col..].chars().next() {
-        Some(c) => c,
-        None => return false,
-    };
-    let (open, close, forward) = match ch {
-        '(' => ('(', ')', true),
-        ')' => ('(', ')', false),
-        '[' => ('[', ']', true),
-        ']' => ('[', ']', false),
-        '{' => ('{', '}', true),
-        '}' => ('{', '}', false),
-        '<' => ('<', '>', true),
-        '>' => ('<', '>', false),
-        _ => return false,
-    };
-    let mut depth: i32 = 0;
-    if forward {
-        let mut r = row;
-        let mut c = col;
-        loop {
-            let cur_line = &lines[r];
-            let chars: Vec<char> = cur_line.chars().collect();
-            while c < chars.len() {
-                let ch = chars[c];
-                if ch == open {
-                    depth += 1;
-                } else if ch == close {
-                    depth -= 1;
-                    if depth == 0 {
-                        ed.textarea.move_cursor(CursorMove::Jump(r, c));
-                        return true;
-                    }
-                }
-                c += 1;
-            }
-            if r + 1 >= lines.len() {
-                return false;
-            }
-            r += 1;
-            c = 0;
-        }
-    } else {
-        let mut r = row;
-        let mut c = col as isize;
-        loop {
-            let cur_line = &lines[r];
-            let chars: Vec<char> = cur_line.chars().collect();
-            while c >= 0 {
-                let ch = chars[c as usize];
-                if ch == close {
-                    depth += 1;
-                } else if ch == open {
-                    depth -= 1;
-                    if depth == 0 {
-                        ed.textarea.move_cursor(CursorMove::Jump(r, c as usize));
-                        return true;
-                    }
-                }
-                c -= 1;
-            }
-            if r == 0 {
-                return false;
-            }
-            r -= 1;
-            c = lines[r].chars().count() as isize - 1;
-        }
+    let moved = ed.buffer_mut().match_bracket();
+    if moved {
+        ed.push_buffer_cursor_to_textarea();
     }
+    moved
 }
 
 fn word_at_cursor_search(ed: &mut Editor<'_>, forward: bool, count: usize) {
