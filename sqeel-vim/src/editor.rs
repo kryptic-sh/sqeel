@@ -615,10 +615,18 @@ impl<'a> Editor<'a> {
         }
         let cur_row = self.buffer.cursor().row;
         let cur_top = self.buffer.viewport().top_row;
+        // Scrolloff awareness: `zt` lands the cursor at the top edge
+        // of the viable area (top + margin), `zb` at the bottom edge
+        // (top + height - 1 - margin). Match the cap used by
+        // `ensure_cursor_in_scrolloff` so contradictory bounds are
+        // impossible on tiny viewports.
+        let margin = Self::SCROLLOFF.min(height.saturating_sub(1) / 2);
         let new_top = match pos {
             CursorScrollTarget::Center => cur_row.saturating_sub(height / 2),
-            CursorScrollTarget::Top => cur_row,
-            CursorScrollTarget::Bottom => cur_row.saturating_sub(height.saturating_sub(1)),
+            CursorScrollTarget::Top => cur_row.saturating_sub(margin),
+            CursorScrollTarget::Bottom => {
+                cur_row.saturating_sub(height.saturating_sub(1).saturating_sub(margin))
+            }
         };
         if new_top == cur_top {
             return;
@@ -1102,14 +1110,16 @@ mod tests {
     }
 
     #[test]
-    fn zt_puts_cursor_at_viewport_top() {
+    fn zt_puts_cursor_at_viewport_top_with_scrolloff() {
         let mut e = Editor::new(KeybindingMode::Vim);
         e.set_content(&many_lines(100));
         prime_viewport(&mut e, 20);
         e.jump_cursor(50, 0);
         e.handle_key(key(KeyCode::Char('z')));
         e.handle_key(key(KeyCode::Char('t')));
-        assert_eq!(e.buffer().viewport().top_row, 50);
+        // Cursor lands at top of viable area = top + SCROLLOFF (5).
+        // Viewport top therefore sits at cursor - 5.
+        assert_eq!(e.buffer().viewport().top_row, 45);
         assert_eq!(e.cursor().0, 50);
     }
 
@@ -1175,14 +1185,17 @@ mod tests {
     }
 
     #[test]
-    fn zb_puts_cursor_at_viewport_bottom() {
+    fn zb_puts_cursor_at_viewport_bottom_with_scrolloff() {
         let mut e = Editor::new(KeybindingMode::Vim);
         e.set_content(&many_lines(100));
         prime_viewport(&mut e, 20);
         e.jump_cursor(50, 0);
         e.handle_key(key(KeyCode::Char('z')));
         e.handle_key(key(KeyCode::Char('b')));
-        assert_eq!(e.buffer().viewport().top_row, 31);
+        // Cursor lands at bottom of viable area = top + height - 1 -
+        // SCROLLOFF. For height 20, scrolloff 5: cursor at top + 14,
+        // so top = cursor - 14 = 36.
+        assert_eq!(e.buffer().viewport().top_row, 36);
         assert_eq!(e.cursor().0, 50);
     }
 
