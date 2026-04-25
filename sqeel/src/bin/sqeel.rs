@@ -243,10 +243,11 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(url) = url {
         // Spawn — don't block. Slow DB handshakes must not freeze the TUI.
-        state
-            .lock()
-            .unwrap()
-            .set_status(format!("Connecting to {url}…"));
+        {
+            let mut s = state.lock().unwrap();
+            s.schema_connecting = true;
+            s.set_status(format!("Connecting to {url}…"));
+        }
         let connect_state = state.clone();
         rt.spawn(async move {
             connect_and_spawn(
@@ -442,6 +443,10 @@ async fn connect_and_spawn(
     session_schema_expanded_paths: Vec<String>,
     session_active_tab: usize,
 ) {
+    {
+        let mut s = state.lock().unwrap();
+        s.schema_connecting = true;
+    }
     match DbConnection::connect(url).await {
         Ok(conn) => {
             {
@@ -453,8 +458,10 @@ async fn connect_and_spawn(
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| conn.url.clone());
                 // Wipe any previous failure now that we're back online.
+                s.schema_connecting = false;
                 s.schema_connect_error = None;
                 s.schema_connect_url = None;
+                s.show_connect_error_popup = false;
                 s.set_status(format!("Connected: {conn_name}"));
                 // Tabs are connection-agnostic now — main() already
                 // populated them on startup. Don't reload here; that
@@ -490,15 +497,19 @@ async fn connect_and_spawn(
             );
         }
         Err(e) => {
-            let msg = format!("Connection failed: {e}");
+            let msg = format!("{e}");
             let mut s = state.lock().unwrap();
-            // Cancel any pending "loading" state and surface the
-            // failure in the sidebar so the user isn't stuck staring
-            // at a perpetual "Loading…" placeholder.
+            // Cancel pending "connecting"/"loading" state and surface
+            // the failure in the sidebar so the user isn't stuck
+            // staring at a perpetual "Connecting…" placeholder. The
+            // error stays in the sidebar — no result-tab push, since
+            // the user expects the failure to live next to the thing
+            // that failed (the schema explorer), not in the results
+            // pane.
+            s.schema_connecting = false;
             s.schema_loading = false;
-            s.schema_connect_error = Some(msg.clone());
+            s.schema_connect_error = Some(msg);
             s.schema_connect_url = Some(url.to_string());
-            s.set_error(msg);
         }
     }
 }

@@ -1400,6 +1400,12 @@ async fn run_loop(
                                 if mouse.row < la.y {
                                     // Click in the search box row: enter search mode.
                                     schema_search.start();
+                                } else if s.schema_connect_error.is_some()
+                                    && s.schema_nodes.is_empty()
+                                {
+                                    // Any click on the failure placeholder
+                                    // pops the details modal.
+                                    s.open_connect_error_popup();
                                 } else if mouse.row >= la.y
                                     && mouse.column >= la.x
                                     && mouse.column < la.x + la.width
@@ -1684,6 +1690,7 @@ async fn run_loop(
                     show_switcher,
                     show_add,
                     show_help,
+                    show_connect_error,
                     show_results,
                 ) = {
                     let s = state.lock().unwrap();
@@ -1694,6 +1701,7 @@ async fn run_loop(
                         s.show_connection_switcher,
                         s.show_add_connection,
                         s.show_help,
+                        s.show_connect_error_popup,
                         s.has_results(),
                     )
                 };
@@ -1709,6 +1717,7 @@ async fn run_loop(
                     && !show_switcher
                     && !show_add
                     && !show_help
+                    && !show_connect_error
                     && !show_completions
                     && !schema_search.focused
                     && (focus != Focus::Editor || vim_mode == VimMode::Normal);
@@ -2177,6 +2186,22 @@ async fn run_loop(
                     continue;
                 }
 
+                // ── Connection-error details popup ───────────────────────────────
+                if show_connect_error {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::NONE, KeyCode::Esc | KeyCode::Enter) => {
+                            state.lock().unwrap().close_connect_error_popup();
+                        }
+                        (KeyModifiers::NONE, KeyCode::Char('r')) => {
+                            let mut s = state.lock().unwrap();
+                            s.close_connect_error_popup();
+                            s.retry_connection();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // ── Help overlay ─────────────────────────────────────────────────
                 if show_help {
                     match (key.modifiers, key.code) {
@@ -2413,7 +2438,15 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char('l'))
                         if focus == Focus::Schema =>
                     {
-                        state.lock().unwrap().schema_toggle_current();
+                        let mut s = state.lock().unwrap();
+                        // Enter on the "Connection failed" placeholder
+                        // pops the full-error modal instead of trying
+                        // to expand a (non-existent) schema node.
+                        if s.schema_connect_error.is_some() && s.schema_nodes.is_empty() {
+                            s.open_connect_error_popup();
+                        } else {
+                            s.schema_toggle_current();
+                        }
                     }
                     // Schema search
                     (KeyModifiers::NONE, KeyCode::Char('/')) if focus == Focus::Schema => {
@@ -3560,6 +3593,16 @@ fn draw(
         areas.help_max_scroll = draw_help(f, area, state.help_scroll);
     }
 
+    // Connection-error details popup. Sits above help / switcher /
+    // add — when a connect fails the popup is the only useful next
+    // step, so it wins z-order against everything except toasts.
+    if state.show_connect_error_popup
+        && let Some(err) = state.schema_connect_error.as_deref()
+    {
+        let name = state.active_connection.as_deref();
+        draw_connect_error_popup(f, area, err, name);
+    }
+
     // LSP warning bar (above status bar)
     if let Some(warn_area) = lsp_warn_area {
         let msg = Paragraph::new(Span::styled(
@@ -4106,12 +4149,18 @@ fn draw_schema(
     if items.is_empty() {
         let placeholder: String = if has_filter {
             "No matches".into()
-        } else if let Some(err) = state.schema_connect_error.as_deref() {
-            let hint = match state.active_connection.as_deref() {
-                Some(name) => format!("\n\n[r] retry {name}"),
-                None => "\n\n[r] retry".into(),
+        } else if state.schema_connect_error.is_some() {
+            let name = state.active_connection.as_deref();
+            let retry_hint = match name {
+                Some(n) => format!("\n[r] retry {n}"),
+                None => "\n[r] retry".into(),
             };
-            format!("{err}{hint}")
+            format!("Connection failed\n[Enter] details{retry_hint}")
+        } else if state.schema_connecting {
+            match state.active_connection.as_deref() {
+                Some(name) => format!("Connecting to {name}..."),
+                None => "Connecting...".into(),
+            }
         } else if state.active_connection.is_some() {
             "Loading...".into()
         } else {
@@ -6536,6 +6585,72 @@ fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> u16 {
         chunks[1],
     );
     max_scroll
+}
+
+fn draw_connect_error_popup(f: &mut ratatui::Frame<'_>, area: Rect, err: &str, name: Option<&str>) {
+    let u = ui();
+    let bg = Style::default().fg(u.dialog_fg).bg(u.dialog_bg);
+    let title = match name {
+        Some(n) => format!(" Connection failed — {n}"),
+        None => " Connection failed".into(),
+    };
+    let footer = "[r] retry  [Esc/Enter] close";
+
+    // Wrap the body to ~75% of the screen width minus padding.
+    let width = (area.width * 3 / 4)
+        .clamp(40, 100)
+        .min(area.width.saturating_sub(4));
+    let inner_w = width.saturating_sub(4) as usize;
+    let body_lines: Vec<String> = err
+        .lines()
+        .flat_map(|line| {
+            if line.is_empty() {
+                vec![String::new()]
+            } else {
+                line.chars()
+                    .collect::<Vec<_>>()
+                    .chunks(inner_w.max(1))
+                    .map(|c| c.iter().collect::<String>())
+                    .collect()
+            }
+        })
+        .collect();
+    let body_h = (body_lines.len() as u16).max(1);
+    // 1 title + 1 blank + body + 1 blank + 1 footer + 2 vertical padding
+    let height = (body_h + 6).min(area.height.saturating_sub(2));
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    f.render_widget(Clear, popup);
+    f.render_widget(Block::default().style(bg), popup);
+
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(body_lines.len() + 4);
+    lines.push(Line::from(Span::styled(
+        title,
+        bg.add_modifier(Modifier::BOLD).fg(u.dialog_error_fg),
+    )));
+    lines.push(Line::raw(""));
+    for l in body_lines {
+        lines.push(Line::from(Span::styled(l, bg)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        footer,
+        bg.add_modifier(Modifier::DIM),
+    )));
+
+    f.render_widget(Paragraph::new(lines).style(bg), inner);
 }
 
 fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect) -> (u16, u16) {

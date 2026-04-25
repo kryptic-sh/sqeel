@@ -428,15 +428,25 @@ pub struct AppState {
     pub schema_nodes: Vec<SchemaNode>,
     pub schema_cursor: usize,
     pub schema_loading: bool,
+    /// True while the async DB handshake is in flight. Distinct from
+    /// `schema_loading` (which covers schema-node fetching after the
+    /// connect succeeds) so the sidebar can render "Connecting…" vs
+    /// "Loading…" separately.
+    pub schema_connecting: bool,
     /// Last connection error message — set when `connect_and_spawn`
-    /// fails so the sidebar can show "Connection failed: …" instead
-    /// of a stuck "Loading…" placeholder. Cleared on a successful
-    /// connect or when the user switches connections.
+    /// fails so the sidebar can show "Connection failed" instead of a
+    /// stuck "Loading…" placeholder. Sidebar shows the short form;
+    /// the full message stays here for the details popup. Cleared on
+    /// a successful connect or when the user switches connections.
     pub schema_connect_error: Option<String>,
     /// URL of the last failed connection. Stashed alongside
     /// `schema_connect_error` so `retry_connection` can re-issue
     /// the handshake without round-tripping through the switcher.
     pub schema_connect_url: Option<String>,
+    /// Toggled on when the user presses Enter (or clicks) the
+    /// "Connection failed" placeholder. The render layer paints a
+    /// modal with the full `schema_connect_error` text; Esc closes.
+    pub show_connect_error_popup: bool,
     /// Set by the executor when a query finishes; cleared by the run loop after redraw.
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
@@ -2718,10 +2728,34 @@ impl AppState {
             .map(|c| c.url.clone());
         if let Some(ref u) = url {
             self.pending_reconnect = Some(u.clone());
+            // Flip the sidebar to "Connecting…" synchronously so the
+            // user doesn't see a stale schema tree (or the previous
+            // connection's error) during the ~100ms before the
+            // watcher loop picks up `pending_reconnect`.
+            self.schema_connecting = true;
+            self.schema_connect_error = None;
+            self.show_connect_error_popup = false;
+            self.schema_nodes.clear();
+            self.mark_schema_cache_dirty();
         }
         self.show_connection_switcher = false;
         self.disarm_connection_delete();
         url
+    }
+
+    /// Open the connection-error details popup. No-op when there's
+    /// nothing to show.
+    pub fn open_connect_error_popup(&mut self) -> bool {
+        if self.schema_connect_error.is_some() {
+            self.show_connect_error_popup = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn close_connect_error_popup(&mut self) {
+        self.show_connect_error_popup = false;
     }
 
     /// Re-trigger the handshake for the last failed connection.
@@ -2742,7 +2776,8 @@ impl AppState {
             .or_else(|| self.active_connection.clone())
             .unwrap_or_else(|| url.clone());
         self.schema_connect_error = None;
-        self.schema_loading = true;
+        self.show_connect_error_popup = false;
+        self.schema_connecting = true;
         self.pending_reconnect = Some(url);
         self.set_status(format!("Reconnecting to {name}…"));
         true
