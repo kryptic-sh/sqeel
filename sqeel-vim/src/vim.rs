@@ -550,11 +550,45 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
                 return true;
             }
             Key::Char('u') => {
-                ed.mutate(|t| t.delete_line_by_head());
+                use sqeel_buffer::{Edit, MotionKind, Position};
+                ed.sync_buffer_content_from_textarea();
+                let cursor = ed.buffer().cursor();
+                if cursor.col > 0 {
+                    ed.mutate_edit(Edit::DeleteRange {
+                        start: Position::new(cursor.row, 0),
+                        end: cursor,
+                        kind: MotionKind::Char,
+                    });
+                    ed.push_buffer_cursor_to_textarea();
+                }
                 return true;
             }
             Key::Char('h') => {
-                ed.mutate(|t| t.delete_char());
+                use sqeel_buffer::{Edit, MotionKind, Position};
+                ed.sync_buffer_content_from_textarea();
+                let cursor = ed.buffer().cursor();
+                if cursor.col > 0 {
+                    ed.mutate_edit(Edit::DeleteRange {
+                        start: Position::new(cursor.row, cursor.col - 1),
+                        end: cursor,
+                        kind: MotionKind::Char,
+                    });
+                } else if cursor.row > 0 {
+                    let prev_row = cursor.row - 1;
+                    let prev_chars = ed
+                        .buffer()
+                        .line(prev_row)
+                        .map(|l| l.chars().count())
+                        .unwrap_or(0);
+                    ed.mutate_edit(Edit::JoinLines {
+                        row: prev_row,
+                        count: 1,
+                        with_space: false,
+                    });
+                    ed.buffer_mut()
+                        .set_cursor(Position::new(prev_row, prev_chars));
+                }
+                ed.push_buffer_cursor_to_textarea();
                 return true;
             }
             Key::Char('o') => {
