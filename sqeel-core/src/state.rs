@@ -392,6 +392,11 @@ pub struct AppState {
     /// the render path show a spinner instead of blank chrome when
     /// the server takes a beat (common on first request / cold sqls).
     pub hover_loading: bool,
+    /// Schema lookup the K binding queued — `(db, table)`. Loop
+    /// resolves it once the lazy column load reports back, then
+    /// installs the cached table view so the popup transitions from
+    /// loading → grid without an LSP round-trip.
+    pub hover_pending_table: Option<(String, String)>,
     /// Height of the hover popup's body area (rows currently visible
     /// between the header separator and the popup's bottom padding).
     /// Published by the render path each frame so nav helpers can
@@ -1119,11 +1124,41 @@ impl AppState {
         })
     }
 
+    /// Locate `name` in the schema tree and return `(db, columns_loaded)`
+    /// for the first match. Used by the K hover path to decide whether
+    /// to render from cache, queue a column load, or fall back to LSP.
+    /// Case-insensitive.
+    pub fn find_table(&self, name: &str) -> Option<(String, bool)> {
+        let lower = name.to_lowercase();
+        for node in &self.schema_nodes {
+            let SchemaNode::Database {
+                name: db, tables, ..
+            } = node
+            else {
+                continue;
+            };
+            for t in tables {
+                let SchemaNode::Table {
+                    name: tname,
+                    columns_loaded_at,
+                    ..
+                } = t
+                else {
+                    continue;
+                };
+                if tname.to_lowercase() == lower {
+                    return Some((db.clone(), columns_loaded_at.is_some()));
+                }
+            }
+        }
+        None
+    }
+
     /// Synthesise a hover table from the schema cache when the word
     /// under the cursor matches a table we've already fetched columns
     /// for. Returns `None` when the name doesn't resolve or the
     /// table's columns haven't been loaded yet — callers fall back
-    /// to a real LSP hover in those cases. Case-insensitive match.
+    /// to a real LSP hover in those cases. Case-insensitive.
     pub fn hover_table_from_cache(&self, name: &str) -> Option<QueryResult> {
         let lower = name.to_lowercase();
         for node in &self.schema_nodes {
@@ -1202,6 +1237,44 @@ impl AppState {
         None
     }
 
+    /// K-on-table fast path that needs a column fetch: queue a lazy
+    /// `SchemaLoadRequest::Columns` and open the popup in a loading
+    /// state. The host loop polls `try_install_pending_hover_table`
+    /// after each schema_cache_rx drain and swaps to the table view
+    /// once columns are populated — saves the LSP round-trip on the
+    /// first hover for any table.
+    pub fn open_hover_pending_columns(&mut self, db: String, table: String) {
+        self.request_schema_load(SchemaLoadRequest::Columns {
+            db: db.clone(),
+            table: table.clone(),
+        });
+        self.hover_pending_table = Some((db, table));
+        self.open_hover_loading();
+    }
+
+    /// Polled by the main loop after each schema cache rebuild.
+    /// Returns `true` (and installs the cached table view) once the
+    /// pending column load has populated. Caller drops the loading
+    /// spinner when this returns `true`.
+    pub fn try_install_pending_hover_table(&mut self) -> bool {
+        let Some((_, table)) = self.hover_pending_table.clone() else {
+            return false;
+        };
+        if !self.hover_loading {
+            // User dismissed the popup before the load returned;
+            // drop the pending state so a stale install can't fire
+            // on the next schema rebuild.
+            self.hover_pending_table = None;
+            return false;
+        }
+        if let Some(t) = self.hover_table_from_cache(&table) {
+            self.hover_pending_table = None;
+            self.open_hover_table(t);
+            return true;
+        }
+        false
+    }
+
     /// Open the hover popup in a loading state — focus transfers
     /// immediately so the user can see the popup + cancel it with
     /// `Esc` even before the LSP has answered. Payload-install paths
@@ -1261,6 +1334,7 @@ impl AppState {
         self.hover_text = None;
         self.hover_table = None;
         self.hover_selection = None;
+        self.hover_pending_table = None;
         if let Some(prev) = self.hover_prev_focus.take() {
             self.focus = prev;
         }

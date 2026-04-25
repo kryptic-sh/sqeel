@@ -84,6 +84,19 @@ impl<'a> Editor<'a> {
         self.pending_lsp.take()
     }
 
+    /// Push a `(row, col)` onto the back-jumplist so `Ctrl-o` returns
+    /// to it later. Used by host-driven jumps (e.g. `gd`) that move
+    /// the cursor without going through the vim engine's motion
+    /// machinery, where push_jump fires automatically.
+    pub fn record_jump(&mut self, pos: (usize, usize)) {
+        const JUMPLIST_MAX: usize = 100;
+        self.vim.jump_back.push(pos);
+        if self.vim.jump_back.len() > JUMPLIST_MAX {
+            self.vim.jump_back.remove(0);
+        }
+        self.vim.jump_fwd.clear();
+    }
+
     /// Host apps call this each draw with the current text area height so
     /// scroll helpers can clamp the cursor without recomputing layout.
     pub fn set_viewport_height(&self, height: u16) {

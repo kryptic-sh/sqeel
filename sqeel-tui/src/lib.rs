@@ -549,6 +549,9 @@ async fn run_loop(
             for (items, all, ids) in drained_schema_caches {
                 s.apply_schema_cache_rebuild(items, all, ids);
             }
+            // K queued a column load and is waiting for the table to
+            // populate — install the cached view as soon as it does.
+            s.try_install_pending_hover_table();
             s.evict_cold_tabs();
             let pending_load = s.pending_tab_load.take();
             let pending_tab_content = s.tab_content_pending.take();
@@ -1037,7 +1040,14 @@ async fn run_loop(
                             // locally — surface the location as a
                             // toast so the user still has a pointer.
                             if uri == scratch_uri.to_string() {
+                                // Push the pre-jump cursor onto the
+                                // jumplist so `Ctrl-o` returns to the
+                                // call site after the goto.
+                                let pre = editor.textarea.cursor();
                                 editor.jump_to(line as usize + 1, col as usize + 1);
+                                if editor.textarea.cursor() != pre {
+                                    editor.record_jump(pre);
+                                }
                             } else {
                                 toasts.push((
                                     format!("Defined at: {uri} line {}:{}", line + 1, col + 1),
@@ -2988,20 +2998,33 @@ async fn run_loop(
                         if focus == Focus::Editor && vim_mode == VimMode::Normal =>
                     {
                         let (row, col) = editor.textarea.cursor();
-                        // Fast path: if the word under the cursor
-                        // matches a table we've already cached columns
-                        // for, render the hover from the local schema
-                        // cache and skip the LSP round-trip entirely.
                         let word = word_at_cursor(editor.textarea.lines(), row, col);
-                        let cached = if !word.is_empty() {
-                            state.lock().unwrap().hover_table_from_cache(&word)
-                        } else {
-                            None
-                        };
-                        if let Some(table) = cached {
-                            state.lock().unwrap().open_hover_table(table);
-                            last_hover_id = None;
-                        } else if let Some(ref client) = lsp {
+                        // Three-tier dispatch for K:
+                        //   1. Word matches a table whose columns are
+                        //      cached → render from cache instantly.
+                        //   2. Word matches a known table but columns
+                        //      haven't been fetched yet → queue a
+                        //      `SchemaLoadRequest::Columns`, show
+                        //      loading; main loop swaps to the table
+                        //      once schema_cache_rx fills it.
+                        //   3. No table match → fall through to LSP
+                        //      `textDocument/hover`.
+                        let mut handled = false;
+                        if !word.is_empty() {
+                            let mut s = state.lock().unwrap();
+                            if let Some(table) = s.hover_table_from_cache(&word) {
+                                s.open_hover_table(table);
+                                last_hover_id = None;
+                                handled = true;
+                            } else if let Some((db, loaded)) = s.find_table(&word)
+                                && !loaded
+                            {
+                                s.open_hover_pending_columns(db, word.clone());
+                                last_hover_id = None;
+                                handled = true;
+                            }
+                        }
+                        if !handled && let Some(ref client) = lsp {
                             last_hover_id = Some(client.writer().request_hover(
                                 scratch_uri.clone(),
                                 row as u32,
