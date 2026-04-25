@@ -150,6 +150,18 @@ impl<'a> Editor<'a> {
             .move_cursor(CursorMove::Jump(pos.row, pos.col));
     }
 
+    /// Set the cursor to `(row, col)` (clamped to the buffer's
+    /// content) and mirror it into the textarea. Replaces the
+    /// scattered `ed.textarea.move_cursor(CursorMove::Jump(r, c))`
+    /// pattern in motion + operator code.
+    pub(crate) fn jump_cursor(&mut self, row: usize, col: usize) {
+        self.buffer
+            .set_cursor(sqeel_buffer::Position::new(row, col));
+        let pos = self.buffer.cursor();
+        self.textarea
+            .move_cursor(CursorMove::Jump(pos.row, pos.col));
+    }
+
     /// `(row, col)` cursor read sourced from the migration buffer.
     /// Equivalent to `self.textarea.cursor()` when the two are in
     /// sync — which is the steady state during Phase 7f because

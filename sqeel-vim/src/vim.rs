@@ -659,12 +659,12 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
                 // leading whitespace. Cursor shifts left by the amount
                 // actually stripped.
                 let (row, col) = ed.cursor();
-                let before_len = ed.textarea.lines()[row].len();
+                let before_len = ed.buffer().lines()[row].len();
                 outdent_rows(ed, row, row, 1);
-                let after_len = ed.textarea.lines()[row].len();
+                let after_len = ed.buffer().lines()[row].len();
                 let stripped = before_len.saturating_sub(after_len);
                 let new_col = col.saturating_sub(stripped);
-                ed.textarea.move_cursor(CursorMove::Jump(row, new_col));
+                ed.jump_cursor(row, new_col);
                 return true;
             }
             _ => {}
@@ -822,7 +822,7 @@ fn finish_insert_session(ed: &mut Editor<'_>) {
     let Some(session) = ed.vim.insert_session.take() else {
         return;
     };
-    let lines = ed.textarea.lines();
+    let lines = ed.buffer().lines();
     // Clamp both slices to their respective bounds — the buffer may have
     // grown (Enter splits rows) or shrunk (Backspace joins rows) during
     // the session, so row_max can overshoot either side.
@@ -924,7 +924,7 @@ fn begin_insert(ed: &mut Editor<'_>, count: usize, reason: InsertReason) {
         count,
         row_min: row,
         row_max: row,
-        before_lines: ed.textarea.lines().to_vec(),
+        before_lines: ed.buffer().lines().to_vec(),
         reason,
     });
     ed.vim.mode = Mode::Insert;
@@ -1040,7 +1040,7 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
             }
             Key::Char('I') => {
                 let (top, bot, left, _right) = block_bounds(ed);
-                ed.textarea.move_cursor(CursorMove::Jump(top, left));
+                ed.jump_cursor(top, left);
                 ed.vim.mode = Mode::Normal;
                 begin_insert(
                     ed,
@@ -1055,9 +1055,9 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
             }
             Key::Char('A') => {
                 let (top, bot, _left, right) = block_bounds(ed);
-                let line_len = ed.textarea.lines()[top].chars().count();
+                let line_len = ed.buffer().lines()[top].chars().count();
                 let col = (right + 1).min(line_len);
-                ed.textarea.move_cursor(CursorMove::Jump(top, col));
+                ed.jump_cursor(top, col);
                 ed.vim.mode = Mode::Normal;
                 begin_insert(ed, 1, InsertReason::BlockEdge { top, bot, col });
                 return true;
@@ -1328,7 +1328,7 @@ fn jump_back(ed: &mut Editor<'_>) {
     let cur = ed.cursor();
     ed.vim.jump_fwd.push(cur);
     let (r, c) = clamp_pos(ed, target);
-    ed.textarea.move_cursor(CursorMove::Jump(r, c));
+    ed.jump_cursor(r, c);
     ed.vim.sticky_col = Some(c);
 }
 
@@ -1344,14 +1344,14 @@ fn jump_forward(ed: &mut Editor<'_>) {
         ed.vim.jump_back.remove(0);
     }
     let (r, c) = clamp_pos(ed, target);
-    ed.textarea.move_cursor(CursorMove::Jump(r, c));
+    ed.jump_cursor(r, c);
     ed.vim.sticky_col = Some(c);
 }
 
 /// Clamp a stored `(row, col)` to the live buffer in case edits
 /// shrunk the document between push and pop.
 fn clamp_pos(ed: &Editor<'_>, pos: (usize, usize)) -> (usize, usize) {
-    let last_row = ed.textarea.lines().len().saturating_sub(1);
+    let last_row = ed.buffer().lines().len().saturating_sub(1);
     let r = pos.0.min(last_row);
     let line_len = ed
         .textarea
@@ -1490,13 +1490,13 @@ fn apply_sticky_col(ed: &mut Editor<'_>, motion: &Motion, pre_col: usize) {
         // it even if we currently clamped to a shorter row.
         ed.vim.sticky_col = Some(want);
         let (row, _) = ed.cursor();
-        let line_len = ed.textarea.lines()[row].chars().count();
+        let line_len = ed.buffer().lines()[row].chars().count();
         // Clamp to the last char on non-empty lines (vim normal-mode
         // never parks the cursor one past end of line). Empty lines
         // collapse to col 0.
         let max_col = line_len.saturating_sub(1);
         let target = want.min(max_col);
-        ed.textarea.move_cursor(CursorMove::Jump(row, target));
+        ed.jump_cursor(row, target);
     } else {
         // Horizontal motion or non-motion: sticky column tracks the
         // new cursor column so the *next* vertical motion aims there.
@@ -1905,9 +1905,9 @@ fn handle_after_g(ed: &mut Editor<'_>, input: Input) -> bool {
             // gg — top / jump to line count.
             let pre = ed.cursor();
             if count > 1 {
-                ed.textarea.move_cursor(CursorMove::Jump(count - 1, 0));
+                ed.jump_cursor(count - 1, 0);
             } else {
-                ed.textarea.move_cursor(CursorMove::Top);
+                ed.jump_cursor(0, 0);
             }
             move_first_non_whitespace(ed);
             if ed.cursor() != pre {
@@ -2085,13 +2085,13 @@ fn handle_visual_text_obj(ed: &mut Editor<'_>, input: Input, inner: bool) -> boo
         MotionKind::Linewise => {
             ed.vim.visual_line_anchor = start.0;
             ed.vim.mode = Mode::VisualLine;
-            ed.textarea.move_cursor(CursorMove::Jump(end.0, 0));
+            ed.jump_cursor(end.0, 0);
         }
         _ => {
             ed.vim.mode = Mode::Visual;
             ed.vim.visual_anchor = (start.0, start.1);
             let (er, ec) = retreat_one(ed, end);
-            ed.textarea.move_cursor(CursorMove::Jump(er, ec));
+            ed.jump_cursor(er, ec);
         }
     }
     true
@@ -2103,7 +2103,7 @@ fn retreat_one(ed: &Editor<'_>, pos: (usize, usize)) -> (usize, usize) {
     if c > 0 {
         (r, c - 1)
     } else if r > 0 {
-        let prev_len = ed.textarea.lines()[r - 1].len();
+        let prev_len = ed.buffer().lines()[r - 1].len();
         (r - 1, prev_len)
     } else {
         (0, 0)
@@ -2131,12 +2131,15 @@ fn handle_normal_only(ed: &mut Editor<'_>, input: &Input, count: usize) -> bool 
             true
         }
         Key::Char('a') => {
-            ed.textarea.move_cursor(CursorMove::Forward);
+            ed.buffer_mut().move_right_to_end(1);
+            ed.push_buffer_cursor_to_textarea();
             begin_insert(ed, count.max(1), InsertReason::Enter(InsertEntry::A));
             true
         }
         Key::Char('A') => {
-            ed.textarea.move_cursor(CursorMove::End);
+            ed.buffer_mut().move_line_end();
+            ed.buffer_mut().move_right_to_end(1);
+            ed.push_buffer_cursor_to_textarea();
             begin_insert(ed, count.max(1), InsertReason::Enter(InsertEntry::ShiftA));
             true
         }
@@ -2332,7 +2335,7 @@ fn begin_insert_noundo(ed: &mut Editor<'_>, count: usize, reason: InsertReason) 
         count,
         row_min: row,
         row_max: row,
-        before_lines: ed.textarea.lines().to_vec(),
+        before_lines: ed.buffer().lines().to_vec(),
         reason,
     });
     ed.vim.mode = Mode::Insert;
@@ -2350,7 +2353,7 @@ fn apply_op_with_motion(ed: &mut Editor<'_>, op: Operator, motion: &Motion, coun
     let end = ed.cursor();
     let kind = motion_kind(motion);
     // Restore cursor before selecting (so Yank leaves cursor at start).
-    ed.textarea.move_cursor(CursorMove::Jump(start.0, start.1));
+    ed.jump_cursor(start.0, start.1);
     run_operator_over_range(ed, op, start, end, kind);
 }
 
@@ -2358,7 +2361,7 @@ fn apply_op_with_text_object(ed: &mut Editor<'_>, op: Operator, obj: TextObject,
     let Some((start, end, kind)) = text_object_range(ed, obj, inner) else {
         return;
     };
-    ed.textarea.move_cursor(CursorMove::Jump(start.0, start.1));
+    ed.jump_cursor(start.0, start.1);
     run_operator_over_range(ed, op, start, end, kind);
 }
 
@@ -2539,7 +2542,7 @@ fn order(a: (usize, usize), b: (usize, usize)) -> ((usize, usize), (usize, usize
 
 fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
     let (row, col) = ed.cursor();
-    let total = ed.textarea.lines().len();
+    let total = ed.buffer().lines().len();
     let end_row = (row + count.saturating_sub(1)).min(total.saturating_sub(1));
 
     match op {
@@ -2828,7 +2831,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             }
             ed.vim.yank_linewise = false;
             ed.vim.mode = Mode::Normal;
-            ed.textarea.move_cursor(CursorMove::Jump(top, left));
+            ed.jump_cursor(top, left);
         }
         Operator::Delete => {
             ed.push_undo();
@@ -2839,7 +2842,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             }
             ed.vim.yank_linewise = false;
             ed.vim.mode = Mode::Normal;
-            ed.textarea.move_cursor(CursorMove::Jump(top, left));
+            ed.jump_cursor(top, left);
         }
         Operator::Change => {
             ed.push_undo();
@@ -2849,7 +2852,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
                 ed.last_yank = Some(yank);
             }
             ed.vim.yank_linewise = false;
-            ed.textarea.move_cursor(CursorMove::Jump(top, left));
+            ed.jump_cursor(top, left);
             begin_insert_noundo(
                 ed,
                 1,
@@ -2864,7 +2867,7 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             ed.push_undo();
             transform_block_case(ed, op, top, bot, left, right);
             ed.vim.mode = Mode::Normal;
-            ed.textarea.move_cursor(CursorMove::Jump(top, left));
+            ed.jump_cursor(top, left);
         }
         Operator::Indent | Operator::Outdent => {
             // VisualBlock `>` / `<` falls back to linewise indent over
@@ -2892,7 +2895,7 @@ fn transform_block_case(
     left: usize,
     right: usize,
 ) {
-    let mut lines: Vec<String> = ed.textarea.lines().to_vec();
+    let mut lines: Vec<String> = ed.buffer().lines().to_vec();
     for r in top..=bot.min(lines.len().saturating_sub(1)) {
         let chars: Vec<char> = lines[r].chars().collect();
         if left >= chars.len() {
@@ -2970,7 +2973,7 @@ fn block_replace(ed: &mut Editor<'_>, ch: char) {
     }
     reset_textarea_lines(ed, lines);
     ed.vim.mode = Mode::Normal;
-    ed.textarea.move_cursor(CursorMove::Jump(top, left));
+    ed.jump_cursor(top, left);
 }
 
 /// Replace the textarea's buffer with `lines` while disabling the
@@ -3030,7 +3033,7 @@ fn word_text_object(
     big: bool,
 ) -> Option<((usize, usize), (usize, usize))> {
     let (row, col) = ed.cursor();
-    let line = ed.textarea.lines().get(row)?;
+    let line = ed.buffer().lines().get(row)?;
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() {
         return None;
@@ -3092,7 +3095,7 @@ fn quote_text_object(
     inner: bool,
 ) -> Option<((usize, usize), (usize, usize))> {
     let (row, col) = ed.cursor();
-    let line = ed.textarea.lines().get(row)?;
+    let line = ed.buffer().lines().get(row)?;
     let bytes = line.as_bytes();
     let q_byte = q as u8;
     // Find opening and closing quote on the same line.
@@ -3148,7 +3151,7 @@ fn bracket_text_object(
         _ => return None,
     };
     let (row, col) = ed.cursor();
-    let lines = ed.textarea.lines();
+    let lines = ed.buffer().lines();
     // Walk backward from cursor to find unbalanced opening.
     let open_pos = find_open_bracket(lines, row, col, open, close)?;
     let close_pos = find_close_bracket(lines, open_pos.0, open_pos.1 + 1, open, close)?;
@@ -3246,7 +3249,7 @@ fn advance_pos(lines: &[String], pos: (usize, usize)) -> (usize, usize) {
 
 fn paragraph_text_object(ed: &Editor<'_>, inner: bool) -> Option<((usize, usize), (usize, usize))> {
     let (row, _) = ed.cursor();
-    let lines = ed.textarea.lines();
+    let lines = ed.buffer().lines();
     if lines.is_empty() {
         return None;
     }
