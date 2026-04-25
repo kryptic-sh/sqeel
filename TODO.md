@@ -59,12 +59,12 @@ file:line targets; each item carries them so the work is mechanical.
   `:refresh` and a default mapping (e.g. `<leader>R`) that bumps schema
   invalidation regardless of TTL. Should reuse the same code path the reconnect
   flow uses for fetching schema.
-- **First-run inline prompt (S–M).** Empty config dir → blank TUI with
-  `(no connections configured)` in a hidden switcher
-  (`sqeel-tui/src/lib.rs:6256`). Detect the empty case in `App::run`/main draw
-  and show a centred panel: "No connections yet. Press `<leader>c` then `n` to
-  add one — or hit `?` for the help overlay." Stays until the user opens the
-  switcher or adds a connection. Pure UI; no new state.
+- ~~**First-run inline prompt (S–M).**~~ Done. Different UX from the original
+  spec: empty config dir + no `-c`/`-u` flag → `bin/sqeel.rs` calls
+  `open_add_connection()` right after `load_connections()` so the user lands
+  directly in the add-connection form instead of a blank TUI. Esc still bails
+  out of the form, leaving the connection switcher one keystroke away
+  (`<leader>c`).
 - **Don't clobber unsaved tabs on connection switch (M).**
   `confirm_connection_switch` → `load_tabs_for_connection` replaces the entire
   tabs list (`sqeel-core/src/state.rs:2909-2948`); any unsaved scratch buffers

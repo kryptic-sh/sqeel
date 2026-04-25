@@ -126,6 +126,12 @@ fn main() -> anyhow::Result<()> {
         let mut s = state.lock().unwrap();
         s.apply_editor_config(&main_config.editor);
         s.set_available_connections(conns.clone());
+        // First-run UX: with no connections on disk and none passed
+        // on the CLI, drop the user straight into the add-connection
+        // form so the launch isn't a blank TUI.
+        if conns.is_empty() && args.url.is_none() && args.connection.is_none() {
+            s.open_add_connection();
+        }
     }
 
     let session = load_session_data();
