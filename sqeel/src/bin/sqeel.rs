@@ -108,11 +108,14 @@ fn main() -> anyhow::Result<()> {
     // Load scratch tabs from disk immediately — doesn't need the DB
     // handshake, so the user sees their last query as soon as the TUI
     // comes up even if the connection is slow or fails entirely.
-    if let Some(name) = &conn_name {
-        let slug = sanitize_conn_slug(name);
+    // Scratches are connection-agnostic so they load regardless of
+    // whether a connection name was resolved.
+    {
         let mut s = state.lock().unwrap();
-        s.active_connection = Some(name.clone());
-        s.load_tabs_for_connection(&slug);
+        if let Some(name) = &conn_name {
+            s.active_connection = Some(name.clone());
+        }
+        s.load_tabs();
         if session_active_tab < s.tabs.len() {
             s.switch_to_tab(session_active_tab);
         }
@@ -321,12 +324,11 @@ async fn connect_and_spawn(
                 // Wipe any previous failure now that we're back online.
                 s.schema_connect_error = None;
                 s.set_status(format!("Connected: {conn_name}"));
-                let slug = sanitize_conn_slug(&conn_name);
-                // Skip the disk load if main() already populated tabs
-                // for this connection — reloading would clobber any
-                // edits the user made while waiting for the handshake.
-                let already_loaded = s.active_connection.as_deref() == Some(conn_name.as_str())
-                    && !s.tabs.is_empty();
+                // Tabs are connection-agnostic now — main() already
+                // populated them on startup. Don't reload here; that
+                // would clobber any edits the user made while waiting
+                // for the handshake.
+                let already_loaded = !s.tabs.is_empty();
                 s.active_connection = Some(conn_name.clone());
                 s.active_dialect = sqeel_core::highlight::Dialect::from_url(url);
                 // Generate a sqls config from the active URL so the
@@ -337,7 +339,7 @@ async fn connect_and_spawn(
                     s.pending_sqls_config = Some(cfg);
                 }
                 if !already_loaded {
-                    s.load_tabs_for_connection(&slug);
+                    s.load_tabs();
                     if session_active_tab < s.tabs.len() {
                         s.switch_to_tab(session_active_tab);
                     }

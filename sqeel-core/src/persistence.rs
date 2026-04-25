@@ -5,13 +5,13 @@ pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("sqeel"))
 }
 
+/// Scratch queries are connection-agnostic — `queries/` lives directly
+/// under the data dir so a buffer the user opened against one
+/// connection can be re-run against any other. Results stay
+/// per-connection (see [`results_dir_for`]) since they're tied to a
+/// concrete query execution.
 pub fn queries_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("queries"))
-}
-
-/// Per-connection queries subdirectory: `~/.local/share/sqeel/queries/<conn_slug>/`
-pub fn queries_dir_for(conn_slug: &str) -> Option<PathBuf> {
-    data_dir().map(|d| d.join("queries").join(conn_slug))
 }
 
 /// Sanitize a connection name or URL into a safe directory component.
@@ -46,10 +46,10 @@ fn ensure_dir(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Returns next available scratch_NNN.sql name inside the connection's subdir.
-pub fn next_scratch_name(conn_slug: &str) -> anyhow::Result<String> {
-    let dir =
-        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+/// Returns next available `scratch_NNN.sql` name in the global
+/// queries dir. Scratch buffers are connection-agnostic.
+pub fn next_scratch_name() -> anyhow::Result<String> {
+    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
     for i in 1..=999u32 {
         let name = format!("scratch_{:03}.sql", i);
@@ -60,20 +60,17 @@ pub fn next_scratch_name(conn_slug: &str) -> anyhow::Result<String> {
     Ok("scratch_overflow.sql".into())
 }
 
-/// Save a SQL buffer to the connection's queries subdir.
-pub fn save_query(conn_slug: &str, name: &str, content: &str) -> anyhow::Result<()> {
-    let dir =
-        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+/// Save a SQL buffer to the queries dir.
+pub fn save_query(name: &str, content: &str) -> anyhow::Result<()> {
+    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
     std::fs::write(dir.join(name), content)?;
     Ok(())
 }
 
-/// Delete a saved SQL buffer from the connection's queries subdir.
-/// No-op if the file doesn't exist.
-pub fn delete_query(conn_slug: &str, name: &str) -> anyhow::Result<()> {
-    let dir =
-        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+/// Delete a saved SQL buffer. No-op if the file doesn't exist.
+pub fn delete_query(name: &str) -> anyhow::Result<()> {
+    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     let path = dir.join(name);
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -81,11 +78,9 @@ pub fn delete_query(conn_slug: &str, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Rename a saved SQL buffer within the connection's queries subdir.
-/// Fails if the destination already exists.
-pub fn rename_query(conn_slug: &str, old: &str, new: &str) -> anyhow::Result<()> {
-    let dir =
-        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+/// Rename a saved SQL buffer. Fails if the destination already exists.
+pub fn rename_query(old: &str, new: &str) -> anyhow::Result<()> {
+    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     let from = dir.join(old);
     let to = dir.join(new);
     if to.exists() {
@@ -95,35 +90,10 @@ pub fn rename_query(conn_slug: &str, old: &str, new: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Load a SQL buffer from the connection's queries subdir.
-pub fn load_query(conn_slug: &str, name: &str) -> anyhow::Result<String> {
-    let dir =
-        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+/// Load a SQL buffer from the queries dir.
+pub fn load_query(name: &str) -> anyhow::Result<String> {
+    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     Ok(std::fs::read_to_string(dir.join(name))?)
-}
-
-/// List saved SQL files for a specific connection, sorted by name.
-pub fn list_queries_for(conn_slug: &str) -> anyhow::Result<Vec<String>> {
-    let dir =
-        queries_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut names: Vec<String> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) == Some("sql") {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    names.sort();
-    Ok(names)
 }
 
 /// List all saved SQL files, sorted by name.

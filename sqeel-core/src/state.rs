@@ -91,7 +91,6 @@ impl CancelControl {
 #[derive(Debug, Clone)]
 pub struct PendingTabLoad {
     pub tab_index: usize,
-    pub slug: String,
     pub name: String,
 }
 
@@ -104,7 +103,6 @@ pub struct PendingTabLoad {
 /// flag.
 #[derive(Debug, Clone)]
 pub struct PendingSave {
-    pub slug: String,
     pub name: String,
     pub content: String,
     pub tab_index: Option<usize>,
@@ -115,7 +113,7 @@ impl PendingSave {
     /// `tokio::task::spawn_blocking` so the TUI loop doesn't stall on
     /// multi-megabyte buffers over slow filesystems.
     pub fn commit(&self) -> std::io::Result<()> {
-        persistence::save_query(&self.slug, &self.name, &self.content)
+        persistence::save_query(&self.name, &self.content)
             .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
@@ -2963,14 +2961,14 @@ impl AppState {
         }
     }
 
-    /// Load tabs from disk for the given connection slug.
+    /// Load the global scratch-query tabs from disk.
     /// Sets `tab_content_pending` so the TUI loads the first tab into the editor.
-    pub fn load_tabs_for_connection(&mut self, conn_slug: &str) {
-        let names = persistence::list_queries_for(conn_slug).unwrap_or_default();
+    pub fn load_tabs(&mut self) {
+        let names = persistence::list_queries().unwrap_or_default();
         if names.is_empty() {
-            match persistence::next_scratch_name(conn_slug) {
+            match persistence::next_scratch_name() {
                 Ok(name) => {
-                    let _ = persistence::save_query(conn_slug, &name, "");
+                    let _ = persistence::save_query(&name, "");
                     self.tabs = vec![TabEntry::open(name, String::new())];
                 }
                 Err(_) => {
@@ -2996,11 +2994,7 @@ impl AppState {
                 // buffer immediately.
                 let name = tab.name.clone();
                 self.tab_content_pending = Some(String::new());
-                self.pending_tab_load = Some(PendingTabLoad {
-                    tab_index: 0,
-                    slug: conn_slug.to_string(),
-                    name,
-                });
+                self.pending_tab_load = Some(PendingTabLoad { tab_index: 0, name });
             }
         }
     }
@@ -3021,8 +3015,6 @@ impl AppState {
             tab.content = Some((*self.editor_content).clone());
         }
         self.active_tab = idx;
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         let (content, cursor, needs_load) = if let Some(tab) = self.tabs.get_mut(idx) {
             tab.last_accessed = Some(Instant::now());
             if let Some(ref c) = tab.content {
@@ -3033,7 +3025,6 @@ impl AppState {
                 // for the TUI to run off the render loop.
                 let load = PendingTabLoad {
                     tab_index: idx,
-                    slug: slug.clone(),
                     name: tab.name.clone(),
                 };
                 (String::new(), tab.cursor, Some(load))
@@ -3131,15 +3122,13 @@ impl AppState {
             anyhow::bail!("Name may only contain letters, digits, '-', '_', '.'");
         }
         let final_name = format!("{stem}.sql");
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         let Some(tab) = self.tabs.get_mut(self.active_tab) else {
             anyhow::bail!("No active tab");
         };
         if tab.name == final_name {
             return Ok(());
         }
-        persistence::rename_query(&slug, &tab.name, &final_name)?;
+        persistence::rename_query(&tab.name, &final_name)?;
         tab.name = final_name;
         Ok(())
     }
@@ -3148,13 +3137,11 @@ impl AppState {
     /// If this was the last tab, a fresh empty scratch tab is created so the
     /// editor always has something to edit.
     pub fn delete_active_tab(&mut self) -> anyhow::Result<()> {
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         let Some(tab) = self.tabs.get(self.active_tab) else {
             anyhow::bail!("No active tab");
         };
         let name = tab.name.clone();
-        persistence::delete_query(&slug, &name)?;
+        persistence::delete_query(&name)?;
         self.tabs.remove(self.active_tab);
         if self.tabs.is_empty() {
             self.new_tab();
@@ -3171,10 +3158,8 @@ impl AppState {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             tab.content = Some((*self.editor_content).clone());
         }
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
-        if let Ok(name) = persistence::next_scratch_name(&slug) {
-            let _ = persistence::save_query(&slug, &name, "");
+        if let Ok(name) = persistence::next_scratch_name() {
+            let _ = persistence::save_query(&name, "");
             self.tabs.push(TabEntry::open(name, String::new()));
             self.active_tab = self.tabs.len() - 1;
             self.tab_content_pending = Some(String::new());
@@ -3206,10 +3191,7 @@ impl AppState {
             return;
         }
         if self.tabs.is_empty() {
-            let slug = persistence::sanitize_conn_slug(
-                self.active_connection.as_deref().unwrap_or("default"),
-            );
-            let Ok(name) = persistence::next_scratch_name(&slug) else {
+            let Ok(name) = persistence::next_scratch_name() else {
                 return;
             };
             let mut entry = TabEntry::open(name, String::new());
@@ -3235,17 +3217,14 @@ impl AppState {
     /// TUI can ship [`PendingSave::commit`] to `spawn_blocking` and
     /// keep the render loop responsive during large saves.
     pub fn prepare_save_active_tab(&mut self) -> std::io::Result<PendingSave> {
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         if self.tabs.is_empty() {
-            let name = persistence::next_scratch_name(&slug)
+            let name = persistence::next_scratch_name()
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             let content: String = (*self.editor_content).clone();
             self.tabs
                 .push(TabEntry::open(name.clone(), content.clone()));
             self.active_tab = 0;
             return Ok(PendingSave {
-                slug,
                 name,
                 content,
                 tab_index: Some(0),
@@ -3265,7 +3244,6 @@ impl AppState {
         tab.last_accessed = Some(Instant::now());
         let name = tab.name.clone();
         Ok(PendingSave {
-            slug,
             name,
             content,
             tab_index: Some(idx),
@@ -3286,8 +3264,6 @@ impl AppState {
     /// dirty tab. Caller commits each write on a blocking task then
     /// calls [`mark_tab_saved`] for the successes.
     pub fn prepare_save_all_dirty(&mut self) -> Vec<PendingSave> {
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
         let mut out = Vec::new();
         let active = self.active_tab;
         let synced = self.editor_content_synced;
@@ -3313,7 +3289,6 @@ impl AppState {
             };
             tab.content = Some(content.clone());
             out.push(PendingSave {
-                slug: slug.clone(),
                 name: tab.name.clone(),
                 content,
                 tab_index: Some(i),

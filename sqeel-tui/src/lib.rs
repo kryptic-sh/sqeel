@@ -560,8 +560,7 @@ async fn run_loop(
         if let Some(load) = pending_load {
             let tx = tab_load_tx.clone();
             tokio::task::spawn_blocking(move || {
-                let content =
-                    sqeel_core::persistence::load_query(&load.slug, &load.name).unwrap_or_default();
+                let content = sqeel_core::persistence::load_query(&load.name).unwrap_or_default();
                 let _ = tx.send((load.tab_index, content));
             });
         }
