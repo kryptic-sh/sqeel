@@ -3257,12 +3257,25 @@ fn join_line(ed: &mut Editor<'_>) {
 /// `gJ` — join the next line onto the current one without inserting a
 /// separating space or stripping leading whitespace.
 fn join_line_raw(ed: &mut Editor<'_>) {
-    let (row, _) = ed.textarea.cursor();
-    if row + 1 >= ed.textarea.lines().len() {
+    use sqeel_buffer::{Edit, Position};
+    ed.sync_buffer_content_from_textarea();
+    let row = ed.buffer().cursor().row;
+    if row + 1 >= ed.buffer().row_count() {
         return;
     }
-    ed.textarea.move_cursor(CursorMove::End);
-    ed.mutate(|t| t.delete_next_char());
+    let join_col = ed
+        .buffer()
+        .line(row)
+        .map(|l| l.chars().count())
+        .unwrap_or(0);
+    ed.mutate_edit(Edit::JoinLines {
+        row,
+        count: 1,
+        with_space: false,
+    });
+    // Vim leaves the cursor at the join point (end of original line).
+    ed.buffer_mut().set_cursor(Position::new(row, join_col));
+    ed.push_buffer_cursor_to_textarea();
 }
 
 fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
