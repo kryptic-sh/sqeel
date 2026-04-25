@@ -43,10 +43,10 @@ toggle/`zR`/`zM`/`zd` chord set, and edit-side invalidation. What's left:
 - **Nested `@b` inside `qa` recording (S).** Today the recorder stops at the
   bare `q`, so `qa@bq` captures the literal `@`/`b` keys; replay re-runs them.
   That's actually correct for vim — but re-verify and add a test, then move on.
-- **`Ctrl-R {reg}` in insert mode (S).** Paste a register's contents at the
-  cursor without leaving insert. Add a `Pending::InsertRegister` (state lives on
-  the insert handler) and feed each char of the register through
-  `handle_insert_key` as `Char`s.
+- ~~**`Ctrl-R {reg}` in insert mode (S).**~~ Done. `Ctrl-R` arms an
+  `insert_pending_register` flag; the next char selects the register and its
+  text inserts inline (single `Edit::InsertStr`, cursor lands at end of
+  payload). Stays in insert mode after.
 - ~~**`:reg` / `:registers` ex command (S).**~~ Done. Returns
   `ExEffect::Info(table)` with every non-empty slot; toast renderer now expands
   vertically for multi-line `Info` payloads.
@@ -119,7 +119,7 @@ We support some `OpTextObj` chords. Audit + fill gaps:
 
 ## Insert mode (S)
 
-- **`Ctrl-R {reg}` (S).** Already listed under registers.
+- ~~**`Ctrl-R {reg}` (S).**~~ Done — see registers section.
 - **`Ctrl-W` / `Ctrl-U` / `Ctrl-H` (done).** Verify against vim behaviour for
   edge cases (Ctrl-W at line start should join with prev row's last word —
   doesn't today).

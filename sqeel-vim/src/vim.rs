@@ -385,6 +385,10 @@ pub struct VimState {
     /// read it back. Uppercase / global marks aren't supported
     /// (single-buffer model).
     pub(super) marks: std::collections::HashMap<char, (usize, usize)>,
+    /// Set by `Ctrl-R` in insert mode while waiting for the register
+    /// selector. The next typed char names the register; its contents
+    /// are inserted inline at the cursor and the flag clears.
+    pub(super) insert_pending_register: bool,
 }
 
 /// Active `/` or `?` search prompt. Text mutations drive the textarea's
@@ -688,6 +692,19 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
 // ─── Insert mode ───────────────────────────────────────────────────────────
 
 fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
+    // `Ctrl-R {reg}` paste — the previous keystroke armed the wait. Any
+    // non-char key cancels (matches vim, which beeps on selectors like
+    // Esc and re-emits the literal text otherwise).
+    if ed.vim.insert_pending_register {
+        ed.vim.insert_pending_register = false;
+        if let Key::Char(c) = input.key
+            && !input.ctrl
+        {
+            insert_register_text(ed, c);
+        }
+        return true;
+    }
+
     if input.key == Key::Esc {
         finish_insert_session(ed);
         ed.vim.mode = Mode::Normal;
@@ -779,6 +796,12 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
                 ed.vim.mode = Mode::Normal;
                 return true;
             }
+            Key::Char('r') => {
+                // Arm the register selector — the next typed char picks
+                // a slot and pastes its text inline.
+                ed.vim.insert_pending_register = true;
+                return true;
+            }
             Key::Char('t') => {
                 // Insert-mode indent: prepend one shiftwidth to the
                 // current line's leading whitespace. Cursor shifts
@@ -823,6 +846,43 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
         }
     }
     true
+}
+
+/// `Ctrl-R {reg}` body — insert the named register's contents at the
+/// cursor as charwise text. Embedded newlines split lines naturally via
+/// `Edit::InsertStr`. Unknown selectors and empty slots are no-ops so
+/// stray keystrokes don't mutate the buffer.
+fn insert_register_text(ed: &mut Editor<'_>, selector: char) {
+    use sqeel_buffer::{Edit, Position};
+    let text = match ed.registers().read(selector) {
+        Some(slot) if !slot.text.is_empty() => slot.text.clone(),
+        _ => return,
+    };
+    ed.sync_buffer_content_from_textarea();
+    let cursor = ed.buffer().cursor();
+    ed.mutate_edit(Edit::InsertStr {
+        at: cursor,
+        text: text.clone(),
+    });
+    // Advance cursor to the end of the inserted payload — multi-line
+    // pastes land on the last inserted row at the post-text column.
+    let mut row = cursor.row;
+    let mut col = cursor.col;
+    for ch in text.chars() {
+        if ch == '\n' {
+            row += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    ed.buffer_mut().set_cursor(Position::new(row, col));
+    ed.push_buffer_cursor_to_textarea();
+    ed.mark_content_dirty();
+    if let Some(ref mut session) = ed.vim.insert_session {
+        session.row_min = session.row_min.min(row);
+        session.row_max = session.row_max.max(row);
+    }
 }
 
 /// Insert-mode key dispatcher backed by the migration buffer. Replaces
@@ -6327,6 +6387,70 @@ mod tests {
         // Move to second line then paste from "a.
         run_keys(&mut e, "j0\"aP");
         assert_eq!(e.buffer().lines()[1], "hello second");
+    }
+
+    #[test]
+    fn ctrl_r_in_insert_pastes_named_register() {
+        let mut e = editor_with("hello world");
+        // Yank "hello " into "a".
+        run_keys(&mut e, "\"ayw");
+        assert_eq!(e.registers().read('a').unwrap().text, "hello ");
+        // Open a fresh line, enter insert, Ctrl-R a.
+        run_keys(&mut e, "o");
+        assert_eq!(e.vim_mode(), VimMode::Insert);
+        e.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        e.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(e.buffer().lines()[1], "hello ");
+        // Cursor sits at end of inserted payload (col 6).
+        assert_eq!(e.cursor(), (1, 6));
+        // Stayed in insert mode; next char appends.
+        assert_eq!(e.vim_mode(), VimMode::Insert);
+        e.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE));
+        assert_eq!(e.buffer().lines()[1], "hello X");
+    }
+
+    #[test]
+    fn ctrl_r_with_unnamed_register() {
+        let mut e = editor_with("foo");
+        run_keys(&mut e, "yiw");
+        run_keys(&mut e, "A ");
+        // Unnamed register paste via `"`.
+        e.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        e.handle_key(KeyEvent::new(KeyCode::Char('"'), KeyModifiers::NONE));
+        assert_eq!(e.buffer().lines()[0], "foo foo");
+    }
+
+    #[test]
+    fn ctrl_r_unknown_selector_is_no_op() {
+        let mut e = editor_with("abc");
+        run_keys(&mut e, "A");
+        e.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        // `?` isn't a valid register selector — paste skipped, the
+        // armed flag still clears so the next key types normally.
+        e.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        e.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+        assert_eq!(e.buffer().lines()[0], "abcZ");
+    }
+
+    #[test]
+    fn ctrl_r_multiline_register_pastes_with_newlines() {
+        let mut e = editor_with("alpha\nbeta\ngamma");
+        // Yank two whole lines into "b".
+        run_keys(&mut e, "\"byy");
+        run_keys(&mut e, "j\"byy");
+        // Linewise yanks include trailing \n; second yank into uppercase
+        // would append, but lowercase "b" overwrote — ensure we have a
+        // multi-line payload by yanking 2 lines linewise via V.
+        run_keys(&mut e, "ggVj\"by");
+        let payload = e.registers().read('b').unwrap().text.clone();
+        assert!(payload.contains('\n'));
+        run_keys(&mut e, "Go");
+        e.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        e.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        // The buffer should now contain the original 3 lines plus the
+        // pasted 2-line payload (with its own newline) on its own line.
+        let total_lines = e.buffer().lines().len();
+        assert!(total_lines >= 5);
     }
 
     #[test]
