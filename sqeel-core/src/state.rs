@@ -2953,6 +2953,7 @@ impl AppState {
         if let Err(reason) = validate_connection_url(&url) {
             anyhow::bail!("Bad URL: {reason}");
         }
+        let is_edit = self.edit_connection_original_name.is_some();
         if let Some(ref original) = self.edit_connection_original_name.clone() {
             // Editing: rename file if name changed, then overwrite
             if *original != name {
@@ -2978,6 +2979,22 @@ impl AppState {
         }
         self.show_add_connection = false;
         self.edit_connection_original_name = None;
+        // First-run / no-active-connection auto-connect: when the
+        // user just created a new connection and isn't already
+        // attached to anything, kick off the handshake so they
+        // don't have to round-trip through the switcher. The
+        // watcher loop picks up `pending_reconnect` on its next
+        // tick. No-op when editing or when a connection is
+        // already live, since stomping on the active session
+        // would be surprising.
+        if !is_edit && self.active_connection.is_none() && !self.schema_connecting {
+            self.schema_connect_error = None;
+            self.schema_connect_error_kind = None;
+            self.show_connect_error_popup = false;
+            self.schema_connecting = true;
+            self.pending_reconnect = Some(url.clone());
+            self.set_status(format!("Connecting to {name}…"));
+        }
         // Plaintext-password heads-up. Save still succeeded; just
         // surface the risk in the status bar.
         if url_has_plaintext_password(&url) {
