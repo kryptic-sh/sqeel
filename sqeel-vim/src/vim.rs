@@ -658,6 +658,9 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
     // `step_normal` thus all flow through here without each call
     // site needing to remember to sync.
     ed.sync_buffer_content_from_textarea();
+    // Scroll viewport to keep cursor on-screen. Replaces the
+    // auto-scroll tui-textarea did on every move_cursor.
+    ed.buffer_mut().ensure_cursor_visible();
     // Recorder hook: append every consumed input to the active
     // recording (if any) so the replay reproduces the same sequence.
     // Skip the chord that started the recording (`q{reg}` open) and
