@@ -535,9 +535,9 @@ impl<'a> Editor<'a> {
     /// Jump the cursor to the given 1-based line/column, clamped to the document.
     pub fn jump_to(&mut self, line: usize, col: usize) {
         let r = line.saturating_sub(1);
-        let max_row = self.textarea.lines().len().saturating_sub(1);
+        let max_row = self.buffer.row_count().saturating_sub(1);
         let r = r.min(max_row);
-        let line_len = self.textarea.lines()[r].chars().count();
+        let line_len = self.buffer.line(r).map(|l| l.chars().count()).unwrap_or(0);
         let c = col.saturating_sub(1).min(line_len);
         self.textarea.move_cursor(CursorMove::Jump(r, c));
     }
@@ -556,7 +556,8 @@ impl<'a> Editor<'a> {
     pub fn mouse_begin_drag(&mut self) {
         if !self.vim.is_visual_char() {
             self.textarea.cancel_selection();
-            self.vim.enter_visual(self.textarea.cursor());
+            let cursor = self.cursor();
+            self.vim.enter_visual(cursor);
         }
     }
 
