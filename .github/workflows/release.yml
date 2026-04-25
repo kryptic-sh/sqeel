@@ -34,6 +34,10 @@ jobs:
             target: aarch64-apple-darwin
             suffix: ""
             archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            suffix: ""
+            archive: tar.gz
 
     steps:
       - uses: actions/checkout@v6
@@ -71,25 +75,34 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           TAG=${GITHUB_REF_NAME}
+          ARCHIVE="sqeel-${TAG}-${{ matrix.target }}.tar.gz"
           mkdir -p dist
           cp target/${{ matrix.target }}/release/sqeel${{ matrix.suffix }} dist/
           cp target/${{ matrix.target }}/release/sqeel-gui${{ matrix.suffix }} dist/
-          tar -czf sqeel-${TAG}-${{ matrix.target }}.tar.gz -C dist .
+          cp README.md LICENSE dist/
+          tar -czf "$ARCHIVE" -C dist .
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
 
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
           $TAG = $env:GITHUB_REF_NAME
+          $ARCHIVE = "sqeel-$TAG-${{ matrix.target }}.zip"
           New-Item -ItemType Directory -Force dist
           Copy-Item "target/${{ matrix.target }}/release/sqeel${{ matrix.suffix }}" dist/
           Copy-Item "target/${{ matrix.target }}/release/sqeel-gui${{ matrix.suffix }}" dist/
-          Compress-Archive -Path dist/* -DestinationPath "sqeel-${TAG}-${{ matrix.target }}.zip"
+          Copy-Item README.md, LICENSE dist/
+          Compress-Archive -Path dist/* -DestinationPath $ARCHIVE
+          $hash = (Get-FileHash -Algorithm SHA256 $ARCHIVE).Hash.ToLower()
+          "$hash  $ARCHIVE" | Out-File -Encoding ASCII "$ARCHIVE.sha256"
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: sqeel-*.${{ matrix.archive }}
+          files: |
+            sqeel-*.${{ matrix.archive }}
+            sqeel-*.${{ matrix.archive }}.sha256
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
