@@ -629,10 +629,17 @@ impl<'a> Editor<'a> {
     }
 
     pub(super) fn restore(&mut self, lines: Vec<String>, cursor: (usize, usize)) {
+        let text = lines.join("\n");
         self.textarea = TextArea::new(lines);
         self.textarea.set_max_histories(0);
         self.textarea
             .move_cursor(CursorMove::Jump(cursor.0, cursor.1));
+        // Mirror into the migration buffer so subsequent step paths
+        // see the new content + cursor without waiting for the
+        // textarea→buffer sync at step start.
+        self.buffer.replace_all(&text);
+        self.buffer
+            .set_cursor(sqeel_buffer::Position::new(cursor.0, cursor.1));
         self.mark_content_dirty();
     }
 
