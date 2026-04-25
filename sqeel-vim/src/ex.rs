@@ -99,6 +99,7 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
             crate::vim::do_redo(editor);
             return ExEffect::Ok;
         }
+        "foldindent" | "foldi" => return apply_fold_indent(editor),
         _ => {}
     }
 
@@ -153,6 +154,65 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
     }
 
     ExEffect::Unknown(cmd.to_string())
+}
+
+/// `:foldindent` / `:foldi` — derive folds from leading-whitespace runs
+/// (vim's `foldmethod=indent`, fired manually because auto-fold-on-edit
+/// is expensive). Each row whose successor is more deeply indented
+/// becomes a fold opener; the fold extends to the row before indent
+/// drops back to or below the opener's level.
+fn apply_fold_indent(editor: &mut Editor<'_>) -> ExEffect {
+    let lines = editor.buffer().lines().to_vec();
+    let total = lines.len();
+    if total == 0 {
+        return ExEffect::Ok;
+    }
+    let indent =
+        |line: &str| -> usize { line.chars().take_while(|c| *c == ' ' || *c == '\t').count() };
+    let indents: Vec<usize> = lines.iter().map(|l| indent(l)).collect();
+    let blank: Vec<bool> = lines.iter().map(|l| l.trim().is_empty()).collect();
+    let mut new_folds: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i + 1 < total {
+        if blank[i] {
+            i += 1;
+            continue;
+        }
+        let head_indent = indents[i];
+        let mut j = i + 1;
+        // Skip blanks adjacent to the head — they belong to the same
+        // block so a fold can span across them.
+        while j < total && blank[j] {
+            j += 1;
+        }
+        if j >= total || indents[j] <= head_indent {
+            i += 1;
+            continue;
+        }
+        // We have a fold opener — walk forward until indent drops back
+        // to <= head_indent on a non-blank row.
+        let mut end = j;
+        let mut k = j + 1;
+        while k < total {
+            if !blank[k] && indents[k] <= head_indent {
+                break;
+            }
+            end = k;
+            k += 1;
+        }
+        new_folds.push((i, end));
+        // Step by one (not past `end`) so nested indented runs inside
+        // the outer block also get their own fold.
+        i += 1;
+    }
+    if new_folds.is_empty() {
+        return ExEffect::Info("no indented blocks to fold".into());
+    }
+    let count = new_folds.len();
+    for (start, end) in new_folds {
+        editor.buffer_mut().add_fold(start, end, true);
+    }
+    ExEffect::Info(format!("created {count} fold(s)"))
 }
 
 /// `:r file` — read `path` from disk and insert below the current
@@ -1284,6 +1344,60 @@ mod tests {
             }
             other => panic!("expected Info, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn foldindent_creates_fold_for_indented_block() {
+        let mut e = new("SELECT *\n  FROM t\n  WHERE x = 1\nORDER BY id");
+        match run(&mut e, "foldindent") {
+            ExEffect::Info(msg) => assert!(msg.contains("1 fold")),
+            other => panic!("expected Info, got {other:?}"),
+        }
+        let folds = e.buffer().folds();
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_row, 0);
+        assert_eq!(folds[0].end_row, 2);
+        assert!(folds[0].closed);
+    }
+
+    #[test]
+    fn foldindent_no_blocks_reports_info() {
+        let mut e = new("a\nb\nc");
+        match run(&mut e, "foldindent") {
+            ExEffect::Info(msg) => assert!(msg.contains("no indented blocks")),
+            other => panic!("expected Info, got {other:?}"),
+        }
+        assert!(e.buffer().folds().is_empty());
+    }
+
+    #[test]
+    fn foldindent_handles_nested_blocks() {
+        let mut e = new("outer\n  mid\n    inner1\n    inner2\n  back\noutmost");
+        run(&mut e, "foldindent");
+        let folds = e.buffer().folds();
+        // Outer block 0..=4 + inner block 1..=3 (mid → inner runs).
+        assert_eq!(folds.len(), 2);
+        assert_eq!(folds[0].start_row, 0);
+        assert_eq!(folds[0].end_row, 4);
+        assert_eq!(folds[1].start_row, 1);
+        assert_eq!(folds[1].end_row, 3);
+    }
+
+    #[test]
+    fn foldindent_skips_blanks_inside_block() {
+        let mut e = new("head\n  body1\n\n  body2\nfoot");
+        run(&mut e, "foldindent");
+        let folds = e.buffer().folds();
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_row, 0);
+        assert_eq!(folds[0].end_row, 3);
+    }
+
+    #[test]
+    fn foldindent_short_alias() {
+        let mut e = new("a\n  b\nc");
+        assert!(matches!(run(&mut e, "foldi"), ExEffect::Info(_)));
+        assert_eq!(e.buffer().folds().len(), 1);
     }
 
     #[test]

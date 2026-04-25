@@ -24,9 +24,12 @@ toggle/`zR`/`zM`/`zd` chord set, and edit-side invalidation. What's left:
   closed folds count as a single visual line. Cursor-on-hidden-row latent bug
   still exists but the new helpers handle it gracefully (next_visible from a
   hidden row still walks past the fold).
-- **`foldmethod=indent` (M).** Auto-derive folds from leading- whitespace runs.
-  Triggered manually via a new ex command (`:foldindent`?) since
-  auto-fold-on-edit is expensive. Drop into `Buffer::add_fold` for each run.
+- ~~**`foldmethod=indent` (M).**~~ Done. `:foldindent` / `:foldi` walks the
+  buffer once, treating every row whose next non-blank successor has deeper
+  indent as a fold opener. The fold extends to the row before indent drops back
+  to ≤ opener level. Nested indented runs get their own fold (the algorithm
+  advances by one row, not past the outer fold's end). Blank lines inside an
+  indented block don't break it.
 - **`foldmethod=syntax` (L).** Tree-sitter already runs in sqeel- tui's
   `apply_window_spans` flow. Tap the same parser to extract block ranges (CTEs,
   subqueries, parenthesised lists) and pipe them as folds. Needs a per-row →
