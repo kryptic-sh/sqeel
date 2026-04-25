@@ -27,7 +27,7 @@ pub use buffer::Buffer;
 pub use edit::{Edit, MotionKind};
 pub use folds::Fold;
 pub use position::Position;
-pub use render::{BufferView, Gutter, Sign, StyleResolver};
+pub use render::{BufferView, Gutter, Sign, StyleResolver, Wrap};
 pub use selection::{RowSpan, Selection};
 pub use span::Span;
 pub use viewport::Viewport;

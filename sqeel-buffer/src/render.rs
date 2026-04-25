@@ -68,6 +68,27 @@ pub struct BufferView<'a, R: StyleResolver> {
     /// hides the byte range `[start_byte, end_byte)` and paints
     /// `replacement` in its place. Empty slice = no conceals.
     pub conceals: &'a [Conceal],
+    /// Soft-wrap mode. `Wrap::None` (the default) keeps the existing
+    /// horizontal-scroll behaviour: long lines extend past the right
+    /// edge and `top_col` clips the left side. `Wrap::Char` breaks at
+    /// the cell boundary; `Wrap::Word` backs up to the previous
+    /// whitespace when possible. Wrap modes ignore `top_col`.
+    pub wrap: Wrap,
+}
+
+/// Soft-wrap mode controlling how doc rows wider than the text area
+/// turn into multiple visual rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Wrap {
+    /// Single screen row per doc row; clip with `top_col`.
+    #[default]
+    None,
+    /// Break at the cell boundary regardless of word edges.
+    Char,
+    /// Break at the last whitespace inside the visible width when
+    /// possible; falls back to a char break for runs longer than the
+    /// width.
+    Word,
 }
 
 /// Configuration for the line-number gutter rendered to the left of
@@ -143,11 +164,11 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
             let row_spans = spans.get(doc_row).map(Vec::as_slice).unwrap_or(&[]);
             let sel_range = self.selection.and_then(|s| s.row_span(doc_row));
             let is_cursor_row = doc_row == cursor.row;
-            if let Some(gutter) = self.gutter {
-                self.paint_gutter(term_buf, area, screen_row, doc_row, gutter);
-                self.paint_signs(term_buf, area, screen_row, doc_row);
-            }
             if let Some(fold) = folded_at_start {
+                if let Some(gutter) = self.gutter {
+                    self.paint_gutter(term_buf, area, screen_row, doc_row, gutter);
+                    self.paint_signs(term_buf, area, screen_row, doc_row);
+                }
                 self.paint_fold_marker(term_buf, text_area, screen_row, fold, line, is_cursor_row);
                 screen_row += 1;
                 doc_row = fold.end_row + 1;
@@ -161,26 +182,55 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
                 v.sort_by_key(|c| c.start_byte);
                 v
             };
-            self.paint_row(
-                term_buf,
-                text_area,
-                screen_row,
-                line,
-                row_spans,
-                sel_range,
-                &search_ranges,
-                is_cursor_row,
-                cursor.col,
-                top_col,
-                &row_conceals,
-            );
-            screen_row += 1;
+            // Compute screen segments for this doc row. `Wrap::None`
+            // produces a single segment that spans the whole line; the
+            // existing `top_col` horizontal scroll is preserved by
+            // passing `top_col` as the segment start. Wrap modes split
+            // the line into multiple visual rows that fit `text_area.width`.
+            let segments = match self.wrap {
+                Wrap::None => vec![(top_col, usize::MAX)],
+                _ => wrap_segments(line, text_area.width, self.wrap),
+            };
+            let last_seg_idx = segments.len().saturating_sub(1);
+            for (seg_idx, &(seg_start, seg_end)) in segments.iter().enumerate() {
+                if screen_row >= area.height {
+                    break;
+                }
+                if let Some(gutter) = self.gutter {
+                    if seg_idx == 0 {
+                        self.paint_gutter(term_buf, area, screen_row, doc_row, gutter);
+                        self.paint_signs(term_buf, area, screen_row, doc_row);
+                    } else {
+                        self.paint_blank_gutter(term_buf, area, screen_row, gutter);
+                    }
+                }
+                self.paint_row(
+                    term_buf,
+                    text_area,
+                    screen_row,
+                    line,
+                    row_spans,
+                    sel_range,
+                    &search_ranges,
+                    is_cursor_row,
+                    cursor.col,
+                    seg_start,
+                    seg_end,
+                    seg_idx == last_seg_idx,
+                    &row_conceals,
+                );
+                screen_row += 1;
+            }
             doc_row += 1;
         }
         // Cursorcolumn pass: layer the bg over the cursor's visible
         // column once every row is painted so it composes on top of
         // syntax / cursorline backgrounds without disturbing fg.
-        if self.cursor_column_bg != Style::default()
+        // Skipped when wrapping — the cursor's screen x depends on the
+        // segment it lands in, and vim's cursorcolumn semantics with
+        // wrap are fuzzy. Revisit if it bites.
+        if matches!(self.wrap, Wrap::None)
+            && self.cursor_column_bg != Style::default()
             && cursor.col >= top_col
             && (cursor.col - top_col) < text_area.width as usize
         {
@@ -193,6 +243,59 @@ impl<R: StyleResolver> Widget for BufferView<'_, R> {
             }
         }
     }
+}
+
+/// Split `line` into char-index segments `[start, end)` such that each
+/// segment's display width fits within `width` cells. `Wrap::Word`
+/// rewinds to the last whitespace inside the candidate segment when a
+/// break would otherwise split a word; falls through to a char break
+/// for runs longer than `width`.
+fn wrap_segments(line: &str, width: u16, mode: Wrap) -> Vec<(usize, usize)> {
+    if width == 0 || line.is_empty() {
+        return vec![(0, line.chars().count())];
+    }
+    let chars: Vec<(char, u16)> = line
+        .chars()
+        .map(|c| (c, c.width().unwrap_or(1).max(1) as u16))
+        .collect();
+    let total = chars.len();
+    let mut segs = Vec::new();
+    let mut start = 0usize;
+    while start < total {
+        let mut cells: u16 = 0;
+        let mut i = start;
+        while i < total {
+            let w = chars[i].1;
+            if cells + w > width {
+                break;
+            }
+            cells += w;
+            i += 1;
+        }
+        if i == total {
+            segs.push((start, total));
+            break;
+        }
+        let break_at = if matches!(mode, Wrap::Word) {
+            // Look for the last whitespace inside [start, i] so the
+            // segment ends *after* that whitespace. Falls back to a
+            // hard char break when the segment has no whitespace.
+            (start..i)
+                .rev()
+                .find(|&k| chars[k].0.is_whitespace())
+                .map(|k| k + 1)
+                .filter(|&end| end > start)
+                .unwrap_or(i)
+        } else {
+            i
+        };
+        segs.push((start, break_at));
+        start = break_at;
+    }
+    if segs.is_empty() {
+        segs.push((0, 0));
+    }
+    segs
 }
 
 impl<R: StyleResolver> BufferView<'_, R> {
@@ -285,6 +388,24 @@ impl<R: StyleResolver> BufferView<'_, R> {
         }
     }
 
+    /// Paint a wrap-continuation gutter row: blank cells in the
+    /// gutter style so the bg stays continuous, no line number.
+    fn paint_blank_gutter(
+        &self,
+        term_buf: &mut TermBuffer,
+        area: Rect,
+        screen_row: u16,
+        gutter: Gutter,
+    ) {
+        let y = area.y + screen_row;
+        for x in area.x..(area.x + gutter.width) {
+            if let Some(cell) = term_buf.cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(gutter.style);
+            }
+        }
+    }
+
     fn paint_gutter(
         &self,
         term_buf: &mut TermBuffer,
@@ -329,7 +450,9 @@ impl<R: StyleResolver> BufferView<'_, R> {
         search_ranges: &[(usize, usize)],
         is_cursor_row: bool,
         cursor_col: usize,
-        top_col: usize,
+        seg_start: usize,
+        seg_end: usize,
+        is_last_segment: bool,
         conceals: &[&Conceal],
     ) {
         let y = area.y + screen_row;
@@ -351,12 +474,15 @@ impl<R: StyleResolver> BufferView<'_, R> {
         let mut chars_iter = line.chars().enumerate().peekable();
         while let Some((col_idx, ch)) = chars_iter.next() {
             let ch_byte_len = ch.len_utf8();
+            if col_idx >= seg_end {
+                break;
+            }
             // If a conceal starts at this byte, paint the replacement
             // text (using this cell's style) and skip the rest of the
             // concealed range. Cursor / selection / search highlights
             // still attribute to the original char positions.
             if let Some(conc) = conceals.iter().find(|c| c.start_byte == byte_offset) {
-                if col_idx >= top_col {
+                if col_idx >= seg_start {
                     let mut style = if is_cursor_row {
                         self.cursor_line_bg
                     } else {
@@ -391,8 +517,9 @@ impl<R: StyleResolver> BufferView<'_, R> {
                 let _ = consumed;
                 continue;
             }
-            // Skip chars to the left of the horizontal scroll.
-            if col_idx < top_col {
+            // Skip chars to the left of the segment start (horizontal
+            // scroll for `Wrap::None`, segment offset for wrap modes).
+            if col_idx < seg_start {
                 byte_offset += ch_byte_len;
                 continue;
             }
@@ -438,8 +565,14 @@ impl<R: StyleResolver> BufferView<'_, R> {
 
         // If the cursor sits at end-of-line (insert / past-end mode),
         // paint a single REVERSED placeholder cell so it stays visible.
-        if is_cursor_row && cursor_col >= line.chars().count() && cursor_col >= top_col {
-            let pad_x = area.x + (cursor_col.saturating_sub(top_col)) as u16;
+        // Only on the last segment of a wrapped row — earlier segments
+        // can't host the past-end cursor.
+        if is_cursor_row
+            && is_last_segment
+            && cursor_col >= line.chars().count()
+            && cursor_col >= seg_start
+        {
+            let pad_x = area.x + (cursor_col.saturating_sub(seg_start)) as u16;
             if pad_x < row_end_x
                 && let Some(cell) = term_buf.cell_mut((pad_x, y))
             {
@@ -495,6 +628,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 20, 5);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "h");
@@ -521,6 +655,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 10, 1);
         let cursor_cell = term.cell((1, 0)).unwrap();
@@ -548,6 +683,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 10, 1);
         assert!(term.cell((0, 0)).unwrap().bg != Color::Blue);
@@ -583,6 +719,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 20, 1);
         for x in 0..6 {
@@ -610,6 +747,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 10, 3);
         // Width 4 = 3 number cells + 1 spacer; right-aligned "  1".
@@ -640,6 +778,7 @@ mod tests {
             search_bg: Style::default().bg(Color::Magenta),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 20, 1);
         for x in 0..3 {
@@ -686,6 +825,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &signs,
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 10, 3);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "E");
@@ -717,6 +857,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &conceals,
+            wrap: Wrap::None,
         };
         let term = run_render(view, 30, 1);
         // Cells 0..=3: "see "
@@ -746,6 +887,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 30, 5);
         // Row 0: "a"
@@ -775,6 +917,7 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 5, 3);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "a");
@@ -800,9 +943,155 @@ mod tests {
             search_bg: Style::default(),
             signs: &[],
             conceals: &[],
+            wrap: Wrap::None,
         };
         let term = run_render(view, 4, 1);
         assert_eq!(term.cell((0, 0)).unwrap().symbol(), "d");
         assert_eq!(term.cell((3, 0)).unwrap().symbol(), "g");
+    }
+
+    fn make_wrap_view<'a>(
+        b: &'a Buffer,
+        resolver: &'a (impl StyleResolver + 'a),
+        wrap: Wrap,
+        gutter: Option<Gutter>,
+    ) -> BufferView<'a, impl StyleResolver + 'a> {
+        BufferView {
+            buffer: b,
+            selection: None,
+            resolver,
+            cursor_line_bg: Style::default(),
+            cursor_column_bg: Style::default(),
+            selection_bg: Style::default().bg(Color::Blue),
+            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
+            gutter,
+            search_bg: Style::default(),
+            signs: &[],
+            conceals: &[],
+            wrap,
+        }
+    }
+
+    #[test]
+    fn wrap_segments_char_breaks_at_width() {
+        let segs = wrap_segments("abcdefghij", 4, Wrap::Char);
+        assert_eq!(segs, vec![(0, 4), (4, 8), (8, 10)]);
+    }
+
+    #[test]
+    fn wrap_segments_word_backs_up_to_whitespace() {
+        let segs = wrap_segments("alpha beta gamma", 8, Wrap::Word);
+        // First segment "alpha " ends after the space at idx 5.
+        assert_eq!(segs[0], (0, 6));
+        // Second segment "beta " ends after the space at idx 10.
+        assert_eq!(segs[1], (6, 11));
+        assert_eq!(segs[2], (11, 16));
+    }
+
+    #[test]
+    fn wrap_segments_word_falls_back_to_char_for_long_runs() {
+        let segs = wrap_segments("supercalifragilistic", 5, Wrap::Word);
+        // No whitespace anywhere — degrades to a hard char break.
+        assert_eq!(segs, vec![(0, 5), (5, 10), (10, 15), (15, 20)]);
+    }
+
+    #[test]
+    fn wrap_char_paints_continuation_rows() {
+        let mut b = Buffer::from_str("abcdefghij");
+        b.viewport_mut().width = 4;
+        b.viewport_mut().height = 3;
+        let r = no_styles as fn(u32) -> Style;
+        let view = make_wrap_view(&b, &r, Wrap::Char, None);
+        let term = run_render(view, 4, 3);
+        // Row 0: "abcd"
+        assert_eq!(term.cell((0, 0)).unwrap().symbol(), "a");
+        assert_eq!(term.cell((3, 0)).unwrap().symbol(), "d");
+        // Row 1: "efgh"
+        assert_eq!(term.cell((0, 1)).unwrap().symbol(), "e");
+        assert_eq!(term.cell((3, 1)).unwrap().symbol(), "h");
+        // Row 2: "ij"
+        assert_eq!(term.cell((0, 2)).unwrap().symbol(), "i");
+        assert_eq!(term.cell((1, 2)).unwrap().symbol(), "j");
+    }
+
+    #[test]
+    fn wrap_char_gutter_blank_on_continuation() {
+        let mut b = Buffer::from_str("abcdefgh");
+        b.viewport_mut().width = 6;
+        b.viewport_mut().height = 3;
+        let r = no_styles as fn(u32) -> Style;
+        let gutter = Gutter {
+            width: 3,
+            style: Style::default().fg(Color::Yellow),
+        };
+        let view = make_wrap_view(&b, &r, Wrap::Char, Some(gutter));
+        let term = run_render(view, 6, 3);
+        // Row 0: "  1" + "abc"
+        assert_eq!(term.cell((1, 0)).unwrap().symbol(), "1");
+        assert_eq!(term.cell((3, 0)).unwrap().symbol(), "a");
+        // Row 1: blank gutter + "def"
+        for x in 0..2 {
+            assert_eq!(term.cell((x, 1)).unwrap().symbol(), " ");
+        }
+        assert_eq!(term.cell((3, 1)).unwrap().symbol(), "d");
+        assert_eq!(term.cell((5, 1)).unwrap().symbol(), "f");
+    }
+
+    #[test]
+    fn wrap_char_cursor_lands_on_correct_segment() {
+        let mut b = Buffer::from_str("abcdefghij");
+        b.viewport_mut().width = 4;
+        b.viewport_mut().height = 3;
+        // Cursor on 'g' (col 6) should land on row 1, col 2.
+        b.set_cursor(crate::Position::new(0, 6));
+        let r = no_styles as fn(u32) -> Style;
+        let mut view = make_wrap_view(&b, &r, Wrap::Char, None);
+        view.cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+        let term = run_render(view, 4, 3);
+        assert!(
+            term.cell((2, 1))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+
+    #[test]
+    fn wrap_char_eol_cursor_placeholder_on_last_segment() {
+        let mut b = Buffer::from_str("abcdef");
+        b.viewport_mut().width = 4;
+        b.viewport_mut().height = 3;
+        // Past-end cursor at col 6.
+        b.set_cursor(crate::Position::new(0, 6));
+        let r = no_styles as fn(u32) -> Style;
+        let mut view = make_wrap_view(&b, &r, Wrap::Char, None);
+        view.cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+        let term = run_render(view, 4, 3);
+        // Last segment is row 1 ("ef"), placeholder at x = 6 - 4 = 2.
+        assert!(
+            term.cell((2, 1))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+
+    #[test]
+    fn wrap_word_breaks_at_whitespace() {
+        let mut b = Buffer::from_str("alpha beta gamma");
+        b.viewport_mut().width = 8;
+        b.viewport_mut().height = 3;
+        let r = no_styles as fn(u32) -> Style;
+        let view = make_wrap_view(&b, &r, Wrap::Word, None);
+        let term = run_render(view, 8, 3);
+        // Row 0: "alpha "
+        assert_eq!(term.cell((0, 0)).unwrap().symbol(), "a");
+        assert_eq!(term.cell((4, 0)).unwrap().symbol(), "a");
+        // Row 1: "beta "
+        assert_eq!(term.cell((0, 1)).unwrap().symbol(), "b");
+        assert_eq!(term.cell((3, 1)).unwrap().symbol(), "a");
+        // Row 2: "gamma"
+        assert_eq!(term.cell((0, 2)).unwrap().symbol(), "g");
+        assert_eq!(term.cell((4, 2)).unwrap().symbol(), "a");
     }
 }

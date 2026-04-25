@@ -243,7 +243,15 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
 - **Soft-wrap render (L).** Long SQL lines often blow past terminal width. Add a
   `wrap: Wrap::None | Wrap::Char | Wrap::Word` enum on `BufferView`; the render
   walks a synthetic "screen line" stream. Affects motion (`gj`/`gk` start to
-  matter), gutter (line numbers on continuation rows), cursor placement.
+  matter), gutter (line numbers on continuation rows), cursor placement. _Phase
+  1 (render path) shipped._ `Wrap` enum + `BufferView::wrap` field +
+  `wrap_segments` helper. Render walks doc rows, splits each into char- or
+  word-broken segments that fit `text_area.width`, paints the gutter line number
+  on the first segment and a blank gutter on continuations. Cursor highlight +
+  EOL placeholder land on the right segment. Cursorcolumn pass skipped under
+  wrap. `Wrap::None` is the default and preserves the existing horizontal-scroll
+  path. Still TODO: `ensure_visible` accounting for wrapped rows, `gj`/`gk`
+  visual-line motion, `:set wrap` ex command + Editor settings plumbing.
 - ~~**Concealed regions (M).**~~ Done. `BufferView` takes a `conceals` slice;
   each entry is `Conceal { row, start_byte, end_byte, replacement }`. The render
   walker checks each row's conceal list, paints the replacement when entering a

@@ -4232,6 +4232,7 @@ fn draw_editor(
             .fg(ui().editor_search_fg),
         signs: &signs,
         conceals: &[],
+        wrap: sqeel_buffer::Wrap::None,
     };
     f.render_widget(view, chunks[1]);
 
