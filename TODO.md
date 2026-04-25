@@ -150,8 +150,10 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   is a flat stack.
 - **`:registers` / `:reg` (S).** Listed under registers.
 - **`:marks` (S).** Listed under marks.
-- **`:sort` (M).** Sort lines in a range (default whole buffer). Useful for SQL
-  DDL cleanup.
+- ~~**`:sort` (M).**~~ Done — whole-buffer sort with vim flags `!` (reverse),
+  `u` (unique), `n` (numeric), `i` (ignore case). Combinable (`:sort! u`).
+  Pushes undo so `u` reverses. Range support deferred — comes for free once the
+  range parser lands.
 - **`:! cmd` (L).** Run shell, insert nothing. Same security caveats as `:r !`.
 - **`:!{filter}` over a range (L).** Pipe range through external filter. Same
   caveats.

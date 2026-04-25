@@ -81,6 +81,13 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         _ => {}
     }
 
+    // `:sort[!][iun]` — sort the whole buffer. Flags follow the vim
+    // convention: `!` reverses, `i` ignores case, `u` keeps the first
+    // occurrence of each line (unique), `n` sorts numerically.
+    if let Some(rest) = cmd.strip_prefix("sort").or_else(|| cmd.strip_prefix("sor")) {
+        return apply_sort(editor, rest);
+    }
+
     // `:g/pat/cmd` (and `:g!/pat/cmd` / `:v/pat/cmd` for the
     // inverse). Only `cmd = d` is supported today — the most useful
     // application in a SQL editor is "delete every line matching".
@@ -193,6 +200,83 @@ fn apply_global(editor: &mut Editor<'_>, body: &str, negate: bool) -> ExEffect {
     }
     editor.mark_dirty_after_ex();
     ExEffect::Substituted { count }
+}
+
+/// `:sort[!][iun]` body — `flags` is whatever followed the command name
+/// (e.g. `!u`, ` un`, `i`). Sorts the whole buffer in place.
+fn apply_sort(editor: &mut Editor<'_>, flags: &str) -> ExEffect {
+    let trimmed = flags.trim();
+    let mut reverse = false;
+    let mut unique = false;
+    let mut numeric = false;
+    let mut ignore_case = false;
+    for c in trimmed.chars() {
+        match c {
+            '!' => reverse = true,
+            'u' => unique = true,
+            'n' => numeric = true,
+            'i' => ignore_case = true,
+            ' ' | '\t' => {}
+            other => return ExEffect::Error(format!("bad :sort flag `{other}`")),
+        }
+    }
+
+    let mut lines: Vec<String> = editor.buffer().lines().to_vec();
+    if numeric {
+        // Vim's `:sort n`: extract the first decimal integer (with
+        // optional leading `-`) on each line; lines with no number sort
+        // first, in original order.
+        lines.sort_by_key(|l| extract_leading_number(l));
+    } else if ignore_case {
+        lines.sort_by_key(|s| s.to_lowercase());
+    } else {
+        lines.sort();
+    }
+    if reverse {
+        lines.reverse();
+    }
+    if unique {
+        let cmp_key = |s: &str| -> String {
+            if ignore_case {
+                s.to_lowercase()
+            } else {
+                s.to_string()
+            }
+        };
+        let mut seen = std::collections::HashSet::new();
+        lines.retain(|line| seen.insert(cmp_key(line)));
+    }
+
+    editor.push_undo();
+    editor.restore(lines, (0, 0));
+    editor.mark_dirty_after_ex();
+    ExEffect::Ok
+}
+
+/// Parse the first signed decimal integer from `line` for `:sort n`.
+/// Lines with no leading number sort as `i64::MIN` so they cluster at
+/// the top, matching vim's behaviour.
+fn extract_leading_number(line: &str) -> i64 {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && !bytes[i].is_ascii_digit() && bytes[i] != b'-' {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return i64::MIN;
+    }
+    let mut j = i;
+    if bytes[j] == b'-' {
+        j += 1;
+    }
+    let start = j;
+    while j < bytes.len() && bytes[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == start {
+        return i64::MIN;
+    }
+    line[i..j].parse().unwrap_or(i64::MIN)
 }
 
 /// `:reg` / `:registers` — tabular dump of every non-empty register slot.
@@ -668,6 +752,77 @@ mod tests {
             other => panic!("expected Info, got {other:?}"),
         };
         assert!(info.contains("(no marks set)"));
+    }
+
+    #[test]
+    fn sort_alphabetical() {
+        let mut e = new("banana\napple\ncherry");
+        assert_eq!(run(&mut e, "sort"), ExEffect::Ok);
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["apple".to_string(), "banana".into(), "cherry".into()]
+        );
+    }
+
+    #[test]
+    fn sort_reverse_with_bang() {
+        let mut e = new("apple\nbanana\ncherry");
+        run(&mut e, "sort!");
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["cherry".to_string(), "banana".into(), "apple".into()]
+        );
+    }
+
+    #[test]
+    fn sort_unique() {
+        let mut e = new("foo\nbar\nfoo\nbaz\nbar");
+        run(&mut e, "sort u");
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["bar".to_string(), "baz".into(), "foo".into()]
+        );
+    }
+
+    #[test]
+    fn sort_numeric() {
+        let mut e = new("10\n2\n100\n7");
+        run(&mut e, "sort n");
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["2".to_string(), "7".into(), "10".into(), "100".into()]
+        );
+    }
+
+    #[test]
+    fn sort_ignore_case() {
+        let mut e = new("Banana\napple\nCherry");
+        run(&mut e, "sort i");
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["apple".to_string(), "Banana".into(), "Cherry".into()]
+        );
+    }
+
+    #[test]
+    fn sort_undo_restores_original_order() {
+        let mut e = new("c\nb\na");
+        run(&mut e, "sort");
+        assert_eq!(e.buffer().lines()[0], "a");
+        crate::vim::do_undo(&mut e);
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["c".to_string(), "b".into(), "a".into()]
+        );
+    }
+
+    #[test]
+    fn sort_rejects_unknown_flag() {
+        let mut e = new("a\nb");
+        match run(&mut e, "sortz") {
+            ExEffect::Error(msg) => assert!(msg.contains("z")),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]
