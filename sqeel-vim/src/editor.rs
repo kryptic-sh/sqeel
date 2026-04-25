@@ -91,9 +91,9 @@ impl<'a> Editor<'a> {
     }
 
     /// Mirror the textarea's current cursor + sticky col into the
-    /// migration buffer. Called after every motion / edit so the
-    /// buffer stays in sync with the still-authoritative textarea
-    /// during phases 7b-7e of the migration.
+    /// migration buffer. Called after every motion so the buffer
+    /// stays in sync with the still-authoritative textarea during
+    /// phases 7b-7e of the migration.
     ///
     /// Once the per-edit + per-motion call sites are ported in
     /// later phases, this drops out — the buffer becomes the source
@@ -108,6 +108,17 @@ impl<'a> Editor<'a> {
         viewport.top_row = self.textarea.viewport_top_row();
         viewport.top_col = self.textarea.viewport_top_col();
         viewport.height = height;
+    }
+
+    /// Full content sync — mirrors lines + cursor + sticky col +
+    /// viewport from the textarea into the buffer. Called after
+    /// every key handler in `step()` so per-edit mutations
+    /// (insert_char, delete_char, …) propagate to the buffer
+    /// without each call site having to call into it explicitly.
+    pub(crate) fn sync_buffer_content_from_textarea(&mut self) {
+        let text = self.textarea.lines().join("\n");
+        self.buffer.replace_all(&text);
+        self.sync_buffer_from_textarea();
     }
 
     /// Push a `(row, col)` onto the back-jumplist so `Ctrl-o` returns

@@ -183,6 +183,23 @@ impl Buffer {
         self.dirty_gen_bump();
     }
 
+    /// Replace the buffer's full text in place. Cursor + sticky col
+    /// are clamped to the new content; viewport stays put. Used
+    /// during the migration off tui-textarea so the buffer can mirror
+    /// the textarea's content after every edit without rebuilding
+    /// the whole struct.
+    pub fn replace_all(&mut self, text: &str) {
+        let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        self.lines = lines;
+        // Clamp cursor to surviving content.
+        let cursor = self.clamp_position(self.cursor);
+        self.cursor = cursor;
+        self.dirty_gen_bump();
+    }
+
     /// Same as [`Buffer::set_spans`] but exposed for in-crate tests
     /// without crossing the dirty-gen / lifetime boundaries the
     /// pub method advertises.

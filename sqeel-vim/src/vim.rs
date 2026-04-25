@@ -510,6 +510,12 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
         ed.vim.one_shot_normal = false;
         ed.vim.mode = Mode::Insert;
     }
+    // Phase 7c: every step ends with the migration buffer mirroring
+    // the textarea's content + cursor + viewport. Edit-emitting paths
+    // (insert_char, delete_char, …) inside `step_insert` /
+    // `step_normal` thus all flow through here without each call
+    // site needing to remember to sync.
+    ed.sync_buffer_content_from_textarea();
     consumed
 }
 
@@ -5657,5 +5663,46 @@ mod tests {
         run_keys(&mut e, "j");
         // Sticky col should be set; buffer carries the same value.
         assert_eq!(e.buffer.sticky_col(), e.vim.sticky_col);
+    }
+
+    #[test]
+    fn buffer_content_mirrors_textarea_after_insert() {
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "iXYZ<Esc>");
+        let text = e.textarea.lines().join("\n");
+        assert_eq!(e.buffer.as_string(), text);
+    }
+
+    #[test]
+    fn buffer_content_mirrors_textarea_after_delete() {
+        let mut e = editor_with("alpha bravo charlie");
+        run_keys(&mut e, "dw");
+        let text = e.textarea.lines().join("\n");
+        assert_eq!(e.buffer.as_string(), text);
+    }
+
+    #[test]
+    fn buffer_content_mirrors_textarea_after_dd() {
+        let mut e = editor_with("a\nb\nc\nd");
+        run_keys(&mut e, "jdd");
+        let text = e.textarea.lines().join("\n");
+        assert_eq!(e.buffer.as_string(), text);
+    }
+
+    #[test]
+    fn buffer_content_mirrors_textarea_after_open_line() {
+        let mut e = editor_with("foo\nbar");
+        run_keys(&mut e, "oNEW<Esc>");
+        let text = e.textarea.lines().join("\n");
+        assert_eq!(e.buffer.as_string(), text);
+    }
+
+    #[test]
+    fn buffer_content_mirrors_textarea_after_paste() {
+        let mut e = editor_with("hello");
+        run_keys(&mut e, "yy");
+        run_keys(&mut e, "p");
+        let text = e.textarea.lines().join("\n");
+        assert_eq!(e.buffer.as_string(), text);
     }
 }
