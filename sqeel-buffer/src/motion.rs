@@ -83,6 +83,64 @@ impl Buffer {
         self.refresh_sticky_col_from_cursor();
     }
 
+    /// `g_` — last non-blank char on the row. Empty / all-blank rows
+    /// stay at column 0.
+    pub fn move_last_non_blank(&mut self) {
+        let row = self.cursor().row;
+        let line = self.line(row).unwrap_or("");
+        let col = line
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !c.is_whitespace())
+            .map(|(byte, _)| line[..byte].chars().count())
+            .unwrap_or(0);
+        self.set_cursor(Position::new(row, col));
+        self.refresh_sticky_col_from_cursor();
+    }
+
+    /// `{` — previous blank line above the cursor, or row 0.
+    pub fn move_paragraph_prev(&mut self, count: usize) {
+        let mut row = self.cursor().row;
+        for _ in 0..count.max(1) {
+            if row == 0 {
+                break;
+            }
+            // Step over any contiguous blank rows the cursor sits on
+            // so a single press doesn't stick.
+            let mut r = row.saturating_sub(1);
+            while r > 0 && self.line(r).is_some_and(|l| l.is_empty()) {
+                r -= 1;
+            }
+            while r > 0 && self.line(r).is_some_and(|l| !l.is_empty()) {
+                r -= 1;
+            }
+            row = r;
+        }
+        self.set_cursor(Position::new(row, 0));
+        self.refresh_sticky_col_from_cursor();
+    }
+
+    /// `}` — next blank line below the cursor, or last row.
+    pub fn move_paragraph_next(&mut self, count: usize) {
+        let last = self.row_count().saturating_sub(1);
+        let mut row = self.cursor().row;
+        for _ in 0..count.max(1) {
+            if row >= last {
+                break;
+            }
+            let mut r = row.saturating_add(1);
+            while r < last && self.line(r).is_some_and(|l| l.is_empty()) {
+                r += 1;
+            }
+            while r < last && self.line(r).is_some_and(|l| !l.is_empty()) {
+                r += 1;
+            }
+            row = r;
+        }
+        self.set_cursor(Position::new(row, 0));
+        self.refresh_sticky_col_from_cursor();
+    }
+
     // ── Vertical motions ────────────────────────────────────────
 
     /// `k` — `count` rows up; sticky col preserved across short rows.

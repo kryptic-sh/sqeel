@@ -215,6 +215,12 @@ pub enum Motion {
     ViewportMiddle,
     /// `L` — cursor to viewport bottom (minus `count - 1` rows up).
     ViewportBottom,
+    /// `g_` — last non-blank char on the line.
+    LastNonBlank,
+    /// `{` — previous paragraph (preceding blank line, or top).
+    ParagraphPrev,
+    /// `}` — next paragraph (following blank line, or bottom).
+    ParagraphNext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,6 +354,9 @@ pub struct VimState {
     /// Position of the most recent buffer mutation. Surfaced via
     /// the `'.` / `` `. `` marks for quick "back to last edit".
     pub(super) last_edit_pos: Option<(usize, usize)>,
+    /// Snapshot of the last visual selection for `gv` re-entry.
+    /// Stored on every Visual / VisualLine / VisualBlock exit.
+    pub(super) last_visual: Option<LastVisual>,
     /// Set while replaying `.` / last-change so we don't re-record it.
     replaying: bool,
     /// Entered Normal from Insert via `Ctrl-o`; after the next complete
@@ -414,6 +423,23 @@ enum InsertReason {
     /// every row in `top..=bot`. `col` is the start column for `I`, the
     /// one-past-block-end column for `A`.
     BlockEdge { top: usize, bot: usize, col: usize },
+}
+
+/// Saved visual-mode anchor + cursor for `gv` (re-enters the last
+/// visual selection). `mode` carries which visual flavour to
+/// restore; `anchor` / `cursor` mean different things per flavour:
+///
+/// - `Visual`     — `anchor` is the char-wise visual anchor.
+/// - `VisualLine` — `anchor.0` is the `visual_line_anchor` row;
+///   `anchor.1` is unused.
+/// - `VisualBlock`— `anchor` is `block_anchor`, `block_vcol` is the
+///   sticky vcol that survives j/k clamping.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LastVisual {
+    pub mode: Mode,
+    pub anchor: (usize, usize),
+    pub cursor: (usize, usize),
+    pub block_vcol: usize,
 }
 
 impl VimState {
@@ -580,10 +606,41 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
         Pending::RecordMacroTarget | Pending::PlayMacroTarget { .. }
     );
     let was_insert = ed.vim.mode == Mode::Insert;
+    // Capture pre-step visual snapshot so a visual → normal transition
+    // can stash the selection for `gv` re-entry.
+    let pre_visual_snapshot = match ed.vim.mode {
+        Mode::Visual => Some(LastVisual {
+            mode: Mode::Visual,
+            anchor: ed.vim.visual_anchor,
+            cursor: ed.cursor(),
+            block_vcol: 0,
+        }),
+        Mode::VisualLine => Some(LastVisual {
+            mode: Mode::VisualLine,
+            anchor: (ed.vim.visual_line_anchor, 0),
+            cursor: ed.cursor(),
+            block_vcol: 0,
+        }),
+        Mode::VisualBlock => Some(LastVisual {
+            mode: Mode::VisualBlock,
+            anchor: ed.vim.block_anchor,
+            cursor: ed.cursor(),
+            block_vcol: ed.vim.block_vcol,
+        }),
+        _ => None,
+    };
     let consumed = match ed.vim.mode {
         Mode::Insert => step_insert(ed, input),
         _ => step_normal(ed, input),
     };
+    if let Some(snap) = pre_visual_snapshot
+        && !matches!(
+            ed.vim.mode,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+        )
+    {
+        ed.vim.last_visual = Some(snap);
+    }
     // Ctrl-o in insert mode queues a single normal-mode command; once
     // that command finishes (pending cleared, not in operator / visual),
     // drop back to insert without replaying the insert session.
@@ -1086,6 +1143,33 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
             ed.vim.mode = Mode::Normal;
             return true;
         }
+        // `o` in visual modes — swap anchor and cursor so the user
+        // can extend the other end of the selection.
+        Key::Char('o') if !input.ctrl => match ed.vim.mode {
+            Mode::Visual => {
+                let cur = ed.cursor();
+                let anchor = ed.vim.visual_anchor;
+                ed.vim.visual_anchor = cur;
+                ed.jump_cursor(anchor.0, anchor.1);
+                return true;
+            }
+            Mode::VisualLine => {
+                let cur_row = ed.cursor().0;
+                let anchor_row = ed.vim.visual_line_anchor;
+                ed.vim.visual_line_anchor = cur_row;
+                ed.jump_cursor(anchor_row, 0);
+                return true;
+            }
+            Mode::VisualBlock => {
+                let cur = ed.cursor();
+                let anchor = ed.vim.block_anchor;
+                ed.vim.block_anchor = cur;
+                ed.vim.block_vcol = anchor.1;
+                ed.jump_cursor(anchor.0, anchor.1);
+                return true;
+            }
+            _ => {}
+        },
         _ => {}
     }
 
@@ -1608,6 +1692,8 @@ fn parse_motion(input: &Input) -> Option<Motion> {
         Key::Char('H') => Some(Motion::ViewportTop),
         Key::Char('M') => Some(Motion::ViewportMiddle),
         Key::Char('L') => Some(Motion::ViewportBottom),
+        Key::Char('{') => Some(Motion::ParagraphPrev),
+        Key::Char('}') => Some(Motion::ParagraphNext),
         _ => None,
     }
 }
@@ -1817,6 +1903,18 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
         Motion::ViewportBottom => {
             ed.buffer_mut()
                 .move_viewport_bottom(count.saturating_sub(1));
+            ed.push_buffer_cursor_to_textarea();
+        }
+        Motion::LastNonBlank => {
+            ed.buffer_mut().move_last_non_blank();
+            ed.push_buffer_cursor_to_textarea();
+        }
+        Motion::ParagraphPrev => {
+            ed.buffer_mut().move_paragraph_prev(count);
+            ed.push_buffer_cursor_to_textarea();
+        }
+        Motion::ParagraphNext => {
+            ed.buffer_mut().move_paragraph_next(count);
             ed.push_buffer_cursor_to_textarea();
         }
     }
@@ -2080,6 +2178,34 @@ fn handle_after_g(ed: &mut Editor<'_>, input: Input) -> bool {
         }
         Key::Char('e') => execute_motion(ed, Motion::WordEndBack, count),
         Key::Char('E') => execute_motion(ed, Motion::BigWordEndBack, count),
+        // `g_` — last non-blank on the line.
+        Key::Char('_') => execute_motion(ed, Motion::LastNonBlank, count),
+        // `gv` — re-enter the last visual selection.
+        Key::Char('v') => {
+            if let Some(snap) = ed.vim.last_visual {
+                match snap.mode {
+                    Mode::Visual => {
+                        ed.vim.visual_anchor = snap.anchor;
+                        ed.vim.mode = Mode::Visual;
+                    }
+                    Mode::VisualLine => {
+                        ed.vim.visual_line_anchor = snap.anchor.0;
+                        ed.vim.mode = Mode::VisualLine;
+                    }
+                    Mode::VisualBlock => {
+                        ed.vim.block_anchor = snap.anchor;
+                        ed.vim.block_vcol = snap.block_vcol;
+                        ed.vim.mode = Mode::VisualBlock;
+                    }
+                    _ => {}
+                }
+                ed.jump_cursor(snap.cursor.0, snap.cursor.1);
+            }
+        }
+        // `gj` / `gk` — display-line down / up. Identical to j/k
+        // until soft-wrap exists; alias now so muscle memory works.
+        Key::Char('j') => execute_motion(ed, Motion::Down, count),
+        Key::Char('k') => execute_motion(ed, Motion::Up, count),
         // Case operators: `gU` / `gu` / `g~`. Enter operator-pending
         // so the next input is treated as the motion / text object /
         // shorthand double (`gUU`, `guu`, `g~~`).
@@ -2148,6 +2274,9 @@ fn handle_after_z(ed: &mut Editor<'_>, input: Input) -> bool {
         }
         Key::Char('M') => {
             ed.buffer_mut().close_all_folds();
+        }
+        Key::Char('E') => {
+            ed.buffer_mut().clear_all_folds();
         }
         Key::Char('d') => {
             ed.buffer_mut().remove_fold_at(row);
@@ -6228,6 +6357,68 @@ mod tests {
         assert!(e.buffer().folds().iter().all(|f| !f.closed));
         run_keys(&mut e, "zM");
         assert!(e.buffer().folds().iter().all(|f| f.closed));
+    }
+
+    #[test]
+    fn ze_clears_all_folds() {
+        let mut e = editor_with("a\nb\nc\nd");
+        e.buffer_mut().add_fold(0, 1, true);
+        e.buffer_mut().add_fold(2, 3, false);
+        run_keys(&mut e, "zE");
+        assert!(e.buffer().folds().is_empty());
+    }
+
+    #[test]
+    fn g_underscore_jumps_to_last_non_blank() {
+        let mut e = editor_with("hello world   ");
+        run_keys(&mut e, "g_");
+        // Last non-blank is 'd' at col 10.
+        assert_eq!(e.cursor().1, 10);
+    }
+
+    #[test]
+    fn gj_and_gk_alias_j_and_k() {
+        let mut e = editor_with("a\nb\nc");
+        run_keys(&mut e, "gj");
+        assert_eq!(e.cursor().0, 1);
+        run_keys(&mut e, "gk");
+        assert_eq!(e.cursor().0, 0);
+    }
+
+    #[test]
+    fn paragraph_motions_walk_blank_lines() {
+        let mut e = editor_with("first\nblock\n\nsecond\nblock\n\nthird");
+        run_keys(&mut e, "}");
+        assert_eq!(e.cursor().0, 2);
+        run_keys(&mut e, "}");
+        assert_eq!(e.cursor().0, 5);
+        run_keys(&mut e, "{");
+        assert_eq!(e.cursor().0, 2);
+    }
+
+    #[test]
+    fn gv_reenters_last_visual_selection() {
+        let mut e = editor_with("alpha\nbeta\ngamma");
+        run_keys(&mut e, "Vj");
+        // Exit visual.
+        run_keys(&mut e, "<Esc>");
+        assert_eq!(e.vim_mode(), VimMode::Normal);
+        // gv re-enters VisualLine.
+        run_keys(&mut e, "gv");
+        assert_eq!(e.vim_mode(), VimMode::VisualLine);
+    }
+
+    #[test]
+    fn o_in_visual_swaps_anchor_and_cursor() {
+        let mut e = editor_with("hello world");
+        // v then move right 4 — anchor at col 0, cursor at col 4.
+        run_keys(&mut e, "vllll");
+        assert_eq!(e.cursor().1, 4);
+        // o swaps; cursor jumps to anchor (col 0).
+        run_keys(&mut e, "o");
+        assert_eq!(e.cursor().1, 0);
+        // Anchor now at original cursor (col 4).
+        assert_eq!(e.vim.visual_anchor, (0, 4));
     }
 
     #[test]

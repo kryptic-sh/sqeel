@@ -128,6 +128,14 @@ impl crate::Buffer {
         }
     }
 
+    /// `zE` — eliminate every fold.
+    pub fn clear_all_folds(&mut self) {
+        if !self.folds.is_empty() {
+            self.folds.clear();
+            self.dirty_gen_bump();
+        }
+    }
+
     /// `zM` — close every fold.
     pub fn close_all_folds(&mut self) {
         let mut changed = false;

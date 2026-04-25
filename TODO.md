@@ -18,9 +18,6 @@ toggle/`zR`/`zM`/`zd` chord set, and edit-side invalidation. What's left:
   Add a `Pending::FoldMotion` variant; in `step_normal` the bare-`f` after `z`
   arms it; the next motion's `(top, bot)` range becomes the fold. Reuse
   `apply_motion_cursor` to compute the range.
-- **`zE` — drop all folds (S).** Trivial wrapper over `buffer.folds.clear()` +
-  `dirty_gen_bump()`. One-line ex command too: `:set nofoldenable` no-ops the
-  render, `zE` is the data drop.
 - **Fold-aware `j` / `k` (M).** Closed folds should count as one visual line.
   Add `Buffer::next_visible_row(row)` and `prev_visible_row(row)` (skip rows
   where `is_row_hidden`); rewrite `Buffer::move_up` / `move_down` to use them.
@@ -95,13 +92,8 @@ We support some `OpTextObj` chords. Audit + fill gaps:
 
 ## Motions (S–M)
 
-- **`{` / `}` — paragraph motions (S).** Move to previous / next blank line.
-  Buffer-friendly: scan rows for first/last empty.
-- **`(` / `)` — sentence motions (M).** Same idea, but sentence splitter. Defer
-  until `is`/`as` lands.
-- **`g_` (S).** Last non-blank on the line. Mirror of `^`.
-- **`gj` / `gk` (S).** Display-line up/down. Identical to `j` / `k` until
-  soft-wrap exists; ship as alias now so muscle memory works.
+- **`(` / `)` — sentence motions (M).** Same idea as `{`/`}`, but sentence
+  splitter. Defer until `is`/`as` lands.
 - **`gM` (S).** Halfway across the longest line of the screen. Niche — skip
   until someone asks.
 - **`*` / `#` already exist; add `g*` / `g#` (S).** Same word search but without
@@ -176,10 +168,7 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
 
 ## Visual (S)
 
-- **`gv` — re-select last visual range (S).** Stash `(mode, anchor, cursor)` on
-  every Visual exit. `gv` restores.
-- **`o` in visual — swap anchor/cursor (S).** Trivial swap inside the existing
-  visual handlers.
+- _(no open items — `gv` and `o`-swap shipped)_
 
 ---
 
