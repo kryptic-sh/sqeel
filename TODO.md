@@ -194,9 +194,14 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   `u` (unique), `n` (numeric), `i` (ignore case). Combinable (`:sort! u`).
   Pushes undo so `u` reverses. Range support deferred — comes for free once the
   range parser lands.
-- **`:! cmd` (L).** Run shell, insert nothing. Same security caveats as `:r !`.
-- **`:!{filter}` over a range (L).** Pipe range through external filter. Same
-  caveats.
+- ~~**`:! cmd` (L).**~~ Done. Bare `:!cmd` (no range) runs the command via
+  `sh -c` and surfaces stdout as an `ExEffect::Info` toast. Buffer unchanged.
+  Empty `:!` errors with a hint.
+- ~~**`:!{filter}` over a range (L).**~~ Done. `:[range]!cmd` joins the range's
+  rows with `\n`, pipes through `sh -c cmd` via stdin, and splices stdout back
+  in place. `:%!sort`, `:2,4!fmt`, etc. work. Trailing newline is stripped (vim
+  convention). Non-zero exit codes surface stderr as `ExEffect::Error`.
+  push_undo before the splice so `u` reverses.
 - ~~**`:undo` / `:redo` (S).**~~ Done. `:undo` / `:u` and `:redo` / `:red` drive
   the same `do_undo` / `do_redo` paths as `u` / `Ctrl-R`.
 - ~~**Range support before commands (M).**~~ Done. `parse_range` strips a

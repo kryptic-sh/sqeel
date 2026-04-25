@@ -153,6 +153,13 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         return apply_read_file(editor, path.trim());
     }
 
+    // `:[range]!cmd` — pipe rows through `cmd`, replace with stdout.
+    // Without a range, `:!cmd` runs the command and surfaces stdout
+    // as an Info toast (vim's `:!cmd` shows it in the message area).
+    if let Some(shell_cmd) = cmd.strip_prefix('!') {
+        return apply_shell_filter(editor, range, shell_cmd.trim());
+    }
+
     ExEffect::Unknown(cmd.to_string())
 }
 
@@ -213,6 +220,115 @@ fn apply_fold_indent(editor: &mut Editor<'_>) -> ExEffect {
         editor.buffer_mut().add_fold(start, end, true);
     }
     ExEffect::Info(format!("created {count} fold(s)"))
+}
+
+/// `:[range]!cmd` — pipe the range through `cmd` (or run bare with no
+/// range). With a range, the rows are joined with `\n`, fed via
+/// stdin to `sh -c cmd`, and replaced with stdout. Without a range
+/// the command runs detached and stdout returns as an Info toast.
+fn apply_shell_filter(editor: &mut Editor<'_>, range: Option<Range>, cmd: &str) -> ExEffect {
+    if cmd.is_empty() {
+        return ExEffect::Error(":! needs a shell command".into());
+    }
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    if range.is_none() {
+        // Bare `:!cmd` — run, no buffer change, surface stdout via Info.
+        let output = Command::new("sh").arg("-c").arg(cmd).output();
+        return match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+                if stdout.is_empty() {
+                    ExEffect::Info(format!("`{cmd}` exited 0"))
+                } else {
+                    ExEffect::Info(stdout)
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let trimmed = stderr.trim();
+                let label = if trimmed.is_empty() {
+                    "no stderr".to_string()
+                } else {
+                    trimmed.to_string()
+                };
+                ExEffect::Error(format!(
+                    "command exited {} ({label})",
+                    out.status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".into())
+                ))
+            }
+            Err(e) => ExEffect::Error(format!("cannot run `{cmd}`: {e}")),
+        };
+    }
+
+    // Range supplied — pipe the rows through the command.
+    let scope = Range::or_default(range, Range::whole(editor));
+    let mut all_lines: Vec<String> = editor.buffer().lines().to_vec();
+    let total = all_lines.len();
+    if total == 0 {
+        return ExEffect::Ok;
+    }
+    let bot = scope.end.min(total - 1);
+    if scope.start > bot {
+        return ExEffect::Ok;
+    }
+    let payload = all_lines[scope.start..=bot].join("\n");
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return ExEffect::Error(format!("cannot spawn `{cmd}`: {e}")),
+    };
+    if let Some(stdin) = child.stdin.as_mut()
+        && let Err(e) = stdin.write_all(payload.as_bytes())
+    {
+        return ExEffect::Error(format!("cannot write to `{cmd}`: {e}"));
+    }
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => return ExEffect::Error(format!("`{cmd}` failed: {e}")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let trimmed = stderr.trim();
+        let label = if trimmed.is_empty() {
+            "no stderr".to_string()
+        } else {
+            trimmed.to_string()
+        };
+        return ExEffect::Error(format!(
+            "command exited {} ({label})",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "?".into())
+        ));
+    }
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(_) => return ExEffect::Error("filter output was not UTF-8".into()),
+    };
+    let trimmed = stdout.strip_suffix('\n').unwrap_or(&stdout);
+    let new_rows: Vec<String> = trimmed.split('\n').map(String::from).collect();
+
+    editor.push_undo();
+    let after: Vec<String> = all_lines.split_off(bot + 1);
+    all_lines.truncate(scope.start);
+    all_lines.extend(new_rows);
+    all_lines.extend(after);
+    editor.restore(all_lines, (scope.start, 0));
+    editor.mark_dirty_after_ex();
+    ExEffect::Ok
 }
 
 /// `:r file` — read `path` from disk and insert below the current
@@ -1464,6 +1580,72 @@ mod tests {
         // Cursor sits on the first inserted row.
         assert_eq!(e.cursor(), (1, 0));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn shell_filter_replaces_range() {
+        let mut e = new("c\nb\na");
+        // `:%!sort` reorders the whole buffer alphabetically.
+        assert_eq!(run(&mut e, "%!sort"), ExEffect::Ok);
+        assert_eq!(
+            e.buffer().lines(),
+            vec!["a".to_string(), "b".into(), "c".into()]
+        );
+    }
+
+    #[test]
+    fn shell_filter_partial_range() {
+        let mut e = new("head\ngamma\nbeta\nalpha\ntail");
+        // `:2,4!sort` should reorder rows 2..=4 only.
+        run(&mut e, "2,4!sort");
+        assert_eq!(
+            e.buffer().lines(),
+            vec![
+                "head".to_string(),
+                "alpha".into(),
+                "beta".into(),
+                "gamma".into(),
+                "tail".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_filter_undo_restores() {
+        let mut e = new("c\nb\na");
+        let before: Vec<String> = e.buffer().lines().to_vec();
+        run(&mut e, "%!sort");
+        crate::vim::do_undo(&mut e);
+        assert_eq!(e.buffer().lines(), before);
+    }
+
+    #[test]
+    fn shell_command_no_range_returns_info() {
+        let mut e = new("buffer stays put");
+        match run(&mut e, "!echo from-shell") {
+            ExEffect::Info(msg) => assert!(msg.contains("from-shell")),
+            other => panic!("expected Info, got {other:?}"),
+        }
+        // Buffer unchanged.
+        assert_eq!(e.buffer().lines()[0], "buffer stays put");
+    }
+
+    #[test]
+    fn shell_filter_failing_command_errors() {
+        let mut e = new("a\nb");
+        match run(&mut e, "%!exit 5") {
+            ExEffect::Error(msg) => assert!(msg.contains("exited 5")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shell_bang_empty_command_errors() {
+        let mut e = new("a");
+        match run(&mut e, "!") {
+            ExEffect::Error(msg) => assert!(msg.contains("shell command")),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]
