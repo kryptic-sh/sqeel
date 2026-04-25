@@ -14,10 +14,12 @@
 
 mod buffer;
 mod position;
+mod selection;
 mod span;
 mod viewport;
 
 pub use buffer::Buffer;
 pub use position::Position;
+pub use selection::{RowSpan, Selection};
 pub use span::Span;
 pub use viewport::Viewport;
