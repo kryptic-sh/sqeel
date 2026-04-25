@@ -133,6 +133,9 @@ enum Pending {
     /// `` ` `` pressed — waiting for the mark letter to jump to the
     /// exact `(row, col)` stored at set time (charwise for operators).
     GotoMarkChar,
+    /// `"` pressed — waiting for the register selector. The next char
+    /// (`a`–`z`, `A`–`Z`, `0`–`9`, or `"`) sets `pending_register`.
+    SelectRegister,
 }
 
 // ─── Operator / Motion / TextObject ────────────────────────────────────────
@@ -317,6 +320,9 @@ pub struct VimState {
     pub(super) sticky_col: Option<usize>,
     /// Track whether the last yank/cut was linewise (drives `p`/`P` layout).
     pub(super) yank_linewise: bool,
+    /// Active register selector — set by `"reg` prefix, consumed by
+    /// the next y / d / c / p. `None` falls back to the unnamed `"`.
+    pub(super) pending_register: Option<char>,
     /// Set while replaying `.` / last-change so we don't re-record it.
     replaying: bool,
     /// Entered Normal from Insert via `Ctrl-o`; after the next complete
@@ -972,6 +978,7 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
         Pending::SetMark => return handle_set_mark(ed, input),
         Pending::GotoMarkLine => return handle_goto_mark(ed, input, true),
         Pending::GotoMarkChar => return handle_goto_mark(ed, input, false),
+        Pending::SelectRegister => return handle_select_register(ed, input),
         Pending::None => {}
     }
 
@@ -1202,6 +1209,12 @@ fn step_normal(ed: &mut Editor<'_>, input: Input) -> bool {
                 ed.vim.pending = Pending::GotoMarkChar;
                 return true;
             }
+            Key::Char('"') => {
+                // Open the register-selector chord. The next char picks
+                // a register that the next y/d/c/p uses.
+                ed.vim.pending = Pending::SelectRegister;
+                return true;
+            }
             _ => {}
         }
     }
@@ -1215,6 +1228,18 @@ fn handle_set_mark(ed: &mut Editor<'_>, input: Input) -> bool {
         && c.is_ascii_lowercase()
     {
         ed.vim.marks.insert(c, ed.cursor());
+    }
+    true
+}
+
+/// `"reg` — store the register selector for the next y / d / c / p.
+/// Accepts `a`–`z`, `A`–`Z`, `0`–`9`, and `"`. Anything else cancels
+/// silently (matches vim — the `"` chord is dropped).
+fn handle_select_register(ed: &mut Editor<'_>, input: Input) -> bool {
+    if let Key::Char(c) = input.key
+        && (c.is_ascii_alphanumeric() || c == '"')
+    {
+        ed.vim.pending_register = Some(c);
     }
     true
 }
@@ -2394,8 +2419,7 @@ fn run_operator_over_range(
             let text = read_vim_range(ed, top, bot, kind);
             if !text.is_empty() {
                 ed.last_yank = Some(text.clone());
-                ed.set_yank(text);
-                ed.vim.yank_linewise = matches!(kind, MotionKind::Linewise);
+                ed.record_yank(text, matches!(kind, MotionKind::Linewise));
             }
             ed.buffer_mut()
                 .set_cursor(sqeel_buffer::Position::new(top.0, top.1));
@@ -2545,8 +2569,7 @@ fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
             let text = read_vim_range(ed, (row, col), (end_row, 0), MotionKind::Linewise);
             if !text.is_empty() {
                 ed.last_yank = Some(text.clone());
-                ed.set_yank(text);
-                ed.vim.yank_linewise = true;
+                ed.record_yank(text, true);
             }
             ed.buffer_mut()
                 .set_cursor(sqeel_buffer::Position::new(row, col));
@@ -2602,8 +2625,7 @@ fn execute_line_op(ed: &mut Editor<'_>, op: Operator, count: usize) {
             }
             if !payload.is_empty() {
                 ed.last_yank = Some(payload.clone());
-                ed.set_yank(payload);
-                ed.vim.yank_linewise = true;
+                ed.record_delete(payload, true);
             }
             ed.buffer_mut().set_cursor(Position::new(row, 0));
             ed.push_buffer_cursor_to_textarea();
@@ -2645,8 +2667,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     let text = read_vim_range(ed, (top, 0), (bot, 0), MotionKind::Linewise);
                     if !text.is_empty() {
                         ed.last_yank = Some(text.clone());
-                        ed.set_yank(text);
-                        ed.vim.yank_linewise = true;
+                        ed.record_yank(text, true);
                     }
                     ed.buffer_mut()
                         .set_cursor(sqeel_buffer::Position::new(top, 0));
@@ -2686,8 +2707,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     }
                     if !payload.is_empty() {
                         ed.last_yank = Some(payload.clone());
-                        ed.set_yank(payload);
-                        ed.vim.yank_linewise = true;
+                        ed.record_delete(payload, true);
                     }
                     ed.buffer_mut().set_cursor(Position::new(top, 0));
                     ed.push_buffer_cursor_to_textarea();
@@ -2721,7 +2741,7 @@ fn apply_visual_operator(ed: &mut Editor<'_>, op: Operator) {
                     let text = read_vim_range(ed, top, bot, MotionKind::Inclusive);
                     if !text.is_empty() {
                         ed.last_yank = Some(text.clone());
-                        ed.set_yank(text);
+                        ed.record_yank(text, false);
                     }
                     ed.buffer_mut()
                         .set_cursor(sqeel_buffer::Position::new(top.0, top.1));
@@ -2820,10 +2840,9 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
     match op {
         Operator::Yank => {
             if !yank.is_empty() {
-                ed.set_yank(yank.clone());
-                ed.last_yank = Some(yank);
+                ed.last_yank = Some(yank.clone());
+                ed.record_yank(yank, false);
             }
-            ed.vim.yank_linewise = false;
             ed.vim.mode = Mode::Normal;
             ed.jump_cursor(top, left);
         }
@@ -2831,10 +2850,9 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             ed.push_undo();
             delete_block_contents(ed, top, bot, left, right);
             if !yank.is_empty() {
-                ed.set_yank(yank.clone());
-                ed.last_yank = Some(yank);
+                ed.last_yank = Some(yank.clone());
+                ed.record_delete(yank, false);
             }
-            ed.vim.yank_linewise = false;
             ed.vim.mode = Mode::Normal;
             ed.jump_cursor(top, left);
         }
@@ -2842,10 +2860,9 @@ fn apply_block_operator(ed: &mut Editor<'_>, op: Operator) {
             ed.push_undo();
             delete_block_contents(ed, top, bot, left, right);
             if !yank.is_empty() {
-                ed.set_yank(yank.clone());
-                ed.last_yank = Some(yank);
+                ed.last_yank = Some(yank.clone());
+                ed.record_delete(yank, false);
             }
-            ed.vim.yank_linewise = false;
             ed.jump_cursor(top, left);
             begin_insert_noundo(
                 ed,
@@ -3369,8 +3386,7 @@ fn cut_vim_range(
     };
     if !text.is_empty() {
         ed.last_yank = Some(text.clone());
-        ed.set_yank(text.clone());
-        ed.vim.yank_linewise = matches!(kind, MotionKind::Linewise);
+        ed.record_delete(text.clone(), matches!(kind, MotionKind::Linewise));
     }
     ed.push_buffer_cursor_to_textarea();
     text
@@ -3607,13 +3623,22 @@ fn join_line_raw(ed: &mut Editor<'_>) {
 fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
     use sqeel_buffer::{Edit, Position};
     ed.push_undo();
+    // Resolve the source register: `"reg` prefix (consumed) or the
+    // unnamed register otherwise. Read text + linewise from the
+    // selected slot rather than the global `vim.yank_linewise` so
+    // pasting from `"0` after a delete still uses the yank's layout.
+    let selector = ed.vim.pending_register.take();
+    let (yank, linewise) = match selector.and_then(|c| ed.registers().read(c)) {
+        Some(slot) => (slot.text.clone(), slot.linewise),
+        None => (ed.yank().to_string(), ed.vim.yank_linewise),
+    };
     for _ in 0..count {
         ed.sync_buffer_content_from_textarea();
-        let yank = ed.yank().to_string();
+        let yank = yank.clone();
         if yank.is_empty() {
             continue;
         }
-        if ed.vim.yank_linewise {
+        if linewise {
             // Linewise paste: insert payload as fresh row(s) above
             // (`P`) or below (`p`) the cursor's row. Cursor lands on
             // the first non-blank of the first pasted line.
@@ -5928,6 +5953,59 @@ mod tests {
         let mut e = editor_with("abc");
         e.install_syntax_spans(vec![vec![(2, 2, Style::default().fg(Color::Red))]]);
         assert!(e.buffer.spans()[0].is_empty());
+    }
+
+    #[test]
+    fn named_register_yank_into_a_then_paste_from_a() {
+        let mut e = editor_with("hello world\nsecond");
+        run_keys(&mut e, "\"ayw");
+        // `yw` over "hello world" yanks "hello " (word + trailing space).
+        assert_eq!(e.registers().read('a').unwrap().text, "hello ");
+        // Move to second line then paste from "a.
+        run_keys(&mut e, "j0\"aP");
+        assert_eq!(e.buffer().lines()[1], "hello second");
+    }
+
+    #[test]
+    fn yank_zero_holds_last_yank_after_delete() {
+        let mut e = editor_with("hello world");
+        run_keys(&mut e, "yw");
+        let yanked = e.registers().read('0').unwrap().text.clone();
+        assert!(!yanked.is_empty());
+        // Delete a word; "0 should still hold the original yank.
+        run_keys(&mut e, "dw");
+        assert_eq!(e.registers().read('0').unwrap().text, yanked);
+        // "1 holds the just-deleted text (non-empty, regardless of exact contents).
+        assert!(!e.registers().read('1').unwrap().text.is_empty());
+    }
+
+    #[test]
+    fn delete_ring_rotates_through_one_through_nine() {
+        let mut e = editor_with("a b c d e f g h i j");
+        // Delete each word — each delete pushes onto "1, shifting older.
+        for _ in 0..3 {
+            run_keys(&mut e, "dw");
+        }
+        // Most recent delete is in "1.
+        let r1 = e.registers().read('1').unwrap().text.clone();
+        let r2 = e.registers().read('2').unwrap().text.clone();
+        let r3 = e.registers().read('3').unwrap().text.clone();
+        assert!(!r1.is_empty() && !r2.is_empty() && !r3.is_empty());
+        assert_ne!(r1, r2);
+        assert_ne!(r2, r3);
+    }
+
+    #[test]
+    fn capital_register_appends_to_lowercase() {
+        let mut e = editor_with("foo bar");
+        run_keys(&mut e, "\"ayw");
+        let first = e.registers().read('a').unwrap().text.clone();
+        assert!(first.contains("foo"));
+        // Yank again into "A — appends to "a.
+        run_keys(&mut e, "w\"Ayw");
+        let combined = e.registers().read('a').unwrap().text.clone();
+        assert!(combined.starts_with(&first));
+        assert!(combined.contains("bar"));
     }
 
     #[test]

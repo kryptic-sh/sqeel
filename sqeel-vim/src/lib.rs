@@ -18,10 +18,12 @@
 mod editor;
 pub mod ex;
 mod input;
+mod registers;
 mod vim;
 
 pub use editor::{Editor, LspIntent};
 pub use input::{Input, Key};
+pub use registers::{Registers, Slot};
 pub use vim::SearchPrompt;
 
 /// Which keyboard discipline the editor uses. Currently vim-only, but
