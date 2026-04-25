@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 sqeel-core = { path = "../sqeel-core" }
 hjkl-engine = { path = "../../hjkl/crates/hjkl-engine" }
+hjkl-editor = { path = "../../hjkl/crates/hjkl-editor" }
 hjkl-buffer = { path = "../../hjkl/crates/hjkl-buffer", features = [
   "ratatui",
 ] }

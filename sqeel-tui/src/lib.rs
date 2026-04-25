@@ -6,7 +6,7 @@ mod spinner;
 mod theme;
 
 // Re-export the editor crate so existing call sites like
-// `sqeel_tui::editor::ex::ExEffect` keep compiling.
+// `sqeel_tui::hjkl_editor::runtime::ex::ExEffect` keep compiling.
 pub use hjkl_engine as editor;
 pub use host::{FoldOp, LineRange, SqeelBufferId, SqeelHost, SqeelIntent};
 
@@ -1832,8 +1832,8 @@ async fn run_loop(
                         (KeyModifiers::NONE, KeyCode::Enter) => {
                             let cmd_str = command_input.take().unwrap_or_default().text;
                             let trimmed = cmd_str.trim();
-                            match editor::ex::run(&mut editor, trimmed) {
-                                editor::ex::ExEffect::Quit { force, save } => {
+                            match hjkl_editor::runtime::ex::run(&mut editor, trimmed) {
+                                hjkl_editor::runtime::ex::ExEffect::Quit { force, save } => {
                                     let local_dirty = editor_dirty;
                                     let any_dirty = {
                                         let mut s = state.lock().unwrap();
@@ -1866,7 +1866,7 @@ async fn run_loop(
                                         break;
                                     }
                                 }
-                                editor::ex::ExEffect::Save => {
+                                hjkl_editor::runtime::ex::ExEffect::Save => {
                                     let prepared = {
                                         let mut s = state.lock().unwrap();
                                         // The heavy content pipeline is
@@ -1922,7 +1922,7 @@ async fn run_loop(
                                         )),
                                     }
                                 }
-                                editor::ex::ExEffect::Substituted { count } => {
+                                hjkl_editor::runtime::ex::ExEffect::Substituted { count } => {
                                     state.lock().unwrap().focus = Focus::Editor;
                                     editor_dirty = true;
                                     toasts.push((
@@ -1931,23 +1931,23 @@ async fn run_loop(
                                         std::time::Instant::now(),
                                     ));
                                 }
-                                editor::ex::ExEffect::Ok => {
+                                hjkl_editor::runtime::ex::ExEffect::Ok => {
                                     state.lock().unwrap().focus = Focus::Editor;
                                 }
-                                editor::ex::ExEffect::Info(msg) => {
+                                hjkl_editor::runtime::ex::ExEffect::Info(msg) => {
                                     toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
                                 }
-                                editor::ex::ExEffect::Error(msg) => {
+                                hjkl_editor::runtime::ex::ExEffect::Error(msg) => {
                                     toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
                                 }
-                                editor::ex::ExEffect::Unknown(c) => {
+                                hjkl_editor::runtime::ex::ExEffect::Unknown(c) => {
                                     toasts.push((
                                         format!("Unknown command: :{c}"),
                                         ToastKind::Error,
                                         std::time::Instant::now(),
                                     ));
                                 }
-                                editor::ex::ExEffect::None => {}
+                                hjkl_editor::runtime::ex::ExEffect::None => {}
                             }
                         }
                         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {

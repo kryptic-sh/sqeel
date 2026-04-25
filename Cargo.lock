@@ -1877,7 +1877,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hjkl-buffer"
-version = "0.0.2"
+version = "0.0.12"
 dependencies = [
  "ratatui",
  "regex",
@@ -1885,8 +1885,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hjkl-editor"
+version = "0.0.12"
+dependencies = [
+ "hjkl-buffer",
+ "hjkl-engine",
+ "regex",
+]
+
+[[package]]
 name = "hjkl-engine"
-version = "0.0.2"
+version = "0.0.12"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm",
@@ -3945,6 +3954,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "hjkl-buffer",
+ "hjkl-editor",
  "hjkl-engine",
  "lsp-types",
  "pulldown-cmark",
