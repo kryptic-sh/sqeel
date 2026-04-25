@@ -161,8 +161,9 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
   patterns. Add a bounded `Vec<String>` on `VimState`.
 - **`?` — backward search prompt (audit).** Verify it commits with
   `search_backward(true)` and that `n` / `N` invert as vim expects.
-- **`/<CR>` — repeat last search (S).** Pressing Enter on an empty search prompt
-  re-uses `last_search`.
+- ~~**`/<CR>` — repeat last search (S).**~~ Done. Empty `<CR>` reuses
+  `last_search` in the prompt's direction; `enter_search` no longer wipes the
+  pattern when opening the prompt.
 
 ---
 

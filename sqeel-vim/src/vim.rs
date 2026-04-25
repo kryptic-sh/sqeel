@@ -484,14 +484,14 @@ impl VimState {
 // ─── Entry point ───────────────────────────────────────────────────────────
 
 /// Open the `/` (forward) or `?` (backward) search prompt. Clears any
-/// live search highlight until the user commits a query.
+/// live search highlight until the user commits a query. `last_search`
+/// is preserved so an empty `<CR>` can re-run the previous pattern.
 fn enter_search(ed: &mut Editor<'_>, forward: bool) {
     ed.vim.search_prompt = Some(SearchPrompt {
         text: String::new(),
         cursor: 0,
         forward,
     });
-    ed.vim.last_search = None;
     ed.buffer_mut().set_search_pattern(None);
 }
 
@@ -526,12 +526,16 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
         Key::Enter => {
             let prompt = ed.vim.search_prompt.take();
             if let Some(p) = prompt {
-                if !p.text.is_empty() {
-                    push_search_pattern(ed, &p.text);
+                // Empty `/<CR>` (or `?<CR>`) re-runs the previous search
+                // pattern in the prompt's direction — vim parity.
+                let pattern = if p.text.is_empty() {
+                    ed.vim.last_search.clone()
+                } else {
+                    Some(p.text.clone())
+                };
+                if let Some(pattern) = pattern {
+                    push_search_pattern(ed, &pattern);
                     let pre = ed.cursor();
-                    // Match tui-textarea's `/search<CR>` semantics:
-                    // jump to the *next* match strictly past the
-                    // cursor, even if the cursor already sits on one.
                     if p.forward {
                         ed.buffer_mut().search_forward(true);
                     } else {
@@ -541,9 +545,7 @@ fn step_search_prompt(ed: &mut Editor<'_>, input: Input) -> bool {
                     if ed.cursor() != pre {
                         push_jump(ed, pre);
                     }
-                    ed.vim.last_search = Some(p.text);
-                } else {
-                    ed.vim.last_search = None;
+                    ed.vim.last_search = Some(pattern);
                 }
             }
         }
@@ -5678,6 +5680,32 @@ mod tests {
         assert!(e.search_prompt().is_none());
         assert_eq!(e.last_search(), Some("worl"));
         assert_eq!(e.cursor(), (0, 6));
+    }
+
+    #[test]
+    fn empty_search_prompt_enter_repeats_last_search() {
+        let mut e = editor_with("foo bar foo baz foo");
+        run_keys(&mut e, "/foo");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(e.cursor().1, 8);
+        // Empty `/<CR>` should advance to the next match, not clear last_search.
+        run_keys(&mut e, "/");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(e.cursor().1, 16);
+        assert_eq!(e.last_search(), Some("foo"));
+    }
+
+    #[test]
+    fn empty_backward_search_prompt_enter_repeats_last_search() {
+        let mut e = editor_with("foo bar foo baz foo");
+        // Forward to col 8, then `?<CR>` should walk backward to col 0.
+        run_keys(&mut e, "/foo");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(e.cursor().1, 8);
+        run_keys(&mut e, "?");
+        e.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(e.cursor().1, 0);
+        assert_eq!(e.last_search(), Some("foo"));
     }
 
     #[test]
