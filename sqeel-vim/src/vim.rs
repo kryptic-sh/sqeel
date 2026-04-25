@@ -3229,29 +3229,39 @@ fn toggle_case_at_cursor(ed: &mut Editor<'_>) {
 }
 
 fn join_line(ed: &mut Editor<'_>) {
-    let (row, _) = ed.textarea.cursor();
-    if row + 1 >= ed.textarea.lines().len() {
+    use sqeel_buffer::{Edit, Position};
+    ed.sync_buffer_content_from_textarea();
+    let row = ed.buffer().cursor().row;
+    if row + 1 >= ed.buffer().row_count() {
         return;
     }
-    ed.textarea.move_cursor(CursorMove::End);
-    let end_col = ed.textarea.cursor().1;
-    ed.mutate(|t| t.delete_next_char());
-    loop {
-        let (r, c) = ed.textarea.cursor();
-        let line = ed.textarea.lines()[r].clone();
-        match line[c..].chars().next() {
-            Some(ch) if ch.is_whitespace() => {
-                ed.mutate(|t| t.delete_next_char());
-            }
-            _ => break,
-        }
-    }
-    let (r, c) = ed.textarea.cursor();
-    let has_right = c < ed.textarea.lines()[r].len();
-    if end_col > 0 && has_right {
-        ed.mutate(|t| t.insert_char(' '));
-        ed.textarea.move_cursor(CursorMove::Back);
-    }
+    let cur_line = ed.buffer().line(row).unwrap_or("").to_string();
+    let next_raw = ed.buffer().line(row + 1).unwrap_or("").to_string();
+    let next_trimmed = next_raw.trim_start();
+    let cur_chars = cur_line.chars().count();
+    let next_chars = next_raw.chars().count();
+    // `J` inserts a single space iff both sides are non-empty after
+    // stripping the next line's leading whitespace.
+    let separator = if !cur_line.is_empty() && !next_trimmed.is_empty() {
+        " "
+    } else {
+        ""
+    };
+    let joined = format!("{cur_line}{separator}{next_trimmed}");
+    ed.mutate_edit(Edit::Replace {
+        start: Position::new(row, 0),
+        end: Position::new(row + 1, next_chars),
+        with: joined,
+    });
+    // Vim parks the cursor on the inserted space (or at the join point
+    // when no space went in).
+    let cursor_col = if separator.is_empty() {
+        cur_chars
+    } else {
+        cur_chars
+    };
+    ed.buffer_mut().set_cursor(Position::new(row, cursor_col));
+    ed.push_buffer_cursor_to_textarea();
 }
 
 /// `gJ` — join the next line onto the current one without inserting a
