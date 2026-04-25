@@ -357,6 +357,10 @@ pub struct VimState {
     /// Snapshot of the last visual selection for `gv` re-entry.
     /// Stored on every Visual / VisualLine / VisualBlock exit.
     pub(super) last_visual: Option<LastVisual>,
+    /// `zz` / `zt` / `zb` set this so the end-of-step scrolloff
+    /// pass doesn't override the user's explicit viewport pinning.
+    /// Cleared every step.
+    pub(super) viewport_pinned: bool,
     /// Set while replaying `.` / last-change so we don't re-record it.
     replaying: bool,
     /// Entered Normal from Insert via `Ctrl-o`; after the next complete
@@ -658,9 +662,13 @@ pub fn step(ed: &mut Editor<'_>, input: Input) -> bool {
     // `step_normal` thus all flow through here without each call
     // site needing to remember to sync.
     ed.sync_buffer_content_from_textarea();
-    // Scroll viewport to keep cursor on-screen. Replaces the
-    // auto-scroll tui-textarea did on every move_cursor.
-    ed.buffer_mut().ensure_cursor_visible();
+    // Scroll viewport to keep cursor on-screen, honouring the same
+    // `SCROLLOFF` margin the mouse-driven scroll uses. Skip when
+    // the user just pinned the viewport with `zz` / `zt` / `zb`.
+    if !ed.vim.viewport_pinned {
+        ed.ensure_cursor_in_scrolloff();
+    }
+    ed.vim.viewport_pinned = false;
     // Recorder hook: append every consumed input to the active
     // recording (if any) so the replay reproduces the same sequence.
     // Skip the chord that started the recording (`q{reg}` open) and
@@ -2258,9 +2266,18 @@ fn handle_after_z(ed: &mut Editor<'_>, input: Input) -> bool {
     use crate::editor::CursorScrollTarget;
     let row = ed.cursor().0;
     match input.key {
-        Key::Char('z') => ed.scroll_cursor_to(CursorScrollTarget::Center),
-        Key::Char('t') => ed.scroll_cursor_to(CursorScrollTarget::Top),
-        Key::Char('b') => ed.scroll_cursor_to(CursorScrollTarget::Bottom),
+        Key::Char('z') => {
+            ed.scroll_cursor_to(CursorScrollTarget::Center);
+            ed.vim.viewport_pinned = true;
+        }
+        Key::Char('t') => {
+            ed.scroll_cursor_to(CursorScrollTarget::Top);
+            ed.vim.viewport_pinned = true;
+        }
+        Key::Char('b') => {
+            ed.scroll_cursor_to(CursorScrollTarget::Bottom);
+            ed.vim.viewport_pinned = true;
+        }
         // Folds — operate on the fold under the cursor (or the
         // whole buffer for `R` / `M`).
         Key::Char('o') => {

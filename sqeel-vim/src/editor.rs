@@ -523,6 +523,43 @@ impl<'a> Editor<'a> {
     /// scrolling. Collapses to `height / 2` for tiny viewports.
     const SCROLLOFF: usize = 5;
 
+    /// Scroll the viewport so the cursor stays at least `SCROLLOFF`
+    /// rows from each edge. Replaces the bare
+    /// `Buffer::ensure_cursor_visible` call at end-of-step so motions
+    /// don't park the cursor on the very last visible row.
+    pub(crate) fn ensure_cursor_in_scrolloff(&mut self) {
+        let height = self.viewport_height.load(Ordering::Relaxed) as usize;
+        if height == 0 {
+            self.buffer.ensure_cursor_visible();
+            return;
+        }
+        let cursor_row = self.buffer.cursor().row;
+        // Cap margin at (height - 1) / 2 so the upper + lower bands
+        // can't overlap on tiny windows (margin=5 + height=10 would
+        // otherwise produce contradictory clamp ranges).
+        let margin = Self::SCROLLOFF.min(height.saturating_sub(1) / 2);
+        let last_row = self.buffer.row_count().saturating_sub(1);
+        let v = self.buffer.viewport_mut();
+        // Top edge: cursor_row should sit at >= top_row + margin.
+        if cursor_row < v.top_row + margin {
+            v.top_row = cursor_row.saturating_sub(margin);
+        }
+        // Bottom edge: cursor_row should sit at <= top_row + height - 1 - margin.
+        let max_bottom = height.saturating_sub(1).saturating_sub(margin);
+        if cursor_row > v.top_row + max_bottom {
+            v.top_row = cursor_row.saturating_sub(max_bottom);
+        }
+        // Clamp top_row so we never scroll past the buffer's bottom.
+        let max_top = last_row.saturating_sub(height.saturating_sub(1));
+        if v.top_row > max_top {
+            v.top_row = max_top;
+        }
+        // Defer to Buffer for column-side scroll (no scrolloff for
+        // horizontal scrolling — vim default `sidescrolloff = 0`).
+        let cursor = self.buffer.cursor();
+        self.buffer.viewport_mut().ensure_visible(cursor);
+    }
+
     fn scroll_viewport(&mut self, delta: i16) {
         if delta == 0 {
             return;
