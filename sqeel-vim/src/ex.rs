@@ -70,6 +70,14 @@ pub fn run(editor: &mut Editor<'_>, input: &str) -> ExEffect {
         }
         "reg" | "registers" => return ExEffect::Info(format_registers(editor)),
         "marks" => return ExEffect::Info(format_marks(editor)),
+        "undo" | "u" => {
+            crate::vim::do_undo(editor);
+            return ExEffect::Ok;
+        }
+        "redo" | "red" => {
+            crate::vim::do_redo(editor);
+            return ExEffect::Ok;
+        }
         _ => {}
     }
 
@@ -621,6 +629,35 @@ mod tests {
         assert!(info.contains(" a "));
         assert!(info.contains(" b "));
         assert!(info.contains(" . "));
+    }
+
+    #[test]
+    fn undo_alias_reverses_last_change() {
+        let mut e = new("hello");
+        type_keys(&mut e, "Aworld\x1b");
+        assert_eq!(e.buffer().lines()[0], "helloworld");
+        assert_eq!(run(&mut e, "undo"), ExEffect::Ok);
+        assert_eq!(e.buffer().lines()[0], "hello");
+        // Short alias.
+        type_keys(&mut e, "Awow\x1b");
+        assert_eq!(e.buffer().lines()[0], "hellowow");
+        assert_eq!(run(&mut e, "u"), ExEffect::Ok);
+        assert_eq!(e.buffer().lines()[0], "hello");
+    }
+
+    #[test]
+    fn redo_alias_reapplies_undone_change() {
+        let mut e = new("hi");
+        type_keys(&mut e, "Athere\x1b");
+        assert_eq!(e.buffer().lines()[0], "hithere");
+        run(&mut e, "undo");
+        assert_eq!(e.buffer().lines()[0], "hi");
+        assert_eq!(run(&mut e, "redo"), ExEffect::Ok);
+        assert_eq!(e.buffer().lines()[0], "hithere");
+        // Short alias.
+        run(&mut e, "u");
+        assert_eq!(run(&mut e, "red"), ExEffect::Ok);
+        assert_eq!(e.buffer().lines()[0], "hithere");
     }
 
     #[test]

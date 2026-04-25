@@ -4091,7 +4091,7 @@ fn do_paste(ed: &mut Editor<'_>, before: bool, count: usize) {
     ed.vim.sticky_col = Some(ed.buffer().cursor().col);
 }
 
-fn do_undo(ed: &mut Editor<'_>) {
+pub(crate) fn do_undo(ed: &mut Editor<'_>) {
     if let Some((lines, cursor)) = ed.undo_stack.pop() {
         let current = ed.snapshot();
         ed.redo_stack.push(current);
@@ -4100,7 +4100,7 @@ fn do_undo(ed: &mut Editor<'_>) {
     ed.vim.mode = Mode::Normal;
 }
 
-fn do_redo(ed: &mut Editor<'_>) {
+pub(crate) fn do_redo(ed: &mut Editor<'_>) {
     if let Some((lines, cursor)) = ed.redo_stack.pop() {
         let current = ed.snapshot();
         ed.undo_stack.push(current);

@@ -150,7 +150,8 @@ Today: `:q`, `:q!`, `:w`, `:wq`, `:x`, `:noh`, `:s/`, `:%s/`, `:g/`, `:v/`, `:N`
 - **`:! cmd` (L).** Run shell, insert nothing. Same security caveats as `:r !`.
 - **`:!{filter}` over a range (L).** Pipe range through external filter. Same
   caveats.
-- **`:undo` / `:redo` (S).** Aliases for `u` / `Ctrl-R`. Trivial.
+- ~~**`:undo` / `:redo` (S).**~~ Done. `:undo` / `:u` and `:redo` / `:red` drive
+  the same `do_undo` / `do_redo` paths as `u` / `Ctrl-R`.
 - **Range support before commands (M).** Vim accepts `:5,10s/…/` and `:5,10d`.
   Today scope is hard-coded (current-line vs whole). Add a tiny range parser
   (`N,M`, `.`, `$`, `'a`).
