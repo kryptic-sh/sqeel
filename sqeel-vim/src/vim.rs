@@ -647,20 +647,140 @@ fn step_insert(ed: &mut Editor<'_>, input: Input) -> bool {
 
     // Widen the session's visited row window *before* handling the key
     // so navigation-only keystrokes (arrow keys) still extend the range.
+    let (row, _) = ed.cursor();
     if let Some(ref mut session) = ed.vim.insert_session {
-        let (row, _) = ed.textarea.cursor();
         session.row_min = session.row_min.min(row);
         session.row_max = session.row_max.max(row);
     }
-    if ed.textarea.input(input) {
+    let mutated = handle_insert_key(ed, input);
+    if mutated {
         ed.mark_content_dirty();
+        let (row, _) = ed.cursor();
         if let Some(ref mut session) = ed.vim.insert_session {
-            let (row, _) = ed.textarea.cursor();
             session.row_min = session.row_min.min(row);
             session.row_max = session.row_max.max(row);
         }
     }
     true
+}
+
+/// Insert-mode key dispatcher backed by the migration buffer. Replaces
+/// the historical `textarea.input(input)` call so the textarea field
+/// can be ripped at the end of Phase 7f. PageUp / PageDown still flow
+/// through the textarea (they're scroll-only with no buffer side
+/// effect); every other navigation + edit key lands on `Buffer`.
+/// Returns true when the buffer mutated.
+fn handle_insert_key(ed: &mut Editor<'_>, input: Input) -> bool {
+    use sqeel_buffer::{Edit, MotionKind, Position};
+    ed.sync_buffer_content_from_textarea();
+    let cursor = ed.buffer().cursor();
+    let line_chars = ed
+        .buffer()
+        .line(cursor.row)
+        .map(|l| l.chars().count())
+        .unwrap_or(0);
+    let mutated = match input.key {
+        Key::Char(c) => {
+            ed.mutate_edit(Edit::InsertChar { at: cursor, ch: c });
+            true
+        }
+        Key::Enter => {
+            ed.mutate_edit(Edit::InsertStr {
+                at: cursor,
+                text: "\n".into(),
+            });
+            true
+        }
+        Key::Tab => {
+            ed.mutate_edit(Edit::InsertChar {
+                at: cursor,
+                ch: '\t',
+            });
+            true
+        }
+        Key::Backspace => {
+            if cursor.col > 0 {
+                ed.mutate_edit(Edit::DeleteRange {
+                    start: Position::new(cursor.row, cursor.col - 1),
+                    end: cursor,
+                    kind: MotionKind::Char,
+                });
+                true
+            } else if cursor.row > 0 {
+                let prev_row = cursor.row - 1;
+                let prev_chars = ed
+                    .buffer()
+                    .line(prev_row)
+                    .map(|l| l.chars().count())
+                    .unwrap_or(0);
+                ed.mutate_edit(Edit::JoinLines {
+                    row: prev_row,
+                    count: 1,
+                    with_space: false,
+                });
+                ed.buffer_mut()
+                    .set_cursor(Position::new(prev_row, prev_chars));
+                true
+            } else {
+                false
+            }
+        }
+        Key::Delete => {
+            if cursor.col < line_chars {
+                ed.mutate_edit(Edit::DeleteRange {
+                    start: cursor,
+                    end: Position::new(cursor.row, cursor.col + 1),
+                    kind: MotionKind::Char,
+                });
+                true
+            } else if cursor.row + 1 < ed.buffer().row_count() {
+                ed.mutate_edit(Edit::JoinLines {
+                    row: cursor.row,
+                    count: 1,
+                    with_space: false,
+                });
+                ed.buffer_mut().set_cursor(cursor);
+                true
+            } else {
+                false
+            }
+        }
+        Key::Left => {
+            ed.buffer_mut().move_left(1);
+            false
+        }
+        Key::Right => {
+            // Insert mode allows the cursor one past the last char so the
+            // next typed letter appends — use the operator-context move.
+            ed.buffer_mut().move_right_to_end(1);
+            false
+        }
+        Key::Up => {
+            ed.buffer_mut().move_up(1);
+            false
+        }
+        Key::Down => {
+            ed.buffer_mut().move_down(1);
+            false
+        }
+        Key::Home => {
+            ed.buffer_mut().move_line_start();
+            false
+        }
+        Key::End => {
+            ed.buffer_mut().move_line_end();
+            false
+        }
+        Key::PageUp | Key::PageDown => {
+            // Scroll only — let the textarea handle viewport movement.
+            return ed.textarea.input(input);
+        }
+        // F-keys, mouse scroll, copy/cut/paste virtual keys, Null —
+        // no insert-mode behaviour.
+        _ => false,
+    };
+    ed.push_buffer_cursor_to_textarea();
+    mutated
 }
 
 fn finish_insert_session(ed: &mut Editor<'_>) {
