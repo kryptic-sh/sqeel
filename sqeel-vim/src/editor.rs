@@ -289,6 +289,8 @@ impl<'a> Editor<'a> {
     /// inverse for the host's undo stack.
     pub(super) fn mutate_edit(&mut self, edit: sqeel_buffer::Edit) -> sqeel_buffer::Edit {
         let inverse = self.buffer.apply_edit(edit);
+        let pos = self.buffer.cursor();
+        self.vim.last_edit_pos = Some((pos.row, pos.col));
         self.push_buffer_content_to_textarea();
         self.mark_content_dirty();
         inverse

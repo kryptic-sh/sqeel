@@ -345,6 +345,9 @@ pub struct VimState {
     pub(super) replaying_macro: bool,
     /// Last register played via `@reg`. `@@` re-plays this one.
     pub(super) last_macro: Option<char>,
+    /// Position of the most recent buffer mutation. Surfaced via
+    /// the `'.` / `` `. `` marks for quick "back to last edit".
+    pub(super) last_edit_pos: Option<(usize, usize)>,
     /// Set while replaying `.` / last-change so we don't re-record it.
     replaying: bool,
     /// Entered Normal from Insert via `Ctrl-o`; after the next complete
@@ -1375,10 +1378,19 @@ fn handle_goto_mark(ed: &mut Editor<'_>, input: Input, linewise: bool) -> bool {
     let Key::Char(c) = input.key else {
         return true;
     };
-    if !c.is_ascii_lowercase() {
-        return true;
-    }
-    let Some(&(row, col)) = ed.vim.marks.get(&c) else {
+    // Resolve the mark target. Lowercase letters look up the user
+    // marks set via `m{a..z}`; the special chars below come from
+    // automatic state vim maintains:
+    //   `'` / `` ` `` — position before the most recent big jump
+    //                  (peeks `jump_back` without popping).
+    //   `.`           — the last edit's position.
+    let target = match c {
+        'a'..='z' => ed.vim.marks.get(&c).copied(),
+        '\'' | '`' => ed.vim.jump_back.last().copied(),
+        '.' => ed.vim.last_edit_pos,
+        _ => None,
+    };
+    let Some((row, col)) = target else {
         return true;
     };
     let pre = ed.cursor();
@@ -6133,6 +6145,44 @@ mod tests {
         let combined = e.registers().read('a').unwrap().text.clone();
         assert!(combined.starts_with(&first));
         assert!(combined.contains("bar"));
+    }
+
+    #[test]
+    fn dot_mark_jumps_to_last_edit_position() {
+        let mut e = editor_with("alpha\nbeta\ngamma\ndelta");
+        e.jump_cursor(2, 0);
+        // Insert at line 2 — sets last_edit_pos.
+        run_keys(&mut e, "iX<Esc>");
+        let after_edit = e.cursor();
+        // Move away.
+        run_keys(&mut e, "gg");
+        assert_eq!(e.cursor().0, 0);
+        // `'.` jumps back to the edit's row (linewise variant).
+        run_keys(&mut e, "'.");
+        assert_eq!(e.cursor().0, after_edit.0);
+    }
+
+    #[test]
+    fn quote_quote_returns_to_pre_jump_position() {
+        let mut e = editor_with_rows(50, 20);
+        e.jump_cursor(10, 2);
+        let before = e.cursor();
+        // `G` is a big jump — pushes (10, 2) onto jump_back.
+        run_keys(&mut e, "G");
+        assert_ne!(e.cursor(), before);
+        // `''` jumps back to the pre-jump position (linewise).
+        run_keys(&mut e, "''");
+        assert_eq!(e.cursor().0, before.0);
+    }
+
+    #[test]
+    fn backtick_backtick_restores_exact_pre_jump_pos() {
+        let mut e = editor_with_rows(50, 20);
+        e.jump_cursor(7, 3);
+        let before = e.cursor();
+        run_keys(&mut e, "G");
+        run_keys(&mut e, "``");
+        assert_eq!(e.cursor(), before);
     }
 
     #[test]
