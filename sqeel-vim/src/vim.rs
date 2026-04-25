@@ -842,24 +842,36 @@ fn finish_insert_session(ed: &mut Editor<'_>) {
     };
     let inserted = extract_inserted(&before, &after);
     if !inserted.is_empty() && session.count > 1 && !ed.vim.replaying {
+        use sqeel_buffer::{Edit, Position};
         for _ in 0..session.count - 1 {
-            ed.mutate(|t| t.insert_str(&inserted));
+            let (row, col) = ed.cursor();
+            ed.mutate_edit(Edit::InsertStr {
+                at: Position::new(row, col),
+                text: inserted.clone(),
+            });
         }
     }
     if let InsertReason::BlockEdge { top, bot, col } = session.reason {
         if !inserted.is_empty() && top < bot && !ed.vim.replaying {
+            use sqeel_buffer::{Edit, Position};
             for r in (top + 1)..=bot {
-                let line_len = ed.textarea.lines()[r].chars().count();
+                let line_len = ed.buffer().line(r).map(|l| l.chars().count()).unwrap_or(0);
                 if col > line_len {
-                    ed.textarea.move_cursor(CursorMove::Jump(r, line_len));
+                    // Pad short rows with spaces up to the block edge
+                    // column so the inserted text lands at `col`.
                     let pad: String = std::iter::repeat_n(' ', col - line_len).collect();
-                    ed.mutate(|t| t.insert_str(&pad));
-                } else {
-                    ed.textarea.move_cursor(CursorMove::Jump(r, col));
+                    ed.mutate_edit(Edit::InsertStr {
+                        at: Position::new(r, line_len),
+                        text: pad,
+                    });
                 }
-                ed.mutate(|t| t.insert_str(&inserted));
+                ed.mutate_edit(Edit::InsertStr {
+                    at: Position::new(r, col),
+                    text: inserted.clone(),
+                });
             }
-            ed.textarea.move_cursor(CursorMove::Jump(top, col));
+            ed.buffer_mut().set_cursor(Position::new(top, col));
+            ed.push_buffer_cursor_to_textarea();
         }
         return;
     }
