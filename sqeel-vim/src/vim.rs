@@ -1329,31 +1329,28 @@ fn apply_motion_cursor_ctx(ed: &mut Editor<'_>, motion: &Motion, count: usize, a
             ed.push_buffer_cursor_to_textarea();
         }
         Motion::WordFwd => {
-            for _ in 0..count {
-                ed.textarea.move_cursor(CursorMove::WordForward);
-            }
+            ed.buffer_mut().move_word_fwd(false, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::WordBack => {
-            for _ in 0..count {
-                ed.textarea.move_cursor(CursorMove::WordBack);
-            }
+            ed.buffer_mut().move_word_back(false, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::WordEnd => {
-            for _ in 0..count {
-                ed.textarea.move_cursor(CursorMove::WordEnd);
-            }
+            ed.buffer_mut().move_word_end(false, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::BigWordFwd => {
-            let (r, c) = big_word_fwd(ed, count);
-            ed.textarea.move_cursor(CursorMove::Jump(r, c));
+            ed.buffer_mut().move_word_fwd(true, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::BigWordBack => {
-            let (r, c) = big_word_back(ed, count);
-            ed.textarea.move_cursor(CursorMove::Jump(r, c));
+            ed.buffer_mut().move_word_back(true, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::BigWordEnd => {
-            let (r, c) = big_word_end(ed, count);
-            ed.textarea.move_cursor(CursorMove::Jump(r, c));
+            ed.buffer_mut().move_word_end(true, count);
+            ed.push_buffer_cursor_to_textarea();
         }
         Motion::WordEndBack => {
             let (r, c) = word_end_back(ed, false, count);
@@ -1469,22 +1466,6 @@ fn is_ws_at(lines: &[String], row: usize, col: usize) -> bool {
         .unwrap_or(true)
 }
 
-/// Advance one character forward, crossing into the next row when we
-/// pass end of the current one. Returns false when we hit end-of-buffer.
-fn step_forward(lines: &[String], row: &mut usize, col: &mut usize) -> bool {
-    let len = lines[*row].chars().count();
-    if *col < len {
-        *col += 1;
-        true
-    } else if *row + 1 < lines.len() {
-        *row += 1;
-        *col = 0;
-        true
-    } else {
-        false
-    }
-}
-
 /// Step one character backward, wrapping to the previous row's trailing
 /// "newline" position. Returns false at (0, 0).
 fn step_back(lines: &[String], row: &mut usize, col: &mut usize) -> bool {
@@ -1498,82 +1479,6 @@ fn step_back(lines: &[String], row: &mut usize, col: &mut usize) -> bool {
     } else {
         false
     }
-}
-
-/// `W` — WORD forward. A WORD is a maximal run of non-whitespace chars
-/// (so `foo-bar` is one WORD, unlike `w` which stops at the `-`).
-fn big_word_fwd(ed: &Editor<'_>, count: usize) -> (usize, usize) {
-    let lines = ed.textarea.lines();
-    let (mut row, mut col) = ed.textarea.cursor();
-    for _ in 0..count.max(1) {
-        while !is_ws_at(lines, row, col) {
-            if !step_forward(lines, &mut row, &mut col) {
-                return (row, col);
-            }
-        }
-        while is_ws_at(lines, row, col) {
-            if !step_forward(lines, &mut row, &mut col) {
-                return (row, col);
-            }
-        }
-    }
-    (row, col)
-}
-
-/// `B` — WORD back.
-fn big_word_back(ed: &Editor<'_>, count: usize) -> (usize, usize) {
-    let lines = ed.textarea.lines();
-    let (mut row, mut col) = ed.textarea.cursor();
-    for _ in 0..count.max(1) {
-        if !step_back(lines, &mut row, &mut col) {
-            return (row, col);
-        }
-        while is_ws_at(lines, row, col) {
-            if !step_back(lines, &mut row, &mut col) {
-                return (row, col);
-            }
-        }
-        loop {
-            let (mut tr, mut tc) = (row, col);
-            if !step_back(lines, &mut tr, &mut tc) {
-                break;
-            }
-            if is_ws_at(lines, tr, tc) {
-                break;
-            }
-            row = tr;
-            col = tc;
-        }
-    }
-    (row, col)
-}
-
-/// `E` — WORD end.
-fn big_word_end(ed: &Editor<'_>, count: usize) -> (usize, usize) {
-    let lines = ed.textarea.lines();
-    let (mut row, mut col) = ed.textarea.cursor();
-    for _ in 0..count.max(1) {
-        if !step_forward(lines, &mut row, &mut col) {
-            return (row, col);
-        }
-        while is_ws_at(lines, row, col) {
-            if !step_forward(lines, &mut row, &mut col) {
-                return (row, col);
-            }
-        }
-        loop {
-            let (mut tr, mut tc) = (row, col);
-            if !step_forward(lines, &mut tr, &mut tc) {
-                return (row, col);
-            }
-            if is_ws_at(lines, tr, tc) {
-                break;
-            }
-            row = tr;
-            col = tc;
-        }
-    }
-    (row, col)
 }
 
 /// `ge` / `gE` — move cursor backward to the end of the previous word

@@ -241,17 +241,42 @@ fn char_at(buf: &Buffer, pos: Position) -> Option<char> {
 fn next_word_start(buf: &Buffer, from: Position, big: bool) -> Option<Position> {
     let start_kind = char_at(buf, from).map(|c| char_kind(c, big));
     let mut cur = from;
-    // First skip the rest of the current word kind (if any).
+    // Skip the rest of the current word kind. Vim treats line
+    // breaks as whitespace separators for `w`, so a row crossing
+    // implicitly ends the current word — break and let the
+    // skip-space pass handle anything beyond.
     if let Some(kind) = start_kind {
         while char_at(buf, cur).map(|c| char_kind(c, big)) == Some(kind) {
-            cur = step_forward(buf, cur)?;
+            let prev_row = cur.row;
+            match step_forward(buf, cur) {
+                Some(next) => {
+                    cur = next;
+                    if next.row != prev_row {
+                        break;
+                    }
+                }
+                None => return Some(end_of_buffer(buf)),
+            }
         }
     }
-    // Then skip whitespace until the next non-space char.
+    // Skip whitespace runs (within row + across rows) to land on
+    // the next non-space char.
     while char_at(buf, cur).map(|c| char_kind(c, big)) == Some(CharKind::Space) {
-        cur = step_forward(buf, cur)?;
+        match step_forward(buf, cur) {
+            Some(next) => cur = next,
+            None => return Some(end_of_buffer(buf)),
+        }
     }
     Some(cur)
+}
+
+/// One past the last char of the last row — vim's "end of buffer"
+/// for operator-context word motions, so `yw` at end-of-line yanks
+/// up to and including the last char.
+fn end_of_buffer(buf: &Buffer) -> Position {
+    let last_row = buf.row_count().saturating_sub(1);
+    let last_line = buf.line(last_row).unwrap_or("");
+    Position::new(last_row, line_chars(last_line))
 }
 
 fn prev_word_start(buf: &Buffer, from: Position, big: bool) -> Option<Position> {
