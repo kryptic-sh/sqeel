@@ -454,6 +454,7 @@ async fn connect_and_spawn(
                     .unwrap_or_else(|| conn.url.clone());
                 // Wipe any previous failure now that we're back online.
                 s.schema_connect_error = None;
+                s.schema_connect_url = None;
                 s.set_status(format!("Connected: {conn_name}"));
                 // Tabs are connection-agnostic now — main() already
                 // populated them on startup. Don't reload here; that
@@ -496,6 +497,7 @@ async fn connect_and_spawn(
             // at a perpetual "Loading…" placeholder.
             s.schema_loading = false;
             s.schema_connect_error = Some(msg.clone());
+            s.schema_connect_url = Some(url.to_string());
             s.set_error(msg);
         }
     }

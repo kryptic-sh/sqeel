@@ -2419,6 +2419,13 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char('/')) if focus == Focus::Schema => {
                         schema_search.start();
                     }
+                    // Retry the last failed connection. Only fires when
+                    // the sidebar is showing a connect-error placeholder;
+                    // `retry_connection` returns false otherwise so the
+                    // key is a no-op when there's nothing to retry.
+                    (KeyModifiers::NONE, KeyCode::Char('r')) if focus == Focus::Schema => {
+                        state.lock().unwrap().retry_connection();
+                    }
                     // Results pane: digit count prefix. `0` only counts
                     // as a digit when a count is already in progress —
                     // otherwise it's the `0` row-start binding below.
@@ -4100,7 +4107,11 @@ fn draw_schema(
         let placeholder: String = if has_filter {
             "No matches".into()
         } else if let Some(err) = state.schema_connect_error.as_deref() {
-            err.to_string()
+            let hint = match state.active_connection.as_deref() {
+                Some(name) => format!("\n\n[r] retry {name}"),
+                None => "\n\n[r] retry".into(),
+            };
+            format!("{err}{hint}")
         } else if state.active_connection.is_some() {
             "Loading...".into()
         } else {

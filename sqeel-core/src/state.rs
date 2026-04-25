@@ -433,6 +433,10 @@ pub struct AppState {
     /// of a stuck "Loading…" placeholder. Cleared on a successful
     /// connect or when the user switches connections.
     pub schema_connect_error: Option<String>,
+    /// URL of the last failed connection. Stashed alongside
+    /// `schema_connect_error` so `retry_connection` can re-issue
+    /// the handshake without round-tripping through the switcher.
+    pub schema_connect_url: Option<String>,
     /// Set by the executor when a query finishes; cleared by the run loop after redraw.
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
@@ -2718,6 +2722,30 @@ impl AppState {
         self.show_connection_switcher = false;
         self.disarm_connection_delete();
         url
+    }
+
+    /// Re-trigger the handshake for the last failed connection.
+    /// Called from the schema pane's `r` binding when the placeholder
+    /// is showing a "Connection failed: …" error. Returns `true` when
+    /// a retry was queued; `false` if there's nothing to retry (no
+    /// stored URL — e.g. the failure predates this field or the user
+    /// has since switched connections).
+    pub fn retry_connection(&mut self) -> bool {
+        let Some(url) = self.schema_connect_url.clone() else {
+            return false;
+        };
+        let name = self
+            .available_connections
+            .iter()
+            .find(|c| c.url == url)
+            .map(|c| c.name.clone())
+            .or_else(|| self.active_connection.clone())
+            .unwrap_or_else(|| url.clone());
+        self.schema_connect_error = None;
+        self.schema_loading = true;
+        self.pending_reconnect = Some(url);
+        self.set_status(format!("Reconnecting to {name}…"));
+        true
     }
 
     pub fn open_add_connection(&mut self) {

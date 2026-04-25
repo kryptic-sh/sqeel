@@ -33,12 +33,14 @@ file:line targets; each item carries them so the work is mechanical.
   `mysql:host` (single-colon), and bodyless URLs like `mysql://`.
   `sqlite::memory:` is the one form that's allowed without `://`. Form keeps the
   typed values on rejection so the user can fix in place.
-- **Retry on connection failure (S).** When the async handshake errors
-  (`sqeel/src/bin/sqeel.rs:358-367`), the only recovery is re-opening the
-  switcher and pressing Enter again. Add a `r` keybinding (or `Ctrl-r`) on the
-  schema pane's "Connection failed" placeholder that re-runs
-  `pending_reconnect = Some(active_slug)`. Show the connection name in the retry
-  hint so the user knows what they're retrying.
+- ~~**Retry on connection failure (S).**~~ Done. New `schema_connect_url` field
+  on `AppState` stashes the URL of the last failed handshake alongside
+  `schema_connect_error`; `connect_and_spawn` writes it on Err and clears it on
+  Ok. New `retry_connection` method on `AppState` re-arms `pending_reconnect`
+  with the stored URL, clears the error, flips `schema_loading` back on, and
+  raises a "Reconnecting to {name}…" status. Bound to `r` when
+  `focus == Focus::Schema`; the placeholder text now shows
+  `Connection failed: {e}\n\n[r] retry {name}` so the binding is discoverable.
 - **Connection state badge in switcher (S).** Switcher only marks the active
   connection with `*` (`sqeel-tui/src/lib.rs:6210-6281`). Plumb the live state
   from `AppState` (`connection_status: Connected | Connecting | Error`) into the
