@@ -307,7 +307,7 @@ impl<'a> Editor<'a> {
             return None;
         }
         let anchor = self.vim.visual_anchor;
-        let cursor = self.textarea.cursor();
+        let cursor = self.cursor();
         let (start, end) = if anchor <= cursor {
             (anchor, cursor)
         } else {
@@ -323,7 +323,7 @@ impl<'a> Editor<'a> {
             return None;
         }
         let anchor = self.vim.visual_line_anchor;
-        let cursor = self.textarea.cursor().0;
+        let cursor = self.buffer.cursor().row;
         Some((anchor.min(cursor), anchor.max(cursor)))
     }
 
@@ -332,7 +332,7 @@ impl<'a> Editor<'a> {
             return None;
         }
         let (ar, ac) = self.vim.block_anchor;
-        let cr = self.textarea.cursor().0;
+        let cr = self.buffer.cursor().row;
         let cc = self.vim.block_vcol;
         let top = ar.min(cr);
         let bot = ar.max(cr);
@@ -351,15 +351,15 @@ impl<'a> Editor<'a> {
         match self.vim_mode() {
             VimMode::Visual => {
                 let (ar, ac) = self.vim.visual_anchor;
-                let (cr, cc) = self.textarea.cursor();
+                let head = self.buffer.cursor();
                 Some(Selection::Char {
                     anchor: Position::new(ar, ac),
-                    head: Position::new(cr, cc),
+                    head,
                 })
             }
             VimMode::VisualLine => {
                 let anchor_row = self.vim.visual_line_anchor;
-                let head_row = self.textarea.cursor().0;
+                let head_row = self.buffer.cursor().row;
                 Some(Selection::Line {
                     anchor_row,
                     head_row,
@@ -367,7 +367,7 @@ impl<'a> Editor<'a> {
             }
             VimMode::VisualBlock => {
                 let (ar, ac) = self.vim.block_anchor;
-                let cr = self.textarea.cursor().0;
+                let cr = self.buffer.cursor().row;
                 let cc = self.vim.block_vcol;
                 Some(Selection::Block {
                     anchor: Position::new(ar, ac),
@@ -385,7 +385,7 @@ impl<'a> Editor<'a> {
     }
 
     pub fn content(&self) -> String {
-        let mut s = self.textarea.lines().join("\n");
+        let mut s = self.buffer.lines().join("\n");
         s.push('\n');
         s
     }
@@ -520,12 +520,12 @@ impl<'a> Editor<'a> {
     /// `area` is the outer editor rect: 1-row tab bar at top (flush), then the
     /// textarea with 1 cell of horizontal pane padding on each side.
     fn mouse_to_doc_pos(&self, area: Rect, col: u16, row: u16) -> (usize, usize) {
-        let lines = self.textarea.lines();
+        let lines = self.buffer.lines();
         let inner_top = area.y.saturating_add(1); // tab bar row
         let lnum_width = lines.len().to_string().len() as u16 + 2;
         let content_x = area.x.saturating_add(1).saturating_add(lnum_width);
         let rel_row = row.saturating_sub(inner_top) as usize;
-        let top = self.textarea.viewport_top_row();
+        let top = self.buffer.viewport().top_row;
         let doc_row = (top + rel_row).min(lines.len().saturating_sub(1));
         let rel_col = col.saturating_sub(content_x) as usize;
         let line_len = lines.get(doc_row).map(|l| l.len()).unwrap_or(0);
