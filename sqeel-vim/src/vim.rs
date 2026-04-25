@@ -3494,7 +3494,7 @@ fn replay_last_change(ed: &mut Editor<'_>, outer_count: usize) {
         }
         LastChange::DeleteToEol { inserted } => {
             ed.push_undo();
-            ed.mutate(|t| t.delete_line_by_end());
+            delete_to_eol(ed);
             if let Some(text) = inserted {
                 ed.mutate(|t| t.insert_str(&text));
             }
