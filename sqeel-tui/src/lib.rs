@@ -1449,7 +1449,11 @@ async fn run_loop(
                             };
                             drop(s);
                             if pane == Focus::Editor {
-                                editor.mouse_click(last_draw_areas.editor, mouse.column, mouse.row);
+                                editor.mouse_click_in_rect(
+                                    last_draw_areas.editor,
+                                    mouse.column,
+                                    mouse.row,
+                                );
                             }
                             mouse_drag_pane = Some(pane);
                             mouse_did_drag = false;
@@ -1460,7 +1464,7 @@ async fn run_loop(
                             if !mouse_did_drag {
                                 editor.mouse_begin_drag();
                             }
-                            editor.mouse_extend_drag(
+                            editor.mouse_extend_drag_in_rect(
                                 last_draw_areas.editor,
                                 mouse.column,
                                 mouse.row,
@@ -3740,7 +3744,7 @@ fn draw(
             width: pane.width.saturating_sub(2),
             height: pane.height.saturating_sub(1),
         };
-        let pos = editor.cursor_screen_pos(textarea_rect);
+        let pos = editor.cursor_screen_pos_in_rect(textarea_rect);
         let shape = if state.vim_mode == VimMode::Insert {
             CursorShape::Bar
         } else {
@@ -5404,7 +5408,7 @@ fn apply_window_spans(
     for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
         row_spans.sort_by_key(|&(s, _, _)| s);
     }
-    editor.install_syntax_spans(by_row);
+    editor.install_ratatui_syntax_spans(by_row);
 }
 
 /// A located TODO-family marker: the byte span of the marker word and
