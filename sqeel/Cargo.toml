@@ -1,7 +1,15 @@
 [package]
 name = "sqeel"
-version = "0.1.0"
-edition = "2024"
+description = "Vim-modal SQL client: TUI + GUI front-ends for sqlx-backed connections with LSP-aware editing."
+keywords = ["sql", "vim", "tui", "gui", "client"]
+categories = ["database", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 default-run = "sqeel"
 
 [[bin]]
@@ -13,9 +21,9 @@ name = "sqeel-gui"
 path = "src/bin/sqeel-gui.rs"
 
 [dependencies]
-sqeel-core = { path = "../sqeel-core" }
-sqeel-tui = { path = "../sqeel-tui" }
-sqeel-gui = { path = "../sqeel-gui" }
+sqeel-core = { path = "../sqeel-core", version = "=0.1.0" }
+sqeel-tui = { path = "../sqeel-tui", version = "=0.1.0" }
+sqeel-gui = { path = "../sqeel-gui", version = "=0.1.0" }
 anyhow = "1"
 eframe = "0.31"
 egui = "0.31"

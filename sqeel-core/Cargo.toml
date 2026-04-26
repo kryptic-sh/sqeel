@@ -1,7 +1,15 @@
 [package]
 name = "sqeel-core"
-version = "0.1.0"
-edition = "2024"
+description = "Core SQL engine for sqeel: sqlx-backed connection pool, tree-sitter SQL parser, LSP integration."
+keywords = ["sql", "tui", "client", "lsp", "vim"]
+categories = ["database", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 
 [dependencies]
 hjkl-engine = "=0.1.0"

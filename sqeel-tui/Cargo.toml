@@ -1,10 +1,18 @@
 [package]
 name = "sqeel-tui"
-version = "0.1.0"
-edition = "2024"
+description = "Ratatui TUI front-end for sqeel: vim-modal SQL editing with hjkl bindings."
+keywords = ["sql", "tui", "vim", "ratatui", "client"]
+categories = ["command-line-interface", "database"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 
 [dependencies]
-sqeel-core = { path = "../sqeel-core" }
+sqeel-core = { path = "../sqeel-core", version = "=0.1.0" }
 hjkl-engine = "=0.1.0"
 hjkl-editor = "=0.1.0"
 hjkl-buffer = { version = "=0.1.0", features = ["ratatui"] }

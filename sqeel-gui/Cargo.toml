@@ -1,7 +1,15 @@
 [package]
 name = "sqeel-gui"
-version = "0.1.0"
-edition = "2024"
+description = "egui/eframe GUI front-end for sqeel: hosts the sqeel TUI inside a native window via egui_term."
+keywords = ["sql", "gui", "egui", "eframe", "client"]
+categories = ["gui", "database"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 
 [dependencies]
 anyhow = "1"
