@@ -4390,7 +4390,7 @@ fn draw_editor(
     let search_pattern = search_query
         .filter(|q| !q.is_empty())
         .and_then(|q| regex::Regex::new(q).ok());
-    editor.buffer_mut().set_search_pattern(search_pattern);
+    editor.set_search_pattern(search_pattern);
 
     // Gutter width matches what tui-textarea reserved: digit count
     // for the largest line number, plus a leading + trailing space.
