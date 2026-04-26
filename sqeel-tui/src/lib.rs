@@ -29,7 +29,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use highlight_thread::{HighlightResult, HighlightThread};
-use hjkl_engine::Editor;
+use hjkl_engine::{Editor, Host};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -320,7 +320,18 @@ async fn run_loop(
     keybinding_mode: KeybindingMode,
     theme_error: Option<String>,
 ) -> anyhow::Result<()> {
-    let mut editor = Editor::new(keybinding_mode);
+    let mut editor = Editor::new(
+        hjkl_buffer::Buffer::new(),
+        SqeelHost::new(Clipboard::new()),
+        hjkl_engine::types::Options {
+            // Preserve sqeel's pre-0.1.0 default (Settings::default()
+            // shiftwidth=2). Without this we'd silently flip to vim's
+            // shiftwidth=8 per Options::default().
+            shiftwidth: 2,
+            ..Default::default()
+        },
+    );
+    editor.keybinding_mode = keybinding_mode;
     let highlight_thread = HighlightThread::spawn()?;
     let completion_thread = CompletionThread::spawn()?;
 
@@ -3242,7 +3253,7 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
 /// Status-bar block showing `/<pat> <i>/<n>` when an editor search is active.
 /// `i` is the 1-based index of the match at-or-after the cursor; 0 means no
 /// match has been navigated to yet (cursor is past the last match).
-fn search_label(editor: &Editor) -> Option<Span<'static>> {
+fn search_label<H: Host>(editor: &Editor<hjkl_buffer::Buffer, H>) -> Option<Span<'static>> {
     let re = editor.search_state().pattern.as_ref()?;
     let pat = re.as_str().to_string();
     let lines = editor.buffer().lines();
@@ -3315,7 +3326,7 @@ fn parse_error_position(msg: &str) -> Option<(usize, usize)> {
 ///   running a column-narrow rectangle as SQL doesn't make sense, but
 ///   "the lines I marked" matches user intent and matches what
 ///   VisualLine would have produced.
-fn visual_selection_text(editor: &Editor) -> Option<String> {
+fn visual_selection_text<H: Host>(editor: &Editor<hjkl_buffer::Buffer, H>) -> Option<String> {
     let lines = editor.buffer().lines();
     match editor.vim_mode() {
         VimMode::Visual => {
@@ -3412,10 +3423,10 @@ struct DrawAreas {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw(
+fn draw<H: Host>(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
-    editor: &mut Editor,
+    editor: &mut Editor<hjkl_buffer::Buffer, H>,
     command_input: Option<&TextInput>,
     rename_input: Option<&TextInput>,
     file_picker: Option<&FilePicker>,
@@ -3961,7 +3972,12 @@ fn extract_results_row(x: u16, y: u16, areas: &DrawAreas, state: &AppState) -> O
     r.rows.get(row_idx).map(|row| row.join("\t"))
 }
 
-fn draw_status_bar(f: &mut ratatui::Frame<'_>, state: &AppState, editor: &Editor, area: Rect) {
+fn draw_status_bar<H: Host>(
+    f: &mut ratatui::Frame<'_>,
+    state: &AppState,
+    editor: &Editor<hjkl_buffer::Buffer, H>,
+    area: Rect,
+) {
     let mode = mode_label(state);
     let mode_width = mode.content.len() as u16;
 
@@ -4291,10 +4307,10 @@ fn draw_schema(
     )
 }
 
-fn draw_editor(
+fn draw_editor<H: Host>(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
-    editor: &mut Editor,
+    editor: &mut Editor<hjkl_buffer::Buffer, H>,
     area: Rect,
     focused: bool,
     editor_search: Option<&str>,
@@ -5270,8 +5286,8 @@ fn token_kind_style(kind: TokenKind) -> Option<Style> {
 /// `syntax_spans_by_row` paid on the main thread every time a highlight
 /// result arrived: we `take` the existing outer `Vec`, mutate only the
 /// rows inside the window, and put it back.
-fn apply_window_spans(
-    editor: &mut Editor,
+fn apply_window_spans<H: Host>(
+    editor: &mut Editor<hjkl_buffer::Buffer, H>,
     result: &HighlightResult,
     buffer_rows: usize,
     cursor_row: usize,
@@ -7395,7 +7411,11 @@ mod tests {
             block_ranges: Vec::new(),
         };
 
-        let mut editor = hjkl_engine::Editor::new(hjkl_engine::KeybindingMode::Vim);
+        let mut editor = hjkl_engine::Editor::new(
+            hjkl_buffer::Buffer::new(),
+            hjkl_engine::types::DefaultHost::new(),
+            hjkl_engine::types::Options::default(),
+        );
         editor.set_content(&lines.join("\n"));
         super::apply_window_spans(&mut editor, &result, row_count, 0, &[]);
         let by_row = editor.styled_spans.clone();
@@ -7458,7 +7478,11 @@ mod tests {
             block_ranges: Vec::new(),
         };
 
-        let mut editor = hjkl_engine::Editor::new(hjkl_engine::KeybindingMode::Vim);
+        let mut editor = hjkl_engine::Editor::new(
+            hjkl_buffer::Buffer::new(),
+            hjkl_engine::types::DefaultHost::new(),
+            hjkl_engine::types::Options::default(),
+        );
         editor.set_content(&lines.join("\n"));
         super::apply_window_spans(&mut editor, &result, row_count, 0, &[]);
         let by_row = editor.styled_spans.clone();
