@@ -1,9 +1,17 @@
 # SQEEL
 
 [![CI](https://github.com/kryptic-sh/sqeel/actions/workflows/ci.yml/badge.svg)](https://github.com/kryptic-sh/sqeel/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/sqeel.svg)](https://crates.io/crates/sqeel)
+[![docs.rs](https://img.shields.io/docsrs/sqeel)](https://docs.rs/sqeel)
 [![Release](https://img.shields.io/github/v/release/kryptic-sh/sqeel)](https://github.com/kryptic-sh/sqeel/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/website-sqeel.kryptic.sh-7ee787)](https://sqeel.kryptic.sh)
 
 Fast, vim-native SQL client. No Electron. No JVM.
+
+```sh
+cargo install sqeel
+```
 
 ## Features
 
