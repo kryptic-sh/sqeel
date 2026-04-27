@@ -22,7 +22,9 @@ crossterm = { version = "0.28.1", features = ["event-stream"] }
 regex = "1"
 tokio = { version = "1.52.1", features = ["full"] }
 lsp-types = "0.97.0"
-arboard = { version = "3", features = ["wayland-data-control"] }
+# Local-dev override — drop the path entry once hjkl-clipboard
+# is on crates.io at >=0.1.1.
+hjkl-clipboard = { version = "=0.1.1", path = "../../hjkl/crates/hjkl-clipboard" }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 dirs = "6"

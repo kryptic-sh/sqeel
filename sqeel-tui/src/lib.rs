@@ -1,4 +1,3 @@
-mod clipboard;
 mod completion_thread;
 mod highlight_thread;
 mod host;
@@ -10,7 +9,7 @@ mod theme;
 pub use hjkl_engine as editor;
 pub use host::{FoldOp, LineRange, SqeelBufferId, SqeelHost, SqeelIntent};
 
-use clipboard::Clipboard;
+pub use hjkl_clipboard::Clipboard;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
