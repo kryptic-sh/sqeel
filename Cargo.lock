@@ -1871,8 +1871,6 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 [[package]]
 name = "hjkl-buffer"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "851f852a7a18a8af758b7deeba611746de15205f1fe5bdc0d97b5e428d5f96cd"
 dependencies = [
  "ratatui",
  "regex",
@@ -1882,8 +1880,6 @@ dependencies = [
 [[package]]
 name = "hjkl-clipboard"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77e1f1927dbbd58822324d71b1cf271d87ac1a94836d0a6d84f45398bc5534a5"
 dependencies = [
  "arboard",
 ]
@@ -1891,8 +1887,6 @@ dependencies = [
 [[package]]
 name = "hjkl-editor"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6d04e2662e798062939f8fc59b47e1e0ea50c78b8211004c7e2048f3143697e"
 dependencies = [
  "hjkl-buffer",
  "hjkl-engine",
@@ -1902,8 +1896,6 @@ dependencies = [
 [[package]]
 name = "hjkl-engine"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28af767c6aa1a437b2cfe69333575c80b96ec14137c8a12379ca20ee394174fb"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm",
@@ -1915,10 +1907,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "hjkl-form"
+version = "0.2.0"
+dependencies = [
+ "hjkl-buffer",
+ "hjkl-engine",
+]
+
+[[package]]
+name = "hjkl-ratatui"
+version = "0.2.0"
+dependencies = [
+ "crossterm",
+ "hjkl-engine",
+ "hjkl-form",
+ "ratatui",
+]
+
+[[package]]
 name = "hjkl-tree-sitter"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25167f64670f478c7053606fc93ef5e6015d6c3bfdaf270f9b006ef8a17e9376"
 dependencies = [
  "anyhow",
  "ratatui",
@@ -3962,6 +3970,9 @@ dependencies = [
  "hjkl-clipboard",
  "hjkl-editor",
  "hjkl-engine",
+ "hjkl-form",
+ "hjkl-ratatui",
+ "hjkl-tree-sitter",
  "lsp-types",
  "pulldown-cmark",
  "ratatui",

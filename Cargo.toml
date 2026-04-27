@@ -10,3 +10,12 @@ license = "MIT"
 repository = "https://github.com/kryptic-sh/sqeel"
 homepage = "https://sqeel.kryptic.sh"
 authors = ["mxaddict <mxaddict@kryptic.sh>"]
+
+[patch.crates-io]
+hjkl-buffer = { path = "../hjkl/crates/hjkl-buffer" }
+hjkl-engine = { path = "../hjkl/crates/hjkl-engine" }
+hjkl-editor = { path = "../hjkl/crates/hjkl-editor" }
+hjkl-ratatui = { path = "../hjkl/crates/hjkl-ratatui" }
+hjkl-tree-sitter = { path = "../hjkl/crates/hjkl-tree-sitter" }
+hjkl-clipboard = { path = "../hjkl/crates/hjkl-clipboard" }
+hjkl-form = { path = "../hjkl/crates/hjkl-form" }

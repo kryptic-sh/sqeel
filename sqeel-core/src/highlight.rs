@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::sync::Arc;
 use tree_sitter::Parser;
 
@@ -231,8 +232,6 @@ pub struct Highlighter {
     inner: hjkl_tree_sitter::Highlighter,
     last_errors: Vec<ParseError>,
     last_block_ranges: Vec<(usize, usize)>,
-    // Keep an Arc<String> + old tree for incremental parse (block_ranges / errors).
-    old_source: Option<Arc<String>>,
 }
 
 impl Highlighter {
@@ -246,8 +245,142 @@ impl Highlighter {
             inner,
             last_errors: Vec::new(),
             last_block_ranges: Vec::new(),
-            old_source: None,
         })
+    }
+
+    /// Apply an `InputEdit` to the retained tree. Delegates to
+    /// `hjkl_tree_sitter::Highlighter::edit`.
+    pub fn edit(&mut self, edit: &tree_sitter::InputEdit) {
+        self.inner.edit(edit);
+    }
+
+    /// Cold parse `source` from scratch into the retained tree.
+    pub fn parse_initial(&mut self, source: &str) {
+        self.inner.parse_initial(source.as_bytes());
+    }
+
+    /// Reparse `source` against the retained tree under the configured
+    /// timeout. Returns `false` on timeout (callers must skip the
+    /// highlight pass for this frame).
+    pub fn parse_incremental(&mut self, source: &str) -> bool {
+        self.inner.parse_incremental(source.as_bytes())
+    }
+
+    /// Drop the retained tree.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    /// Read accessor for the retained tree.
+    pub fn tree(&self) -> Option<&tree_sitter::Tree> {
+        self.inner.tree()
+    }
+
+    /// Run the highlights query against the retained tree, scoped to
+    /// `byte_range`. Enriches inner spans with row/col, runs dialect
+    /// keyword promotion across the same byte_range, and refreshes the
+    /// cached `last_errors` (range-scoped) + `last_block_ranges` (full
+    /// retained tree).
+    pub fn highlight_range(
+        &mut self,
+        source: &str,
+        dialect: Dialect,
+        byte_range: Range<usize>,
+    ) -> Vec<HighlightSpan> {
+        let bytes = source.as_bytes();
+        let inner_spans = self.inner.highlight_range(bytes, byte_range.clone());
+
+        let mut spans: Vec<HighlightSpan> = inner_spans
+            .into_iter()
+            .map(|s| {
+                let (start_row, start_col) = byte_to_rowcol(source, s.byte_range.start);
+                let (end_row, end_col) = byte_to_rowcol(source, s.byte_range.end);
+                HighlightSpan {
+                    start_byte: s.byte_range.start,
+                    end_byte: s.byte_range.end,
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    capture: s.capture,
+                }
+            })
+            .collect();
+
+        promote_uncovered_dialect_keywords_in_range(
+            source,
+            dialect,
+            byte_range.clone(),
+            &mut spans,
+        );
+
+        let inner_errors = self.inner.parse_errors_range(bytes, byte_range);
+        self.last_errors = inner_errors
+            .into_iter()
+            .filter_map(|e| {
+                let start_byte = e.byte_range.start;
+                let end_byte = e.byte_range.end;
+                if let Some(slice) = source.get(start_byte..end_byte)
+                    && dialect.is_native_statement(slice.trim_start())
+                {
+                    return None;
+                }
+                let (start_row, start_col) = byte_to_rowcol(source, start_byte);
+                let (end_row, end_col) = byte_to_rowcol(source, end_byte);
+                Some(ParseError {
+                    start_byte,
+                    end_byte,
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    message: e.message,
+                })
+            })
+            .collect();
+
+        if let Some(tree) = self.inner.tree() {
+            let mut block_ranges = Vec::new();
+            collect_block_ranges(tree.root_node(), &mut block_ranges);
+            block_ranges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+            block_ranges.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+            self.last_block_ranges = block_ranges;
+        } else {
+            self.last_block_ranges.clear();
+        }
+
+        spans
+    }
+
+    /// Harvest parse errors across the full source via the retained tree.
+    /// Used by status-line "first error" jumps where range-scoped errors
+    /// aren't sufficient.
+    pub fn parse_errors_full(&mut self, source: &str, dialect: Dialect) -> Vec<ParseError> {
+        let bytes = source.as_bytes();
+        let inner_errors = self.inner.parse_errors_range(bytes, 0..bytes.len());
+        inner_errors
+            .into_iter()
+            .filter_map(|e| {
+                let start_byte = e.byte_range.start;
+                let end_byte = e.byte_range.end;
+                if let Some(slice) = source.get(start_byte..end_byte)
+                    && dialect.is_native_statement(slice.trim_start())
+                {
+                    return None;
+                }
+                let (start_row, start_col) = byte_to_rowcol(source, start_byte);
+                let (end_row, end_col) = byte_to_rowcol(source, end_byte);
+                Some(ParseError {
+                    start_byte,
+                    end_byte,
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    message: e.message,
+                })
+            })
+            .collect()
     }
 
     /// Parse-error nodes collected on the most recent highlight call.
@@ -265,7 +398,6 @@ impl Highlighter {
     /// with row/col info and capture-name strings.
     pub fn highlight(&mut self, source: &str, dialect: Dialect) -> Vec<HighlightSpan> {
         if source.is_empty() {
-            self.old_source = None;
             self.last_errors.clear();
             self.last_block_ranges.clear();
             return vec![];
@@ -280,13 +412,19 @@ impl Highlighter {
         dialect: Dialect,
     ) -> Vec<HighlightSpan> {
         if source.is_empty() {
-            self.old_source = None;
             self.last_errors.clear();
             self.last_block_ranges.clear();
             return vec![];
         }
 
         let bytes = source.as_bytes();
+
+        // Legacy full-buffer API: no caller-supplied InputEdits, so the
+        // retained tree from a prior call is stale relative to `source`.
+        // Reset before parsing so we always do a cold full parse and the
+        // span set is consistent with what a fresh `Highlighter` would
+        // produce.
+        self.inner.reset();
 
         // Get inner spans (capture-name tagged, byte-range only).
         let inner_spans: Vec<InnerSpan> = self.inner.highlight(bytes);
@@ -350,7 +488,6 @@ impl Highlighter {
             self.last_block_ranges.clear();
         }
 
-        self.old_source = Some(Arc::clone(source));
         spans
     }
 }
@@ -379,6 +516,67 @@ fn byte_to_rowcol(source: &str, byte: usize) -> (usize, usize) {
     let row = prefix.bytes().filter(|&b| b == b'\n').count();
     let col = prefix.bytes().rev().take_while(|&b| b != b'\n').count();
     (row, col)
+}
+
+/// Range-scoped variant of [`promote_uncovered_dialect_keywords`]: only
+/// scan gaps inside `byte_range`, leaving spans outside it untouched.
+fn promote_uncovered_dialect_keywords_in_range(
+    source: &str,
+    dialect: Dialect,
+    byte_range: Range<usize>,
+    spans: &mut Vec<HighlightSpan>,
+) {
+    if matches!(dialect, Dialect::Generic) {
+        return;
+    }
+    let total = source.len();
+    if total == 0 || byte_range.start >= byte_range.end {
+        return;
+    }
+    let range_end = byte_range.end.min(total);
+    let range_start = byte_range.start.min(range_end);
+
+    let mut covered: Vec<(usize, usize)> = spans
+        .iter()
+        .filter(|s| s.start_byte < range_end && s.end_byte > range_start)
+        .map(|s| (s.start_byte.max(range_start), s.end_byte.min(range_end)))
+        .collect();
+    covered.sort_by_key(|&(s, _)| s);
+
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(covered.len());
+    for (s, e) in covered {
+        if let Some(last) = merged.last_mut()
+            && s <= last.1
+        {
+            last.1 = last.1.max(e);
+        } else {
+            merged.push((s, e));
+        }
+    }
+
+    let bytes = source.as_bytes();
+    let mut cursor = range_start;
+    let mut gap_iter = merged.iter().peekable();
+    let mut additions: Vec<HighlightSpan> = Vec::new();
+    while cursor < range_end {
+        match gap_iter.peek().copied() {
+            Some(&(gs, ge)) if gs <= cursor => {
+                cursor = ge.min(range_end);
+                gap_iter.next();
+            }
+            Some(&(gs, _)) => {
+                let stop = gs.min(range_end);
+                scan_gap_for_keywords(source, bytes, cursor, stop, dialect, &mut additions);
+                cursor = stop;
+            }
+            None => {
+                scan_gap_for_keywords(source, bytes, cursor, range_end, dialect, &mut additions);
+                cursor = range_end;
+            }
+        }
+    }
+    spans.extend(additions);
+    spans.sort_by_key(|s| s.start_byte);
 }
 
 /// Find identifier-shaped words in regions that tree-sitter didn't
@@ -1236,6 +1434,45 @@ mod tests {
             has_desc_kw,
             "DESC should be a keyword after re-parse; spans: {spans:#?}"
         );
+    }
+
+    #[test]
+    fn incremental_matches_cold_full() {
+        let mut source = String::new();
+        for i in 0..50 {
+            source.push_str(&format!("SELECT id, name FROM users_{i} WHERE id = {i};\n"));
+        }
+
+        let mut cold = Highlighter::new().unwrap();
+        cold.parse_initial(&source);
+        let cold_spans = cold.highlight_range(&source, Dialect::MySql, 0..source.len());
+
+        let mut inc = Highlighter::new().unwrap();
+        inc.parse_initial(&source);
+        // No-op edit (start == old_end == new_end) keeps the retained tree
+        // valid; subsequent parse_incremental returns the same tree.
+        let edit = tree_sitter::InputEdit {
+            start_byte: 0,
+            old_end_byte: 0,
+            new_end_byte: 0,
+            start_position: tree_sitter::Point { row: 0, column: 0 },
+            old_end_position: tree_sitter::Point { row: 0, column: 0 },
+            new_end_position: tree_sitter::Point { row: 0, column: 0 },
+        };
+        inc.edit(&edit);
+        assert!(inc.parse_incremental(&source));
+        let inc_spans = inc.highlight_range(&source, Dialect::MySql, 0..source.len());
+
+        assert_eq!(
+            cold_spans.len(),
+            inc_spans.len(),
+            "incremental span count drifted from cold"
+        );
+        for (a, b) in cold_spans.iter().zip(inc_spans.iter()) {
+            assert_eq!(a.start_byte, b.start_byte);
+            assert_eq!(a.end_byte, b.end_byte);
+            assert_eq!(a.capture, b.capture);
+        }
     }
 
     #[test]

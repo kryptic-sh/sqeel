@@ -1,5 +1,4 @@
 mod completion_thread;
-mod highlight_thread;
 mod host;
 mod spinner;
 mod theme;
@@ -27,8 +26,20 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use highlight_thread::{HighlightResult, HighlightThread};
 use hjkl_engine::{Editor, Host};
+
+/// Result of a synchronous tree-sitter highlight pass over a viewport
+/// window. Mirrors the shape of the old `highlight_thread::HighlightResult`
+/// — `start_row` + `row_count` define the absolute window inside the
+/// buffer that `apply_window_spans` re-anchors against.
+#[derive(Clone)]
+pub struct HighlightResult {
+    pub spans: Vec<sqeel_core::highlight::HighlightSpan>,
+    pub start_row: usize,
+    pub row_count: usize,
+    pub parse_errors: Vec<sqeel_core::highlight::ParseError>,
+    pub block_ranges: Vec<(usize, usize)>,
+}
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -331,7 +342,15 @@ async fn run_loop(
         },
     );
     editor.keybinding_mode = keybinding_mode;
-    let highlight_thread = HighlightThread::spawn()?;
+    let mut highlighter = sqeel_core::highlight::Highlighter::new()?;
+    // `(dirty_gen, len_bytes, line_count)` cache for the joined source
+    // string so pure scroll frames skip the O(N) Vec<String> ↔ String
+    // join. Mirrors the apps/hjkl `RenderCache` pattern.
+    let mut hl_cache_dirty_gen: u64 = u64::MAX;
+    let mut hl_cache_len_bytes: usize = usize::MAX;
+    let mut hl_cache_line_count: u32 = u32::MAX;
+    let mut hl_cache_source: String = String::new();
+    let mut hl_parsed_dirty_gen: Option<u64> = None;
     let completion_thread = CompletionThread::spawn()?;
 
     // Start LSP client if binary is configured and reachable
@@ -726,30 +745,161 @@ async fn run_loop(
                 s.editor_content = c.clone();
                 s.editor_content_synced = true;
             }
-            // Apply any completed highlight results from the background
-            // thread.  The thread parses a viewport-sized slice; splice
-            // those spans into the existing row table in place so we
-            // never allocate a fresh outer `Vec<Vec<…>>` the size of the
-            // whole buffer on the main thread.
-            if let Some(result) = highlight_thread.try_recv() {
-                let row_count = editor.buffer().lines().len();
-                let cursor_row = editor.cursor().0;
-                let diagnostics = merged_diagnostics(&s.lsp_diagnostics, &result.parse_errors);
-                apply_window_spans(&mut editor, &result, row_count, cursor_row, &diagnostics);
-                s.set_highlights(result.spans.clone());
-                // Re-anchor block ranges to absolute buffer rows so
-                // `:foldsyntax` can apply them on demand.
-                let absolute: Vec<(usize, usize)> = result
-                    .block_ranges
-                    .iter()
-                    .map(|&(rs, re)| (rs + result.start_row, re + result.start_row))
-                    .collect();
-                editor.set_syntax_fold_ranges(absolute);
-                last_marker_cursor_row = cursor_row;
-                last_marker_diag_len = diagnostics.len();
-                last_highlight_result = Some(result);
-                needs_redraw = true;
-            } else {
+            // Synchronous tree-sitter highlight pass for this frame.
+            // Drain queued ContentEdits + reset flag from the engine into
+            // the retained-tree highlighter, reparse incrementally over
+            // the joined source, and run the highlights query scoped to
+            // the visible viewport (with margin). Spans + parse errors
+            // are spliced into the editor's per-row syntax table via
+            // `apply_window_spans`.
+            const HIGHLIGHT_WINDOW_MARGIN: usize = 500;
+            let viewport_top = editor.host().viewport().top_row;
+            let viewport_height = editor.viewport_height_value() as usize;
+            let viewport_scrolled = last_highlight_top == usize::MAX
+                || viewport_top.abs_diff(last_highlight_top) >= HIGHLIGHT_WINDOW_MARGIN / 2;
+            let should_submit = should_resubmit_highlight(
+                content_changed,
+                viewport_scrolled,
+                current_dialect,
+                last_highlight_dialect,
+            );
+            let cursor_row = editor.cursor().0;
+            let dragging_editor = mouse_drag_pane == Some(Focus::Editor);
+
+            if should_submit && viewport_height > 0 && !editor.buffer().lines().is_empty() {
+                if editor.take_content_reset() {
+                    highlighter.reset();
+                    hl_parsed_dirty_gen = None;
+                }
+                for e in editor.take_content_edits() {
+                    let ie = hjkl_tree_sitter::InputEdit {
+                        start_byte: e.start_byte,
+                        old_end_byte: e.old_end_byte,
+                        new_end_byte: e.new_end_byte,
+                        start_position: hjkl_tree_sitter::Point {
+                            row: e.start_position.0 as usize,
+                            column: e.start_position.1 as usize,
+                        },
+                        old_end_position: hjkl_tree_sitter::Point {
+                            row: e.old_end_position.0 as usize,
+                            column: e.old_end_position.1 as usize,
+                        },
+                        new_end_position: hjkl_tree_sitter::Point {
+                            row: e.new_end_position.0 as usize,
+                            column: e.new_end_position.1 as usize,
+                        },
+                    };
+                    highlighter.edit(&ie);
+                }
+
+                let buffer = editor.buffer();
+                let dg = <hjkl_buffer::Buffer as hjkl_engine::Query>::dirty_gen(buffer);
+                let lb = <hjkl_buffer::Buffer as hjkl_engine::Query>::len_bytes(buffer);
+                let lc = <hjkl_buffer::Buffer as hjkl_engine::Query>::line_count(buffer);
+                let rebuild = dg != hl_cache_dirty_gen
+                    || lb != hl_cache_len_bytes
+                    || lc != hl_cache_line_count;
+                if rebuild {
+                    hl_cache_source.clear();
+                    hl_cache_source.reserve(lb);
+                    let row_count = lc as usize;
+                    for r in 0..row_count {
+                        if r > 0 {
+                            hl_cache_source.push('\n');
+                        }
+                        hl_cache_source.push_str(buffer.line(r).unwrap_or(""));
+                    }
+                    hl_cache_dirty_gen = dg;
+                    hl_cache_len_bytes = lb;
+                    hl_cache_line_count = lc;
+                }
+
+                let mut parse_ok = true;
+                let parse_needed = hl_parsed_dirty_gen.map(|g| g != dg).unwrap_or(true);
+                if parse_needed {
+                    if highlighter.tree().is_none() {
+                        highlighter.parse_initial(&hl_cache_source);
+                    } else if !highlighter.parse_incremental(&hl_cache_source) {
+                        parse_ok = false;
+                    }
+                    if parse_ok {
+                        hl_parsed_dirty_gen = Some(dg);
+                    }
+                }
+
+                if parse_ok {
+                    let lines_count = buffer.lines().len();
+                    let start = viewport_top.saturating_sub(HIGHLIGHT_WINDOW_MARGIN);
+                    let end =
+                        (viewport_top + viewport_height + HIGHLIGHT_WINDOW_MARGIN).min(lines_count);
+                    let row_count_window = end.saturating_sub(start);
+
+                    let vp_start =
+                        <hjkl_buffer::Buffer as hjkl_engine::Query>::byte_of_row(buffer, start);
+                    let vp_end =
+                        <hjkl_buffer::Buffer as hjkl_engine::Query>::byte_of_row(buffer, end)
+                            .min(hl_cache_source.len());
+                    let vp_end = vp_end.max(vp_start);
+
+                    let inner_spans = highlighter.highlight_range(
+                        &hl_cache_source,
+                        current_dialect,
+                        vp_start..vp_end,
+                    );
+                    // Re-anchor inner spans (absolute rows) to
+                    // window-local rows so apply_window_spans (which
+                    // adds `start_row` back) lands them correctly.
+                    let spans: Vec<sqeel_core::highlight::HighlightSpan> = inner_spans
+                        .into_iter()
+                        .map(|mut s| {
+                            s.start_row = s.start_row.saturating_sub(start);
+                            s.end_row = s.end_row.saturating_sub(start);
+                            s
+                        })
+                        .collect();
+                    let parse_errors_full: Vec<sqeel_core::highlight::ParseError> = highlighter
+                        .last_errors()
+                        .iter()
+                        .cloned()
+                        .map(|mut e| {
+                            e.start_row = e.start_row.saturating_sub(start);
+                            e.end_row = e.end_row.saturating_sub(start);
+                            e
+                        })
+                        .collect();
+                    let block_ranges_abs = highlighter.block_ranges();
+
+                    let result = HighlightResult {
+                        spans,
+                        start_row: start,
+                        row_count: row_count_window,
+                        parse_errors: parse_errors_full,
+                        block_ranges: block_ranges_abs
+                            .iter()
+                            .map(|&(rs, re)| (rs.saturating_sub(start), re.saturating_sub(start)))
+                            .collect(),
+                    };
+
+                    let row_count = buffer.lines().len();
+                    let diagnostics = merged_diagnostics(&s.lsp_diagnostics, &result.parse_errors);
+                    apply_window_spans(&mut editor, &result, row_count, cursor_row, &diagnostics);
+                    s.set_highlights(result.spans.clone());
+                    let absolute: Vec<(usize, usize)> = result
+                        .block_ranges
+                        .iter()
+                        .map(|&(rs, re)| (rs + result.start_row, re + result.start_row))
+                        .collect();
+                    editor.set_syntax_fold_ranges(absolute);
+                    last_marker_cursor_row = cursor_row;
+                    last_marker_diag_len = diagnostics.len();
+                    last_highlight_result = Some(result);
+                    last_highlight_top = viewport_top;
+                    last_highlight_dialect = current_dialect;
+                    needs_redraw = true;
+                }
+            } else if let Some(result) = last_highlight_result.as_ref()
+                && !dragging_editor
+            {
                 // Cursor moved onto a different row OR diagnostics
                 // changed: re-apply the cached highlight so the cursor
                 // -line blending and diagnostic underlines update
@@ -759,66 +909,15 @@ async fn run_loop(
                 // row crossing during a drag would otherwise trigger a
                 // full window splice (O(window_rows)), dominating the
                 // drag event loop and producing visible selection lag.
-                // The visual selection still renders via the post-
-                // render overlay; only the cursor-line marker re-
-                // blending is deferred until the drag ends.
-                let cursor_row = editor.cursor().0;
-                let dragging_editor = mouse_drag_pane == Some(Focus::Editor);
-                if let Some(result) = last_highlight_result.as_ref()
-                    && !dragging_editor
+                let diagnostics = merged_diagnostics(&s.lsp_diagnostics, &result.parse_errors);
+                if cursor_row != last_marker_cursor_row || diagnostics.len() != last_marker_diag_len
                 {
-                    let diagnostics = merged_diagnostics(&s.lsp_diagnostics, &result.parse_errors);
-                    if cursor_row != last_marker_cursor_row
-                        || diagnostics.len() != last_marker_diag_len
-                    {
-                        let row_count = editor.buffer().row_count();
-                        apply_window_spans(
-                            &mut editor,
-                            result,
-                            row_count,
-                            cursor_row,
-                            &diagnostics,
-                        );
-                        last_marker_cursor_row = cursor_row;
-                        last_marker_diag_len = diagnostics.len();
-                        needs_redraw = true;
-                    }
+                    let row_count = editor.buffer().row_count();
+                    apply_window_spans(&mut editor, result, row_count, cursor_row, &diagnostics);
+                    last_marker_cursor_row = cursor_row;
+                    last_marker_diag_len = diagnostics.len();
+                    needs_redraw = true;
                 }
-            }
-        }
-        // Highlight the viewport window (with margin) rather than the
-        // whole buffer.  Triggered on any edit or when the viewport has
-        // scrolled past half the margin since last submit — bounded cost
-        // regardless of buffer size, so no heavy-pipeline gate here.
-        // The highlight thread coalesces (latest-wins) so bursts are cheap.
-        const HIGHLIGHT_WINDOW_MARGIN: usize = 500;
-        let viewport_top = editor.host().viewport().top_row;
-        let viewport_height = editor.viewport_height_value() as usize;
-        let viewport_scrolled = last_highlight_top == usize::MAX
-            || viewport_top.abs_diff(last_highlight_top) >= HIGHLIGHT_WINDOW_MARGIN / 2;
-        let should_submit = should_resubmit_highlight(
-            content_changed,
-            viewport_scrolled,
-            current_dialect,
-            last_highlight_dialect,
-        );
-        if should_submit && viewport_height > 0 {
-            let lines = editor.buffer().lines();
-            if !lines.is_empty() {
-                let start = viewport_top.saturating_sub(HIGHLIGHT_WINDOW_MARGIN);
-                let end =
-                    (viewport_top + viewport_height + HIGHLIGHT_WINDOW_MARGIN).min(lines.len());
-                let slice = &lines[start..end];
-                let mut src = String::with_capacity(slice.iter().map(|l| l.len() + 1).sum());
-                for (i, l) in slice.iter().enumerate() {
-                    if i > 0 {
-                        src.push('\n');
-                    }
-                    src.push_str(l);
-                }
-                highlight_thread.submit(Arc::new(src), start, slice.len(), current_dialect);
-                last_highlight_dialect = current_dialect;
-                last_highlight_top = viewport_top;
             }
         }
 
