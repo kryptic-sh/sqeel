@@ -27,6 +27,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use hjkl_engine::{Editor, Host};
+use hjkl_form::TextFieldEditor;
 
 /// Result of a synchronous tree-sitter highlight pass over a viewport
 /// window. Mirrors the shape of the old `highlight_thread::HighlightResult`
@@ -220,6 +221,34 @@ impl TextInput {
             }
             _ => false,
         }
+    }
+}
+
+/// Snapshot a `TextFieldEditor`'s text + caret column as a `TextInput`
+/// view for the existing `draw_input_dialog` renderer. Single-line
+/// fields only — multi-line cursor would lose row info.
+fn text_field_view(field: &TextFieldEditor) -> TextInput {
+    TextInput {
+        text: field.text(),
+        cursor: field.cursor().1,
+    }
+}
+
+/// Fan a paste string into a `TextFieldEditor` via `handle_input`,
+/// one engine `Char` event per char. Drops `\r` and treats `\n` as
+/// a literal char insert (`Enter` is gated on single-line, so the
+/// field would swallow it — fine for ex-command paste of multi-line
+/// strings on single-line palettes).
+fn text_field_paste(field: &mut TextFieldEditor, text: &str) {
+    use hjkl_engine::{Input, Key};
+    for c in text.chars() {
+        if c == '\r' {
+            continue;
+        }
+        let _ = field.handle_input(Input {
+            key: Key::Char(c),
+            ..Input::default()
+        });
     }
 }
 
@@ -474,7 +503,7 @@ async fn run_loop(
     // once a lazy schema load fills in tables/columns for that context.
     let mut last_completion_ctx: Option<(CompletionCtx, String)> = None;
     let mut last_pending_loads: usize = 0;
-    let mut command_input: Option<TextInput> = None;
+    let mut command_input: Option<TextFieldEditor> = None;
     let mut rename_input: Option<TextInput> = None;
     let mut file_picker: Option<FilePicker> = None;
     let mut delete_confirm: Option<String> = None;
@@ -527,7 +556,7 @@ async fn run_loop(
     let mut results_count: usize = 0;
     // Live `/` prompt over the results pane. `Some` while the user is
     // typing; commit stashes the pattern and clears this.
-    let mut results_search_prompt: Option<TextInput> = None;
+    let mut results_search_prompt: Option<TextFieldEditor> = None;
     // Most recent committed results-pane search pattern — kept so
     // `n` / `N` have something to repeat after the prompt closes.
     let mut results_search_pattern: Option<String> = None;
@@ -1265,15 +1294,16 @@ async fn run_loop(
             };
             let editor_search_text = editor.search_prompt().map(|p| p.text.as_str().to_owned());
             let last_editor_search = editor.last_search().map(str::to_owned);
-            let results_search_text = results_search_prompt.as_ref().map(|p| p.text.clone());
+            let results_search_text = results_search_prompt.as_ref().map(|p| p.text());
             let hover_search_text = hover_search_prompt.as_ref().map(|p| p.text.clone());
+            let command_input_view = command_input.as_ref().map(text_field_view);
             terminal.draw(|f| {
                 let s = state.lock().unwrap();
                 last_draw_areas = draw(
                     f,
                     &s,
                     &mut editor,
-                    command_input.as_ref(),
+                    command_input_view.as_ref(),
                     rename_input.as_ref(),
                     file_picker.as_ref(),
                     delete_confirm.as_deref(),
@@ -1291,8 +1321,25 @@ async fn run_loop(
             // Skip the ANSI escape when the shape hasn't changed — this
             // runs on every frame otherwise and each emit is a blocking
             // stdout write.
-            if last_cursor_shape != Some(last_draw_areas.cursor_shape) {
-                match last_draw_areas.cursor_shape {
+            // Prompt cursor shape feedback: when a `:` palette or
+            // results `/` prompt is open in Normal mode, swap the
+            // dialog's default Bar shape for Block so the user sees
+            // mode feedback while editing the prompt line itself.
+            let shape = if let Some(ref f) = command_input {
+                match f.vim_mode() {
+                    VimMode::Insert => CursorShape::Bar,
+                    _ => CursorShape::Block,
+                }
+            } else if let Some(ref f) = results_search_prompt {
+                match f.vim_mode() {
+                    VimMode::Insert => CursorShape::Bar,
+                    _ => CursorShape::Block,
+                }
+            } else {
+                last_draw_areas.cursor_shape
+            };
+            if last_cursor_shape != Some(shape) {
+                match shape {
                     CursorShape::Bar => {
                         let _ = execute!(terminal.backend_mut(), SetCursorStyle::SteadyBar);
                     }
@@ -1301,7 +1348,7 @@ async fn run_loop(
                     }
                     CursorShape::Hidden => {}
                 }
-                last_cursor_shape = Some(last_draw_areas.cursor_shape);
+                last_cursor_shape = Some(shape);
             }
             last_terminal_size = terminal.size()?;
         }
@@ -1759,7 +1806,7 @@ async fn run_loop(
                 if focus == Focus::Editor && editor.vim_mode() == VimMode::Insert {
                     editor.insert_str(&text);
                 } else if let Some(ref mut cmd) = command_input {
-                    cmd.insert_str(&text);
+                    text_field_paste(cmd, &text);
                 } else if let Some(ref mut rp) = rename_input {
                     rp.insert_str(&text);
                 }
@@ -1938,144 +1985,150 @@ async fn run_loop(
 
                 // ── Command input mode ───────────────────────────────────────────
                 if let Some(ref mut cmd) = command_input {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::NONE, KeyCode::Esc) => {
+                    use hjkl_engine::{Input as EngineInput, Key as EngineKey};
+                    let input: EngineInput = key.into();
+                    if input.key == EngineKey::Esc {
+                        // Esc-once / Esc-twice grammar (mirrors apps/hjkl):
+                        // empty (any mode) or Normal+non-empty → close.
+                        // Insert+non-empty → drop to Normal so user can
+                        // edit the prompt line with vim motions.
+                        let text = cmd.text();
+                        if text.is_empty() || cmd.vim_mode() != VimMode::Insert {
                             command_input = None;
+                        } else {
+                            cmd.enter_normal();
                         }
-                        (KeyModifiers::NONE, KeyCode::Enter) => {
-                            let cmd_str = command_input.take().unwrap_or_default().text;
-                            let trimmed = cmd_str.trim();
-                            match hjkl_editor::runtime::ex::run(&mut editor, trimmed) {
-                                hjkl_editor::runtime::ex::ExEffect::Quit { force, save } => {
-                                    let local_dirty = editor_dirty;
-                                    let any_dirty = {
-                                        let mut s = state.lock().unwrap();
-                                        s.editor_content = editor.content_arc();
-                                        s.editor_content_synced = true;
-                                        editor_dirty = false;
-                                        if local_dirty {
-                                            s.mark_active_dirty();
-                                        }
-                                        local_dirty || s.any_dirty()
-                                    };
-                                    if force {
+                        continue;
+                    }
+                    if input.key == EngineKey::Enter {
+                        let cmd_str = cmd.text();
+                        command_input = None;
+                        let trimmed = cmd_str.trim();
+                        match hjkl_editor::runtime::ex::run(&mut editor, trimmed) {
+                            hjkl_editor::runtime::ex::ExEffect::Quit { force, save } => {
+                                let local_dirty = editor_dirty;
+                                let any_dirty = {
+                                    let mut s = state.lock().unwrap();
+                                    s.editor_content = editor.content_arc();
+                                    s.editor_content_synced = true;
+                                    editor_dirty = false;
+                                    if local_dirty {
+                                        s.mark_active_dirty();
+                                    }
+                                    local_dirty || s.any_dirty()
+                                };
+                                if force {
+                                    break;
+                                }
+                                if save {
+                                    let pending = state.lock().unwrap().prepare_save_all_dirty();
+                                    let failed = commit_pending_saves(&state, pending).await;
+                                    if failed.is_empty() {
                                         break;
                                     }
-                                    if save {
-                                        let pending =
-                                            state.lock().unwrap().prepare_save_all_dirty();
-                                        let failed = commit_pending_saves(&state, pending).await;
-                                        if failed.is_empty() {
-                                            break;
-                                        }
-                                        toasts.push((
-                                            format!("Save failed for: {}", failed.join(", ")),
-                                            ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        ));
-                                    } else if any_dirty {
-                                        quit_prompt = Some(());
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::Save => {
-                                    let prepared = {
-                                        let mut s = state.lock().unwrap();
-                                        // The heavy content pipeline is
-                                        // gated off for buffers over
-                                        // 2 MB, which otherwise leaves
-                                        // `editor_content_synced = false`
-                                        // and the save falls back to
-                                        // stale `tab.content`.
-                                        s.editor_content = editor.content_arc();
-                                        s.editor_content_synced = true;
-                                        s.prepare_save_active_tab()
-                                    };
-                                    match prepared {
-                                        Ok(pending) => {
-                                            // Run the disk write on a
-                                            // blocking task so multi-MB
-                                            // saves don't freeze the
-                                            // render loop.
-                                            let name = pending.name.clone();
-                                            let idx = pending.tab_index;
-                                            let commit = tokio::task::spawn_blocking(move || {
-                                                pending.commit()
-                                            })
-                                            .await
-                                            .unwrap_or_else(|e| {
-                                                Err(std::io::Error::other(format!(
-                                                    "spawn_blocking join error: {e}"
-                                                )))
-                                            });
-                                            match commit {
-                                                Ok(()) => {
-                                                    if let Some(i) = idx {
-                                                        state.lock().unwrap().mark_tab_saved(i);
-                                                    }
-                                                    editor_dirty = false;
-                                                    toasts.push((
-                                                        format!("Saved {name}"),
-                                                        ToastKind::Info,
-                                                        std::time::Instant::now(),
-                                                    ));
-                                                }
-                                                Err(e) => toasts.push((
-                                                    format!("Save failed: {e}"),
-                                                    ToastKind::Error,
-                                                    std::time::Instant::now(),
-                                                )),
-                                            }
-                                        }
-                                        Err(e) => toasts.push((
-                                            format!("Save failed: {e}"),
-                                            ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        )),
-                                    }
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::Substituted { count } => {
-                                    state.lock().unwrap().focus = Focus::Editor;
-                                    editor_dirty = true;
                                     toasts.push((
-                                        format!("{count} substitution(s)"),
-                                        ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    ));
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::Ok => {
-                                    state.lock().unwrap().focus = Focus::Editor;
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::Info(msg) => {
-                                    toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::Error(msg) => {
-                                    toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::Unknown(c) => {
-                                    toasts.push((
-                                        format!("Unknown command: :{c}"),
+                                        format!("Save failed for: {}", failed.join(", ")),
                                         ToastKind::Error,
                                         std::time::Instant::now(),
                                     ));
-                                }
-                                hjkl_editor::runtime::ex::ExEffect::None => {}
-                                hjkl_editor::runtime::ex::ExEffect::SaveAs(_) => {
-                                    toasts.push((
-                                        ":w <path> not yet supported in sqeel-tui".to_string(),
-                                        ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                } else if any_dirty {
+                                    quit_prompt = Some(());
+                                } else {
+                                    break;
                                 }
                             }
+                            hjkl_editor::runtime::ex::ExEffect::Save => {
+                                let prepared = {
+                                    let mut s = state.lock().unwrap();
+                                    // The heavy content pipeline is
+                                    // gated off for buffers over
+                                    // 2 MB, which otherwise leaves
+                                    // `editor_content_synced = false`
+                                    // and the save falls back to
+                                    // stale `tab.content`.
+                                    s.editor_content = editor.content_arc();
+                                    s.editor_content_synced = true;
+                                    s.prepare_save_active_tab()
+                                };
+                                match prepared {
+                                    Ok(pending) => {
+                                        // Run the disk write on a
+                                        // blocking task so multi-MB
+                                        // saves don't freeze the
+                                        // render loop.
+                                        let name = pending.name.clone();
+                                        let idx = pending.tab_index;
+                                        let commit =
+                                            tokio::task::spawn_blocking(move || pending.commit())
+                                                .await
+                                                .unwrap_or_else(|e| {
+                                                    Err(std::io::Error::other(format!(
+                                                        "spawn_blocking join error: {e}"
+                                                    )))
+                                                });
+                                        match commit {
+                                            Ok(()) => {
+                                                if let Some(i) = idx {
+                                                    state.lock().unwrap().mark_tab_saved(i);
+                                                }
+                                                editor_dirty = false;
+                                                toasts.push((
+                                                    format!("Saved {name}"),
+                                                    ToastKind::Info,
+                                                    std::time::Instant::now(),
+                                                ));
+                                            }
+                                            Err(e) => toasts.push((
+                                                format!("Save failed: {e}"),
+                                                ToastKind::Error,
+                                                std::time::Instant::now(),
+                                            )),
+                                        }
+                                    }
+                                    Err(e) => toasts.push((
+                                        format!("Save failed: {e}"),
+                                        ToastKind::Error,
+                                        std::time::Instant::now(),
+                                    )),
+                                }
+                            }
+                            hjkl_editor::runtime::ex::ExEffect::Substituted { count } => {
+                                state.lock().unwrap().focus = Focus::Editor;
+                                editor_dirty = true;
+                                toasts.push((
+                                    format!("{count} substitution(s)"),
+                                    ToastKind::Info,
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            hjkl_editor::runtime::ex::ExEffect::Ok => {
+                                state.lock().unwrap().focus = Focus::Editor;
+                            }
+                            hjkl_editor::runtime::ex::ExEffect::Info(msg) => {
+                                toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
+                            }
+                            hjkl_editor::runtime::ex::ExEffect::Error(msg) => {
+                                toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
+                            }
+                            hjkl_editor::runtime::ex::ExEffect::Unknown(c) => {
+                                toasts.push((
+                                    format!("Unknown command: :{c}"),
+                                    ToastKind::Error,
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            hjkl_editor::runtime::ex::ExEffect::None => {}
+                            hjkl_editor::runtime::ex::ExEffect::SaveAs(_) => {
+                                toasts.push((
+                                    ":w <path> not yet supported in sqeel-tui".to_string(),
+                                    ToastKind::Error,
+                                    std::time::Instant::now(),
+                                ));
+                            }
                         }
-                        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
-                            cmd.insert_char(c);
-                        }
-                        (KeyModifiers::NONE, code) if cmd.handle_nav(code) => {}
-                        _ => {}
+                        continue;
                     }
+                    cmd.handle_input(input);
                     continue;
                 }
 
@@ -2213,32 +2266,36 @@ async fn run_loop(
 
                 // ── Results-pane `/` search prompt ───────────────────────────────
                 if let Some(ref mut prompt) = results_search_prompt {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::NONE, KeyCode::Esc) => {
+                    use hjkl_engine::{Input as EngineInput, Key as EngineKey};
+                    let input: EngineInput = key.into();
+                    if input.key == EngineKey::Esc {
+                        let text = prompt.text();
+                        if text.is_empty() || prompt.vim_mode() != VimMode::Insert {
                             results_search_prompt = None;
+                        } else {
+                            prompt.enter_normal();
                         }
-                        (KeyModifiers::NONE, KeyCode::Enter) => {
-                            let text = results_search_prompt.take().unwrap_or_default().text;
-                            if !text.is_empty() {
-                                let mut s = state.lock().unwrap();
-                                let found = s.results_find(&text, true, false);
-                                results_search_pattern = Some(text);
-                                drop(s);
-                                if !found {
-                                    toasts.push((
-                                        "Pattern not found".into(),
-                                        ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    ));
-                                }
+                        continue;
+                    }
+                    if input.key == EngineKey::Enter {
+                        let text = prompt.text();
+                        results_search_prompt = None;
+                        if !text.is_empty() {
+                            let mut s = state.lock().unwrap();
+                            let found = s.results_find(&text, true, false);
+                            results_search_pattern = Some(text);
+                            drop(s);
+                            if !found {
+                                toasts.push((
+                                    "Pattern not found".into(),
+                                    ToastKind::Info,
+                                    std::time::Instant::now(),
+                                ));
                             }
                         }
-                        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
-                            prompt.insert_char(c);
-                        }
-                        (KeyModifiers::NONE, code) if prompt.handle_nav(code) => {}
-                        _ => {}
+                        continue;
                     }
+                    prompt.handle_input(input);
                     continue;
                 }
 
@@ -2530,7 +2587,9 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char(':'))
                         if focus != Focus::Editor || vim_mode == VimMode::Normal =>
                     {
-                        command_input = Some(TextInput::default());
+                        let mut field = TextFieldEditor::new(true);
+                        field.enter_insert_at_end();
+                        command_input = Some(field);
                     }
                     // Help: ?
                     (KeyModifiers::NONE, KeyCode::Char('?'))
@@ -2875,7 +2934,9 @@ async fn run_loop(
                     }
                     // `/` → open the results-pane search prompt.
                     (KeyModifiers::NONE, KeyCode::Char('/')) if focus == Focus::Results => {
-                        results_search_prompt = Some(TextInput::default());
+                        let mut field = TextFieldEditor::new(true);
+                        field.enter_insert_at_end();
+                        results_search_prompt = Some(field);
                     }
                     // `n` / `N` → repeat the last committed results search.
                     (KeyModifiers::NONE, KeyCode::Char('n')) if focus == Focus::Results => {
@@ -7010,11 +7071,75 @@ fn draw_add_connection(f: &mut ratatui::Frame<'_>, state: &AppState, area: Rect)
 #[cfg(test)]
 mod tests {
     use super::{CommentBody, comment_body_from_line, format_hover_lines};
+    use hjkl_engine::{Input, Key};
+    use hjkl_form::TextFieldEditor;
+    use hjkl_form::VimMode as FormVimMode;
     use ratatui::style::Modifier;
     use sqeel_core::{
         AppState,
         state::{Focus, QueryResult},
     };
+
+    fn type_chars(field: &mut TextFieldEditor, s: &str) {
+        for c in s.chars() {
+            field.handle_input(Input {
+                key: Key::Char(c),
+                ..Input::default()
+            });
+        }
+    }
+
+    #[test]
+    fn command_prompt_open_type_submit() {
+        let mut f = TextFieldEditor::new(true);
+        f.enter_insert_at_end();
+        assert_eq!(f.vim_mode(), FormVimMode::Insert);
+        type_chars(&mut f, "q!");
+        assert_eq!(f.text(), "q!");
+        // Enter at any mode submits — text() captures the payload, the
+        // host then drops the field.
+        assert_eq!(f.text().trim(), "q!");
+    }
+
+    #[test]
+    fn command_prompt_esc_grammar() {
+        let mut f = TextFieldEditor::new(true);
+        f.enter_insert_at_end();
+        // Empty + Insert + Esc → host closes (empty-text branch).
+        assert!(f.text().is_empty());
+
+        // Non-empty + Insert + Esc → host drops to Normal.
+        type_chars(&mut f, "wq");
+        assert_eq!(f.vim_mode(), FormVimMode::Insert);
+        f.enter_normal();
+        assert_eq!(f.vim_mode(), FormVimMode::Normal);
+        assert_eq!(f.text(), "wq");
+        // Normal + Esc → host closes (cancel).
+    }
+
+    #[test]
+    fn results_search_prompt_dirty_signals_incremental_refresh() {
+        let mut f = TextFieldEditor::new(true);
+        f.enter_insert_at_end();
+        let before = f.dirty_gen();
+        f.handle_input(Input {
+            key: Key::Char('a'),
+            ..Input::default()
+        });
+        let after = f.dirty_gen();
+        assert!(
+            after != before,
+            "dirty_gen must advance for incremental refresh hook"
+        );
+    }
+
+    #[test]
+    fn text_field_paste_inserts_chars() {
+        let mut f = TextFieldEditor::new(true);
+        f.enter_insert_at_end();
+        super::text_field_paste(&mut f, "hello\rworld");
+        assert_eq!(f.text(), "helloworld");
+    }
 
     #[test]
     fn layout_ratio_default() {
