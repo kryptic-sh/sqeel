@@ -12,19 +12,17 @@ authors.workspace = true
 readme = "README.md"
 
 [dependencies]
-sqeel-core = { path = "../sqeel-core", version = "=0.1.1" }
-hjkl-engine = "=0.1.0"
-hjkl-editor = "=0.1.0"
-hjkl-buffer = { version = "=0.1.0", features = ["ratatui"] }
+sqeel-core = { path = "../sqeel-core", version = "=0.2.0" }
+hjkl-engine = "=0.2.0"
+hjkl-editor = "=0.2.0"
+hjkl-buffer = { version = "=0.2.0", features = ["ratatui"] }
 anyhow = "1"
 ratatui = "0.29.0"
 crossterm = { version = "0.28.1", features = ["event-stream"] }
 regex = "1"
 tokio = { version = "1.52.1", features = ["full"] }
 lsp-types = "0.97.0"
-# Local-dev override — drop the path entry once hjkl-clipboard
-# is on crates.io at >=0.1.1.
-hjkl-clipboard = { version = "=0.1.1", path = "../../hjkl/crates/hjkl-clipboard" }
+hjkl-clipboard = "=0.2.0"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 dirs = "6"

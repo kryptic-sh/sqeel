@@ -12,7 +12,7 @@ authors.workspace = true
 readme = "README.md"
 
 [dependencies]
-hjkl-engine = "=0.1.0"
+hjkl-engine = "=0.2.0"
 anyhow = "1"
 dirs = "6.0.0"
 lsp-types = "0.97.0"
@@ -24,9 +24,7 @@ bigdecimal = "0.4"
 uuid = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "1.1.2"
-# Local-dev override — drop the path entry once hjkl-tree-sitter
-# is on crates.io at >=0.1.1.
-hjkl-tree-sitter = { version = "=0.1.1", path = "../../hjkl/crates/hjkl-tree-sitter" }
+hjkl-tree-sitter = "=0.2.0"
 # Keep tree-sitter + tree-sitter-sequel for the SQL-specific helpers
 # (statement_ranges, first_syntax_error) that walk the tree directly.
 # hjkl-tree-sitter pulls tree-sitter transitively, but we need the

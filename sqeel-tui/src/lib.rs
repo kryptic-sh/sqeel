@@ -1962,6 +1962,13 @@ async fn run_loop(
                                     ));
                                 }
                                 hjkl_editor::runtime::ex::ExEffect::None => {}
+                                hjkl_editor::runtime::ex::ExEffect::SaveAs(_) => {
+                                    toasts.push((
+                                        ":w <path> not yet supported in sqeel-tui".to_string(),
+                                        ToastKind::Error,
+                                        std::time::Instant::now(),
+                                    ));
+                                }
                             }
                         }
                         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
