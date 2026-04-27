@@ -43,7 +43,7 @@ use sqeel_core::{
     completion_ctx::{self, CompletionCtx},
     config::load_main_config,
     highlight::{
-        Dialect, Highlighter, TokenKind, first_syntax_error, is_show_create, statement_at_byte,
+        Dialect, Highlighter, first_syntax_error, is_show_create, statement_at_byte,
         statement_ranges, strip_sql_comments,
     },
     lsp::{LspClient, LspEvent},
@@ -5119,7 +5119,7 @@ fn highlight_sql_lines(source: &str, dialect: Dialect) -> Vec<Line<'static>> {
                     out.push(Span::styled(raw.to_string(), plain));
                 }
                 if let Ok(raw) = std::str::from_utf8(&bytes[sb..eb]) {
-                    let style = token_kind_style(s.kind).unwrap_or(plain);
+                    let style = capture_style(s.capture.as_str()).unwrap_or(plain);
                     out.push(Span::styled(raw.to_string(), style));
                 }
                 cursor = eb;
@@ -5178,7 +5178,7 @@ fn highlight_query_line(query: &str, dialect: Dialect) -> Line<'static> {
             out.push(Span::styled(flatten(&bytes[cursor..s.start_byte]), plain));
         }
         let slice = flatten(&bytes[s.start_byte..s.end_byte]);
-        let style = token_kind_style(s.kind).unwrap_or(plain);
+        let style = capture_style(s.capture.as_str()).unwrap_or(plain);
         out.push(Span::styled(slice, style));
         cursor = s.end_byte;
     }
@@ -5258,23 +5258,31 @@ fn should_resubmit_highlight(
     content_changed || viewport_scrolled || current_dialect != last_dialect
 }
 
-fn token_kind_style(kind: TokenKind) -> Option<Style> {
+fn capture_style(capture: &str) -> Option<Style> {
     let u = ui();
-    match kind {
-        TokenKind::Keyword => Some(
+    if sqeel_core::highlight::is_sql_keyword_capture(capture) {
+        Some(
             Style::default()
                 .fg(u.sql_keyword)
                 .add_modifier(Modifier::BOLD),
-        ),
-        TokenKind::String => Some(Style::default().fg(u.sql_string)),
-        TokenKind::Comment => Some(
+        )
+    } else if capture.starts_with("string") || capture.starts_with("literal") {
+        Some(Style::default().fg(u.sql_string))
+    } else if capture.starts_with("comment") {
+        Some(
             Style::default()
                 .fg(u.sql_comment)
                 .add_modifier(Modifier::ITALIC),
-        ),
-        TokenKind::Number => Some(Style::default().fg(u.sql_number)),
-        TokenKind::Operator => Some(Style::default().fg(u.sql_operator)),
-        TokenKind::Identifier | TokenKind::Plain => None,
+        )
+    } else if capture.starts_with("number")
+        || capture.starts_with("integer")
+        || capture.starts_with("float")
+    {
+        Some(Style::default().fg(u.sql_number))
+    } else if capture.starts_with("operator") || capture == "punctuation.special" {
+        Some(Style::default().fg(u.sql_operator))
+    } else {
+        None
     }
 }
 
@@ -5331,7 +5339,7 @@ fn apply_window_spans<H: Host>(
     };
     let line_len_at = |row: usize| -> usize { line_at(row).map(str::len).unwrap_or(0) };
     for s in &result.spans {
-        let Some(style) = token_kind_style(s.kind) else {
+        let Some(style) = capture_style(s.capture.as_str()) else {
             continue;
         };
         let sr = s.start_row + window_start;
@@ -5342,7 +5350,7 @@ fn apply_window_spans<H: Host>(
         if sr == er {
             if s.end_col > s.start_col {
                 by_row[sr].push((s.start_col, s.end_col, style));
-                if s.kind == TokenKind::Comment
+                if s.capture.starts_with("comment")
                     && let Some(line) = line_at(sr)
                 {
                     comment_ranges_by_row
@@ -5359,7 +5367,7 @@ fn apply_window_spans<H: Host>(
             if er < buffer_rows && s.end_col > 0 {
                 by_row[er].push((0, s.end_col, style));
             }
-            if s.kind == TokenKind::Comment {
+            if s.capture.starts_with("comment") {
                 if let Some(line) = line_at(sr) {
                     let first_end = line.len();
                     comment_ranges_by_row
@@ -7420,8 +7428,7 @@ mod tests {
         super::apply_window_spans(&mut editor, &result, row_count, 0, &[]);
         let by_row = editor.styled_spans.clone();
 
-        let keyword_style =
-            super::token_kind_style(sqeel_core::highlight::TokenKind::Keyword).unwrap();
+        let keyword_style = super::capture_style("keyword").unwrap();
         for row in [21usize, 23] {
             let spans = &by_row[row];
             let has_kw_at_zero = spans
@@ -7489,8 +7496,7 @@ mod tests {
 
         // Row 21 and row 23 each hold `DESC users;`. Both should have
         // at least one span starting at col 0 with Keyword styling.
-        let keyword_style =
-            super::token_kind_style(sqeel_core::highlight::TokenKind::Keyword).unwrap();
+        let keyword_style = super::capture_style("keyword").unwrap();
         for row in [21usize, 23] {
             let spans = &by_row[row];
             let has_kw_at_zero = spans

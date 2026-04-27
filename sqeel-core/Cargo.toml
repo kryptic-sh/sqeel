@@ -24,8 +24,15 @@ bigdecimal = "0.4"
 uuid = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "1.1.2"
-tree-sitter = "0.26.8"
-tree-sitter-sequel = "0.3.11"
+# Local-dev override — drop the path entry once hjkl-tree-sitter
+# is on crates.io at >=0.1.1.
+hjkl-tree-sitter = { version = "=0.1.1", path = "../../hjkl/crates/hjkl-tree-sitter" }
+# Keep tree-sitter + tree-sitter-sequel for the SQL-specific helpers
+# (statement_ranges, first_syntax_error) that walk the tree directly.
+# hjkl-tree-sitter pulls tree-sitter transitively, but we need the
+# tree_sitter_sequel::LANGUAGE constant and Parser here.
+tree-sitter = "0.26"
+tree-sitter-sequel = "0.3"
 # Markdown parser for LSP hover payloads — sqls (and most servers)
 # return rich markdown; pulldown-cmark gives us GFM tables + the event
 # stream we use to build styled Lines in the TUI.
