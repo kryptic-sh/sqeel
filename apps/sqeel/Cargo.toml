@@ -21,9 +21,9 @@ name = "sqeel-gui"
 path = "src/bin/sqeel-gui.rs"
 
 [dependencies]
-sqeel-core = { path = "../../crates/sqeel-core", version = "0.2" }
-sqeel-tui = { path = "../../crates/sqeel-tui", version = "0.2" }
-sqeel-gui = { path = "../../crates/sqeel-gui", version = "0.2" }
+sqeel-core = { path = "../../crates/sqeel-core", version = "0.3" }
+sqeel-tui = { path = "../../crates/sqeel-tui", version = "0.3" }
+sqeel-gui = { path = "../../crates/sqeel-gui", version = "0.3" }
 anyhow = "1"
 eframe = "0.31"
 egui = "0.31"

@@ -2039,9 +2039,9 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hjkl-bonsai"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f920febf2234e087109ff133b01f5e44b778f0c8b38b8af9bec96b18fb08bd08"
+checksum = "81fa522b28f6ee2e9bccc1f0e910e1299b5068bb9a5d904522f0e9ac8d1a0854"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4404,7 +4404,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-core"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-gui"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -4438,7 +4438,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-tui"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crossterm",

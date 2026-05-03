@@ -8,6 +8,19 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-03
+
+### Changed
+
+- **`sqeel-core` 0.2 → 0.3, `sqeel-tui` 0.2 → 0.3.** Submodules bumped for the
+  `hjkl-bonsai` 0.3 + `hjkl-config` 0.2 + `leader_key: char` cascade. See
+  `crates/sqeel-core/CHANGELOG.md` and `crates/sqeel-tui/CHANGELOG.md`.
+  User-facing fallout: macOS / Windows users move from
+  `~/Library/Application Support/sqeel/` / `%APPDATA%\sqeel\` to
+  `~/.config/sqeel/` + `~/.local/share/sqeel/` (Linux unchanged), and
+  tree-sitter grammars re-fetch on first use into `~/.local/share/bonsai/`.
+  Config files with `leader_key = "ab"` (multi-char) now fail at parse time.
+
 ### Added
 
 - `sqeel --help` now renders an ASCII-art banner (figlet "ANSI Regular" font)
@@ -109,7 +122,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.3.0
 [0.2.4]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.4
 [0.2.3]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.3
 [0.2.2]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.2
