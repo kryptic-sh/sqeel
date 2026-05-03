@@ -106,8 +106,25 @@ fn cleanup_sandbox(root: &std::path::Path) {
     }
 }
 
+/// ASCII-art banner. Regenerate with:
+///
+/// ```sh
+/// figlet -f "ANSI Regular" sqeel > apps/sqeel/src/bin/art.txt
+/// ```
+const LONG_ABOUT: &str = concat!(
+    "\n",
+    include_str!("art.txt"),
+    "\nFast vim-native SQL client · v",
+    env!("CARGO_PKG_VERSION"),
+);
+
 #[derive(Parser)]
-#[command(name = "sqeel", about = "Fast vim-native SQL client")]
+#[command(
+    name = "sqeel",
+    version,
+    about = "Fast vim-native SQL client",
+    long_about = LONG_ABOUT,
+)]
 struct Args {
     /// Connection URL (e.g. mysql://user:pass@host/db)
     #[arg(short = 'u', long)]
@@ -933,5 +950,41 @@ async fn schema_loader_task(
             }
             state.lock().unwrap().finish_schema_load(&finish_req);
         });
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn version_flag_returns_pkg_version() {
+        let cmd = Args::command();
+        let version = cmd.render_version();
+        assert!(
+            version.contains(env!("CARGO_PKG_VERSION")),
+            "render_version output {version:?} missing CARGO_PKG_VERSION"
+        );
+    }
+
+    #[test]
+    fn long_help_contains_ascii_art() {
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(
+            help.contains(include_str!("art.txt")),
+            "long_help missing embedded art.txt block; got:\n{help}"
+        );
+    }
+
+    #[test]
+    fn long_help_contains_pkg_version() {
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(
+            help.contains(env!("CARGO_PKG_VERSION")),
+            "long_help missing CARGO_PKG_VERSION; got:\n{help}"
+        );
     }
 }
