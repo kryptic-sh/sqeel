@@ -108,3 +108,12 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
   `hjkl` 0.1.0 published — sqeel now resolves it from crates.io.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
+
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.4
+[0.2.3]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.3
+[0.2.2]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.2
+[0.2.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.1
+[0.2.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.0
+[0.1.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.1.1
+[0.1.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.1.0
