@@ -1181,6 +1181,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "directories"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2072,6 +2081,18 @@ checksum = "739de1b764fd1997230832922ca2b1f2d8efa3e196f3a99c59c552e2e4aa44c0"
 dependencies = [
  "libc",
  "miniz_oxide",
+]
+
+[[package]]
+name = "hjkl-config"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dfc66a08516fdcda49362f9d77a7dcd00891a09e722f02c241e573a9a53cb37"
+dependencies = [
+ "directories",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]
@@ -4399,6 +4420,7 @@ dependencies = [
  "chrono",
  "dirs",
  "hjkl-bonsai",
+ "hjkl-config",
  "hjkl-engine",
  "lsp-types",
  "pulldown-cmark",
