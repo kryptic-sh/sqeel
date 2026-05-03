@@ -1,0 +1,15 @@
+{
+  "name": "sqeel",
+  "short_name": "sqeel",
+  "description": "Vim-native SQL client. Postgres, MySQL, SQLite. Terminal or GUI. Rust.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d10",
+  "theme_color": "#7ee787",
+  "icons": [
+    { "src": "favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" }
+  ]
+}

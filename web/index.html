@@ -1,0 +1,1186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#7ee787" />
+    <title>sqeel — vim-native SQL client for Postgres, MySQL, SQLite</title>
+    <meta
+      name="description"
+      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, terminal or GUI. No Electron. No JVM. No bullshit."
+    />
+    <meta
+      name="keywords"
+      content="sql client, rust sql client, vim sql client, terminal sql client, tui sql, postgres client, mysql client, sqlite client, sqeel"
+    />
+    <link rel="canonical" href="https://sqeel.kryptic.sh/" />
+    <meta name="robots" content="index, follow" />
+    <meta
+      property="og:title"
+      content="sqeel — vim-native SQL client for Postgres, MySQL, SQLite"
+    />
+    <meta
+      property="og:description"
+      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, terminal or GUI. No Electron. No JVM. No bullshit."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://sqeel.kryptic.sh/" />
+    <meta property="og:site_name" content="sqeel" />
+    <meta property="og:image" content="https://sqeel.kryptic.sh/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="sqeel — vim-native SQL client for Postgres, MySQL, SQLite"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="sqeel — vim-native SQL client for Postgres, MySQL, SQLite"
+    />
+    <meta
+      name="twitter:description"
+      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, terminal or GUI. No Electron. No JVM. No bullshit."
+    />
+    <meta
+      name="twitter:image"
+      content="https://sqeel.kryptic.sh/og-image.png"
+    />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "sqeel",
+        "description": "Native Rust SQL client with vim bindings. Terminal and GUI. Supports MySQL, Postgres, and SQLite.",
+        "url": "https://sqeel.kryptic.sh/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "programmingLanguage": "Rust",
+        "license": "https://opensource.org/licenses/MIT",
+        "codeRepository": "https://github.com/kryptic-sh/sqeel",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="alternate icon" type="image/x-icon" href="favicon.ico" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="manifest" href="manifest.json" />
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --bg-alt: #11141a;
+        --panel: #141820;
+        --border: #1f2530;
+        --border-strong: #2a3240;
+        --fg: #e5e9f0;
+        --fg-dim: #8b95a7;
+        --fg-muted: #8a93a4;
+        --accent: #7ee787;
+        --accent-dim: #3d7a45;
+        --keyword: #c792ea;
+        --string: #a3e88a;
+        --number: #f78c6c;
+        --comment: #8597a3;
+        --red: #ff6b6b;
+        --yellow: #ffd166;
+        --mono:
+          'Hack', 'JetBrains Mono', 'DejaVu Sans Mono', 'Liberation Mono',
+          monospace;
+        --sans:
+          'Hack', 'JetBrains Mono', 'DejaVu Sans Mono', 'Liberation Mono',
+          monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        background-image:
+          radial-gradient(
+            circle at 20% 0%,
+            rgba(126, 231, 135, 0.06),
+            transparent 40%
+          ),
+          radial-gradient(
+            circle at 80% 20%,
+            rgba(199, 146, 234, 0.05),
+            transparent 45%
+          );
+      }
+      @media (min-width: 900px) {
+        body {
+          background-attachment: fixed;
+        }
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      code,
+      pre,
+      .mono {
+        font-family: var(--mono);
+        line-height: 1.5;
+      }
+
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      .siblings {
+        border-bottom: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.2);
+      }
+      .siblings-inner {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 8px 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg-muted);
+        align-items: center;
+      }
+      .siblings-inner a {
+        color: var(--fg-muted);
+      }
+      .siblings-inner a:hover {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .siblings-inner .current {
+        color: var(--accent);
+      }
+      .siblings-inner .sep {
+        color: var(--border-strong);
+      }
+      @media (max-width: 560px) {
+        .siblings-inner {
+          gap: 6px 14px;
+          justify-content: center;
+        }
+        .siblings-inner .sep {
+          display: none;
+        }
+      }
+
+      /* nav */
+      nav.top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px;
+        max-width: 1040px;
+        margin: 0 auto;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--mono);
+        font-weight: 700;
+        font-size: 18px;
+        line-height: 1;
+      }
+      .brand .prompt {
+        color: var(--accent);
+      }
+      .brand .cursor {
+        display: inline-block;
+        width: 8px;
+        height: 16px;
+        background: var(--accent);
+        vertical-align: middle;
+        margin-left: 2px;
+        animation: blink 1s steps(1) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      nav.top .links {
+        display: flex;
+        gap: 22px;
+        font-size: 14px;
+        color: var(--fg-dim);
+        font-family: var(--mono);
+      }
+      nav.top .links a {
+        color: var(--fg-dim);
+      }
+      nav.top .links a:hover {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      @media (max-width: 560px) {
+        nav.top {
+          flex-wrap: wrap;
+          gap: 12px 16px;
+          padding: 16px 20px;
+          justify-content: center;
+        }
+        nav.top .brand {
+          width: 100%;
+          justify-content: center;
+        }
+        nav.top .links {
+          gap: 14px;
+          flex-wrap: wrap;
+          justify-content: center;
+          width: 100%;
+        }
+      }
+
+      /* hero */
+      header.hero {
+        padding: 24px 0 40px;
+      }
+      h1 {
+        font-size: clamp(40px, 6vw, 68px);
+        line-height: 1.05;
+        margin: 0 0 20px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      h1 .grad {
+        background: linear-gradient(
+          120deg,
+          var(--accent) 0%,
+          #6cb4ff 60%,
+          #c792ea 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .tagline {
+        font-size: 20px;
+        line-height: 1.4;
+        color: var(--fg-dim);
+        margin: 0 0 14px;
+        max-width: 640px;
+      }
+      .badges {
+        margin-top: 16px;
+        margin-bottom: 20px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .badge {
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1;
+        padding: 9px 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 4px;
+        color: var(--fg-dim);
+        background: var(--bg-alt);
+      }
+      .badge.live {
+        color: var(--accent);
+        border-color: var(--accent-dim);
+      }
+
+      .cta {
+        margin-top: 30px;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .btn {
+        font-family: var(--mono);
+        font-size: 14px;
+        font-weight: 500;
+        padding: 11px 18px;
+        border-radius: 6px;
+        border: 1px solid var(--border-strong);
+        color: var(--fg);
+        background: var(--bg-alt);
+        cursor: pointer;
+        transition: all 0.15s;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+        text-decoration: none;
+        transform: translateY(-1px);
+      }
+      .btn.primary {
+        background: var(--accent);
+        color: #062109;
+        border-color: var(--accent);
+        font-weight: 700;
+      }
+      .btn.primary:hover {
+        background: #9cf0a3;
+        color: #062109;
+        border-color: #9cf0a3;
+      }
+
+      /* terminal demo */
+      .terminal {
+        background: var(--panel);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow:
+          0 10px 40px rgba(0, 0, 0, 0.4),
+          0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+        margin: 40px 0 0;
+      }
+      .terminal .bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 14px;
+        background: #0d1016;
+        border-bottom: 1px solid var(--border);
+      }
+      .terminal .bar .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+      .terminal .bar .dot.r {
+        background: #ff5f56;
+      }
+      .terminal .bar .dot.y {
+        background: #ffbd2e;
+      }
+      .terminal .bar .dot.g {
+        background: #27c93f;
+      }
+      .terminal .bar .title {
+        margin-left: 10px;
+        color: var(--fg-muted);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .terminal pre {
+        margin: 0;
+        padding: 14px 16px;
+        font-size: 13px;
+        line-height: 1.55;
+        overflow-x: auto;
+        color: var(--fg);
+        font-family: var(--mono);
+        font-variant-ligatures: none;
+      }
+      .term-body {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        background: var(--panel);
+      }
+      .term-col {
+        border-right: 1px solid var(--border);
+      }
+      .term-col:last-child {
+        border-right: 0;
+      }
+      .pane-hdr {
+        padding: 6px 14px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg-muted);
+        background: #0d1016;
+        border-bottom: 1px solid var(--border);
+      }
+      .pane-hdr .tab {
+        display: inline-block;
+        padding: 2px 10px;
+        margin: -2px 4px -2px -4px;
+        background: var(--bg-alt);
+        color: var(--accent);
+        border-radius: 3px 3px 0 0;
+      }
+      .term-split {
+        border-top: 1px solid var(--border);
+      }
+      .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 0 6px 12px;
+        background: #0d1016;
+        border-top: 1px solid var(--border);
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .status-bar .query-badge {
+        background: #1d4ed8;
+        color: #fff;
+        font-weight: 700;
+        padding: 4px 14px;
+        letter-spacing: 0.08em;
+      }
+      @media (max-width: 680px) {
+        .term-body {
+          grid-template-columns: 1fr;
+        }
+        .term-col {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+      }
+      .kw {
+        color: var(--keyword);
+        font-weight: 500;
+      }
+      .str {
+        color: var(--string);
+      }
+      .num {
+        color: var(--number);
+      }
+      .cm {
+        color: var(--comment);
+        font-style: italic;
+      }
+      .fn {
+        color: #82aaff;
+      }
+      .dim {
+        color: var(--fg-muted);
+      }
+      .ok {
+        color: var(--accent);
+      }
+      .query-badge {
+        background: #1d4ed8;
+        color: #fff;
+        font-weight: 700;
+        padding: 1px 8px;
+        border-radius: 2px;
+        letter-spacing: 0.05em;
+      }
+
+      /* sections */
+      section {
+        padding: 64px 0;
+        border-top: 1px solid var(--border);
+        content-visibility: auto;
+        contain-intrinsic-size: 1px 800px;
+      }
+      section h2 {
+        font-family: var(--mono);
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        color: var(--fg-muted);
+        margin: 0 0 8px;
+        font-weight: 500;
+      }
+      section h2::before {
+        content: '## ';
+        color: var(--accent);
+      }
+      section h3 {
+        font-size: 28px;
+        line-height: 1.25;
+        margin: 0 0 28px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+
+      /* features */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1px;
+        background: var(--border);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .feat {
+        background: var(--bg-alt);
+        padding: 24px;
+      }
+      .feat .icon {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--accent);
+        margin-bottom: 10px;
+        letter-spacing: 0.1em;
+      }
+      .feat h4 {
+        margin: 0 0 6px;
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .feat p {
+        margin: 0;
+        color: var(--fg-dim);
+        font-size: 14.5px;
+        line-height: 1.55;
+      }
+
+      /* layout diagram */
+      .layout-wrap {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 32px;
+        align-items: center;
+      }
+      @media (max-width: 760px) {
+        .layout-wrap {
+          grid-template-columns: 1fr;
+        }
+      }
+      .ascii {
+        background: var(--panel);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        padding: 20px;
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--fg-dim);
+        line-height: 1.5;
+        white-space: pre;
+        overflow-x: auto;
+      }
+      .ascii .hl {
+        color: var(--accent);
+      }
+
+      /* data paths */
+      .paths {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 16px;
+      }
+      .path-block {
+        background: var(--panel);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        padding: 18px 20px;
+        font-family: var(--mono);
+        font-size: 13.5px;
+      }
+      .path-root {
+        color: var(--accent);
+        font-weight: 700;
+        margin-bottom: 12px;
+      }
+      .path-row {
+        display: flex;
+        gap: 16px;
+        padding: 4px 0 4px 16px;
+        border-left: 1px solid var(--border);
+        margin-left: 4px;
+      }
+      .path-row code {
+        color: var(--fg);
+        min-width: 120px;
+      }
+      .path-row span {
+        color: var(--fg-muted);
+      }
+
+      /* layout mock */
+      .layout-mock {
+        background: var(--panel);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        overflow: hidden;
+        font-family: var(--mono);
+        font-size: 12px;
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        grid-template-rows: 1fr auto;
+      }
+      .lm-explorer {
+        grid-row: 1;
+        border-right: 1px solid var(--border);
+        padding: 10px 12px;
+        background: #0f131a;
+      }
+      .lm-right {
+        grid-row: 1;
+        display: grid;
+        grid-template-rows: 1fr 1fr;
+      }
+      .lm-editor {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        min-height: 90px;
+      }
+      .lm-results {
+        padding: 10px 12px;
+        background: #0f131a;
+        min-height: 90px;
+      }
+      .lm-label {
+        color: var(--fg-muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 8px;
+      }
+      .lm-items > div {
+        color: var(--fg-dim);
+        padding: 2px 0;
+      }
+      .lm-tab {
+        display: inline-block;
+        padding: 3px 10px;
+        background: var(--bg-alt);
+        color: var(--accent);
+        border-radius: 3px;
+        margin-bottom: 8px;
+      }
+      .lm-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px;
+      }
+      .lm-grid span {
+        height: 8px;
+        background: var(--border-strong);
+        border-radius: 1px;
+      }
+      .lm-grid span:nth-child(4n + 1) {
+        background: var(--accent-dim);
+      }
+      .lm-status {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #0d1016;
+        border-top: 1px solid var(--border);
+        color: var(--fg-dim);
+      }
+      .lm-status .query-badge {
+        background: #1d4ed8;
+        color: #fff;
+        font-weight: 700;
+        padding: 5px 12px;
+        letter-spacing: 0.08em;
+      }
+
+      /* install */
+      .install-block {
+        background: var(--panel);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        padding: 0;
+        overflow: hidden;
+      }
+      .install-block .tabs {
+        display: flex;
+        border-bottom: 1px solid var(--border);
+      }
+      .install-block .tab {
+        padding: 12px 18px;
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--fg-dim);
+        background: none;
+        border: 0;
+        cursor: pointer;
+        border-right: 1px solid var(--border);
+      }
+      .install-block .tab.active {
+        color: var(--accent);
+        background: var(--bg-alt);
+      }
+      .install-block pre {
+        margin: 0;
+        padding: 20px;
+        font-size: 13.5px;
+        line-height: 1.7;
+        color: var(--fg);
+      }
+      .install-block .panel {
+        display: none;
+      }
+      .install-block .panel.active {
+        display: block;
+      }
+      .copy {
+        float: right;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-muted);
+        background: transparent;
+        border: 1px solid var(--border-strong);
+        border-radius: 4px;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      .copy:hover {
+        color: var(--accent);
+        border-color: var(--accent-dim);
+      }
+
+      /* keys */
+      .keys {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }
+      .key-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        background: var(--bg-alt);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 14px;
+      }
+      .key-row span {
+        color: var(--fg-dim);
+      }
+      kbd {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 2px 7px;
+        background: var(--panel);
+        border: 1px solid var(--border-strong);
+        border-bottom-width: 2px;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+
+      /* footer */
+      footer {
+        padding: 40px 0 60px;
+        border-top: 1px solid var(--border);
+        color: var(--fg-muted);
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+      .footer-inner {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+      footer a {
+        color: var(--fg-dim);
+      }
+
+      ::selection {
+        background: var(--accent);
+        color: #062109;
+      }
+    </style>
+    <!-- Google tag (gtag.js) -->
+    <script>
+      (function () {
+        var loaded = false;
+        function loadGA() {
+          if (loaded) return;
+          loaded = true;
+          var s = document.createElement('script');
+          s.async = true;
+          s.src = 'https://www.googletagmanager.com/gtag/js?id=G-N5PT60107K';
+          document.head.appendChild(s);
+          window.dataLayer = window.dataLayer || [];
+          function gtag() {
+            dataLayer.push(arguments);
+          }
+          gtag('js', new Date());
+          gtag('config', 'G-N5PT60107K');
+        }
+        ['pointerdown', 'keydown', 'scroll', 'touchstart'].forEach(
+          function (e) {
+            window.addEventListener(e, loadGA, { once: true, passive: true });
+          }
+        );
+        setTimeout(loadGA, 8000);
+      })();
+    </script>
+  </head>
+  <body>
+    <nav class="siblings">
+      <div class="siblings-inner">
+        <a href="https://www.kryptic.sh/">kryptic</a>
+        <span class="sep">·</span>
+        <span class="current">sqeel</span>
+        <span class="sep">·</span>
+        <a href="https://buffr.kryptic.sh/">buffr</a>
+        <span class="sep">·</span>
+        <a href="https://hjkl.kryptic.sh/">hjkl</a>
+        <span class="sep">·</span>
+        <a href="https://inbx.kryptic.sh/">inbx</a>
+        <span class="sep">·</span>
+        <a href="https://hodl.kryptic.sh/">hodl</a>
+      </div>
+    </nav>
+
+    <nav class="top">
+      <div class="brand">
+        <span class="prompt">$</span> sqeel<span class="cursor"></span>
+      </div>
+      <div class="links">
+        <a href="#features">features</a>
+        <a href="#install">install</a>
+        <a href="#keys">keys</a>
+        <a
+          href="https://github.com/kryptic-sh/sqeel"
+          target="_blank"
+          rel="noopener"
+          >github ↗</a
+        >
+      </div>
+    </nav>
+
+    <main class="wrap">
+      <header class="hero">
+        <div class="badges">
+          <span class="badge live">● __VERSION__</span>
+          <span class="badge">MIT</span>
+          <span class="badge">Rust</span>
+        </div>
+        <h1>Fast, vim-native <span class="grad">SQL client.</span></h1>
+        <p class="tagline">No Electron. No JVM. No bullshit.</p>
+        <p class="tagline" style="color: var(--fg-muted); font-size: 16px">
+          Native Rust. Instant startup. Terminal or GUI. MySQL, Postgres,
+          SQLite.
+        </p>
+
+        <div class="cta">
+          <a class="btn primary" href="#install">$ cargo install sqeel</a>
+          <a
+            class="btn"
+            href="https://github.com/kryptic-sh/sqeel"
+            target="_blank"
+            rel="noopener"
+            >View on GitHub →</a
+          >
+        </div>
+
+        <div class="terminal">
+          <div class="bar">
+            <span class="dot r"></span><span class="dot y"></span
+            ><span class="dot g"></span>
+            <span class="title">sqeel — shop</span>
+          </div>
+          <div class="term-body">
+            <div class="term-col">
+              <div class="pane-hdr">Explorer — (6)</div>
+              <pre><span class="dim">&gt;</span> analytics
+<span class="dim">&gt;</span> billing
+<span class="ok">v</span> shop
+   <span class="ok">v</span> users
+     id: <span class="kw">bigint</span>(20)
+     email: <span class="kw">varchar</span>
+     name: <span class="kw">varchar</span>
+     status: <span class="kw">varchar</span>
+     created_at: <span class="kw">timestamp</span>
+   <span class="dim">&gt;</span> orders
+   <span class="dim">&gt;</span> products
+   <span class="dim">&gt;</span> sessions
+<span class="dim">&gt;</span> mysql
+<span class="dim">&gt;</span> information_schema</pre>
+            </div>
+            <div class="term-col">
+              <div class="pane-hdr">
+                <span class="tab">scratch_001.sql</span>
+              </div>
+              <pre>select * from shop.users</pre>
+              <div class="pane-hdr term-split">Results (188 rows)</div>
+              <pre>select * from shop.users
+
+<span class="dim">id   is_active  first_name  last_name   email              status</span>
+<span class="ok">101</span>  true       Ada         Lovelace    ada@sample.com     active
+<span class="ok">102</span>  true       Grace       Hopper      grace@sample.com   active
+<span class="ok">103</span>  false      Alan        Turing      alan@sample.com    pending
+<span class="ok">104</span>  true       Linus       Torvalds    linus@sample.com   active
+<span class="ok">105</span>  false      Margaret    Hamilton    mh@sample.com      inactive</pre>
+            </div>
+          </div>
+          <div class="status-bar">
+            <span class="query-badge">NORMAL</span>
+            <span>shop :: scratch_001.sql</span>
+          </div>
+        </div>
+      </header>
+
+      <section id="features">
+        <h2>features</h2>
+        <h3>Everything a keyboard-driven DB jockey wants.</h3>
+        <div class="grid">
+          <div class="feat">
+            <div class="icon">01 — CORE</div>
+            <h4>Native Rust</h4>
+            <p>
+              Instant startup. No JVM, no Node, no runtime tax. Small binary,
+              small RSS.
+            </p>
+          </div>
+          <div class="feat">
+            <div class="icon">02 — INPUT</div>
+            <h4>First-class vim</h4>
+            <p>
+              Normal/insert/visual/command modes. Search, leader chords, query
+              history via <kbd>Ctrl+P</kbd>/<kbd>Ctrl+N</kbd>.
+            </p>
+          </div>
+          <div class="feat">
+            <div class="icon">03 — UIS</div>
+            <h4>TUI or GUI</h4>
+            <p>
+              <code>sqeel</code> for terminal (ratatui),
+              <code>sqeel-gui</code> for native (iced). Same core, your choice.
+            </p>
+          </div>
+          <div class="feat">
+            <div class="icon">04 — DB</div>
+            <h4>MySQL · Postgres · SQLite</h4>
+            <p>Powered by sqlx. Per-file TOML connections, live switcher.</p>
+          </div>
+          <div class="feat">
+            <div class="icon">05 — LSP</div>
+            <h4>sqls integration</h4>
+            <p>
+              Completions and diagnostics from any SQL LSP. Errors jump editor
+              to <code>line:col</code>.
+            </p>
+          </div>
+          <div class="feat">
+            <div class="icon">06 — SYNTAX</div>
+            <h4>tree-sitter highlighting</h4>
+            <p>Dialect-aware. Fast, accurate, no regex soup.</p>
+          </div>
+          <div class="feat">
+            <div class="icon">07 — TABS</div>
+            <h4>Editor tabs</h4>
+            <p>
+              Lazy load, 5-minute RAM eviction. Auto-save SQL buffers, result
+              history, query history.
+            </p>
+          </div>
+          <div class="feat">
+            <div class="icon">08 — PANES</div>
+            <h4>tmux-aware nav</h4>
+            <p>
+              <kbd>Ctrl+HJKL</kbd> across schema / editor / results. Mouse works
+              everywhere too.
+            </p>
+          </div>
+          <div class="feat">
+            <div class="icon">09 — SCHEMA</div>
+            <h4>Schema browser</h4>
+            <p>
+              Expand DB → tables → columns with types inline. Click or keyboard,
+              fuzzy search across objects.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="layout">
+        <h2>layout</h2>
+        <h3>Panes that get out of your way.</h3>
+        <div class="layout-wrap">
+          <div class="layout-mock">
+            <div class="lm-explorer">
+              <div class="lm-label">Explorer</div>
+              <div class="lm-items">
+                <div>&gt; shop</div>
+                <div>&gt; analytics</div>
+                <div>&gt; billing</div>
+                <div>&gt; mysql</div>
+              </div>
+            </div>
+            <div class="lm-right">
+              <div class="lm-editor">
+                <div class="lm-tab">scratch_001.sql</div>
+                <div class="lm-label">Editor · 50%</div>
+              </div>
+              <div class="lm-results">
+                <div class="lm-label">Results (188 rows) · 50%</div>
+                <div class="lm-grid">
+                  <span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+            <div class="lm-status">
+              <span class="query-badge">NORMAL</span>
+              <span>shop :: scratch_001.sql</span>
+            </div>
+          </div>
+          <div>
+            <p style="color: var(--fg-dim); margin-top: 0">
+              Results hidden → editor fills the right pane. Query runs → results
+              expand to 50%. Dismiss with <kbd>q</kbd> and the editor takes the
+              room back.
+            </p>
+            <p style="color: var(--fg-muted); font-size: 14px">
+              No modal dialogs. No context switches. Just panes.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="install">
+        <h2>install</h2>
+        <h3>One line. Two binaries.</h3>
+        <div class="install-block">
+          <div class="tabs">
+            <button class="tab active" data-p="cargo">cargo</button>
+            <button class="tab" data-p="source">from source</button>
+            <button class="tab" data-p="conn">connection</button>
+          </div>
+          <div class="panel active" data-p="cargo">
+            <pre><button class="copy" data-c="cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
+cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel-gui">copy</button><span class="cm"># terminal UI</span>
+<span class="ok">$</span> cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
+
+<span class="cm"># native GUI</span>
+<span class="ok">$</span> cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel-gui</pre>
+          </div>
+          <div class="panel" data-p="source">
+            <pre><button class="copy" data-c="git clone https://github.com/kryptic-sh/sqeel
+cd sqeel
+cargo build --release">copy</button><span class="ok">$</span> git clone https://github.com/kryptic-sh/sqeel
+<span class="ok">$</span> cd sqeel
+<span class="ok">$</span> cargo build --release
+
+<span class="cm"># binaries in target/release/{sqeel,sqeel-gui}</span></pre>
+          </div>
+          <div class="panel" data-p="conn">
+            <pre><button class="copy" data-c='url = "postgres://user:pass@host/db"'>copy</button><span class="cm"># ~/.config/sqeel/conns/prod.toml</span>
+url = <span class="str">"postgres://user:pass@host/db"</span>
+
+<span class="cm"># ~/.config/sqeel/conns/local.toml</span>
+url = <span class="str">"mysql://localhost/mydb"</span>
+
+<span class="cm"># filename = display name in the switcher</span></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="keys">
+        <h2>keybindings</h2>
+        <h3>Press <kbd>?</kbd> for the full map.</h3>
+        <div class="keys">
+          <div class="key-row">
+            <span>Run statement</span><kbd>Ctrl+Enter</kbd>
+          </div>
+          <div class="key-row">
+            <span>Run all statements</span><kbd>Ctrl+Shift+Enter</kbd>
+          </div>
+          <div class="key-row">
+            <span>Connection switcher</span><kbd>&lt;leader&gt; c</kbd>
+          </div>
+          <div class="key-row">
+            <span>New scratch tab</span><kbd>&lt;leader&gt; n</kbd>
+          </div>
+          <div class="key-row">
+            <span>Fuzzy file picker</span
+            ><kbd>&lt;leader&gt;&lt;leader&gt;</kbd>
+          </div>
+          <div class="key-row">
+            <span>Focus schema / editor / results</span><kbd>Ctrl+H/L/J</kbd>
+          </div>
+          <div class="key-row">
+            <span>Next / prev tab</span><kbd>Shift+L / Shift+H</kbd>
+          </div>
+          <div class="key-row">
+            <span>Query history</span><kbd>Ctrl+P / Ctrl+N</kbd>
+          </div>
+          <div class="key-row"><span>Dismiss results</span><kbd>q</kbd></div>
+          <div class="key-row"><span>Quit</span><kbd>:q</kbd></div>
+        </div>
+      </section>
+
+      <section id="data">
+        <h2>data</h2>
+        <h3>Where your stuff lives.</h3>
+        <div class="paths">
+          <div class="path-block">
+            <div class="path-root">~/.local/share/sqeel/</div>
+            <div class="path-row">
+              <code>queries/</code
+              ><span># auto-saved SQL buffers (per connection)</span>
+            </div>
+            <div class="path-row">
+              <code>results/</code
+              ><span># last 10 successful results (JSON, per connection)</span>
+            </div>
+          </div>
+          <div class="path-block">
+            <div class="path-root">~/.config/sqeel/</div>
+            <div class="path-row">
+              <code>config.toml</code
+              ><span># editor, LSP, leader key, mouse scroll</span>
+            </div>
+            <div class="path-row">
+              <code>conns/</code><span># one .toml per connection</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap footer-inner">
+        <div>sqeel · MIT · built in Rust</div>
+        <div>
+          <a href="https://github.com/kryptic-sh/sqeel">github</a>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      // install tabs
+      document.querySelectorAll('.install-block .tab').forEach((t) => {
+        t.addEventListener('click', () => {
+          const p = t.dataset.p;
+          t.parentElement
+            .querySelectorAll('.tab')
+            .forEach((x) => x.classList.toggle('active', x === t));
+          document
+            .querySelectorAll('.install-block .panel')
+            .forEach((x) => x.classList.toggle('active', x.dataset.p === p));
+        });
+      });
+      // copy buttons
+      document.querySelectorAll('.copy').forEach((b) => {
+        b.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(b.dataset.c);
+            b.textContent = 'copied';
+            setTimeout(() => (b.textContent = 'copy'), 1200);
+          } catch {
+            b.textContent = 'err';
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

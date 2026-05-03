@@ -1,0 +1,87 @@
+name: pages
+
+# GitHub Pages deploy for the sqeel marketing site at
+# https://sqeel.kryptic.sh/. Source lives in `web/`. The version badge in
+# web/index.html uses an `__VERSION__` placeholder which this workflow
+# substitutes from the latest `v*` git tag at deploy time.
+#
+# Triggers:
+#   - tag push (v*)        → marketing version rebakes from latest tag
+#   - main + web/**        → marketing copy edits redeploy with current tag
+#   - workflow_dispatch    → manual rebuild
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # need full history for `git describe`
+
+      - name: Resolve latest release tag
+        id: ver
+        run: |
+          set -euo pipefail
+          tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "v0.0.0")
+          ver="${tag#v}"
+          echo "tag=$tag"     >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Latest release: $tag (version=$ver)"
+
+      - name: Substitute version into marketing HTML
+        run: |
+          set -euo pipefail
+          sed -i "s/__VERSION__/${{ steps.ver.outputs.version }}/g" web/index.html
+          if grep -q "__VERSION__" web/index.html; then
+            echo "::error::Stale __VERSION__ markers remain in web/index.html"
+            exit 1
+          fi
+
+      - name: Assemble site
+        run: |
+          set -euo pipefail
+          rm -rf site
+          cp -a web site
+          echo "sqeel.kryptic.sh" > site/CNAME
+          touch site/.nojekyll
+          ls -la site/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
