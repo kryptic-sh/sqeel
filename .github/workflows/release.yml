@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - "v*"
+  # Manual re-trigger after a partial failure. Idempotent helpers
+  # downstream (publish_if_new, AUR rendered-PKGBUILD diff guard)
+  # make re-running safe.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
