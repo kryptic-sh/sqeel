@@ -172,7 +172,11 @@ fn main() -> anyhow::Result<()> {
     let state = AppState::new();
     state.lock().unwrap().debug_mode = args.debug;
 
-    let main_config = load_main_config().unwrap_or_default();
+    // Surface config errors instead of silently falling back to defaults —
+    // a malformed user `config.toml`, an invalid validation bound (e.g.
+    // `mouse_scroll_lines = 0`), or a non-single-char `leader_key` should
+    // exit with the field-named diagnostic from `hjkl-config`.
+    let main_config = load_main_config()?;
     let conns = load_connections().unwrap_or_default();
     {
         let mut s = state.lock().unwrap();
