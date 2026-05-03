@@ -1007,22 +1007,33 @@
 
       <section id="install">
         <h2>install</h2>
-        <h3>One line. Two binaries.</h3>
-        <div class="install-block">
+        <h3>Prebuilt binaries on every tagged release.</h3>
+        <p style="color: var(--fg-muted); margin: 0 0 20px">
+          Linux (x86_64, aarch64), macOS (Apple Silicon, Intel), Windows
+          (x86_64). SHA-256 sidecars on every artifact.
+        </p>
+        <div class="cta">
+          <a
+            class="btn primary"
+            href="https://github.com/kryptic-sh/sqeel/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >latest release →</a
+          >
+          <a
+            class="btn"
+            href="https://github.com/kryptic-sh/sqeel/releases"
+            target="_blank"
+            rel="noopener"
+            >all releases ↗</a
+          >
+        </div>
+        <div class="install-block" style="margin-top: 20px">
           <div class="tabs">
-            <button class="tab active" data-p="cargo">cargo</button>
-            <button class="tab" data-p="source">from source</button>
+            <button class="tab active" data-p="source">from source</button>
             <button class="tab" data-p="conn">connection</button>
           </div>
-          <div class="panel active" data-p="cargo">
-            <pre><button class="copy" data-c="cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
-cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel-gui">copy</button><span class="cm"># terminal UI</span>
-<span class="ok">$</span> cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
-
-<span class="cm"># native GUI</span>
-<span class="ok">$</span> cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel-gui</pre>
-          </div>
-          <div class="panel" data-p="source">
+          <div class="panel active" data-p="source">
             <pre><button class="copy" data-c="git clone https://github.com/kryptic-sh/sqeel
 cd sqeel
 cargo build --release">copy</button><span class="ok">$</span> git clone https://github.com/kryptic-sh/sqeel
