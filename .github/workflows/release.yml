@@ -88,11 +88,9 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+      # fmt + clippy run in ci.yml on every PR/push; tagged releases
+      # follow merged commits so re-running them here is redundant
+      # (and clippy --target X needs cross C linkers we don't ship).
 
       - name: Build binaries (zigbuild)
         if: matrix.glibc != ''
