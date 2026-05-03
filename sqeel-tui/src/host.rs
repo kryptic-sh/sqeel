@@ -12,6 +12,7 @@
 //! `intents` queue stays empty.
 
 use crate::Clipboard;
+use hjkl_clipboard::{MimeType, Selection};
 use hjkl_engine::types::Viewport;
 use hjkl_engine::{CursorShape, Host, Pos};
 use std::time::Instant;
@@ -125,7 +126,9 @@ impl SqeelHost {
     pub fn flush_clipboard(&mut self) {
         let outbox = std::mem::take(&mut self.clipboard_outbox);
         for text in outbox {
-            self.clipboard.set_text(&text);
+            let _ = self
+                .clipboard
+                .set(Selection::Clipboard, MimeType::Text, text.as_bytes());
         }
     }
 
@@ -195,7 +198,7 @@ mod tests {
 
     #[test]
     fn clipboard_outbox_drains() {
-        let mut host = SqeelHost::new(Clipboard::new());
+        let mut host = SqeelHost::new(Clipboard::new().expect("clipboard init"));
         host.write_clipboard("foo".into());
         host.write_clipboard("bar".into());
         // Don't actually flush — would touch arboard. Just confirm
@@ -206,7 +209,7 @@ mod tests {
 
     #[test]
     fn cursor_shape_recorded() {
-        let mut host = SqeelHost::new(Clipboard::new());
+        let mut host = SqeelHost::new(Clipboard::new().expect("clipboard init"));
         assert_eq!(host.cursor_shape(), CursorShape::Block);
         host.emit_cursor_shape(CursorShape::Bar);
         assert_eq!(host.cursor_shape(), CursorShape::Bar);
@@ -214,7 +217,7 @@ mod tests {
 
     #[test]
     fn intents_drain() {
-        let mut host = SqeelHost::new(Clipboard::new());
+        let mut host = SqeelHost::new(Clipboard::new().expect("clipboard init"));
         host.emit_intent(SqeelIntent::Hover(Pos::ORIGIN));
         host.emit_intent(SqeelIntent::ListBuffers);
         let drained = host.drain_intents();

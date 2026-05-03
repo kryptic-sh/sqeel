@@ -12,20 +12,20 @@ authors.workspace = true
 readme = "README.md"
 
 [dependencies]
-sqeel-core = { path = "../sqeel-core", version = "=0.2.0" }
-hjkl-engine = "=0.2.0"
-hjkl-editor = "=0.2.0"
-hjkl-buffer = { version = "=0.2.0", features = ["ratatui"] }
+sqeel-core = { path = "../sqeel-core", version = "0.2" }
+hjkl-engine = "0.3"
+hjkl-editor = "0.3"
+hjkl-buffer = { version = "0.3", features = ["ratatui"] }
 anyhow = "1"
-ratatui = "0.29.0"
-crossterm = { version = "0.28.1", features = ["event-stream"] }
+ratatui = "0.30"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 regex = "1"
 tokio = { version = "1.52.1", features = ["full"] }
 lsp-types = "0.97.0"
-hjkl-clipboard = "=0.2.0"
-hjkl-form = "=0.2.0"
-hjkl-ratatui = "=0.2.0"
-hjkl-tree-sitter = "=0.2.0"
+hjkl-clipboard = "0.4"
+hjkl-form = "0.3"
+hjkl-ratatui = "0.3"
+hjkl-bonsai = "0.1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 dirs = "6"

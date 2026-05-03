@@ -9,6 +9,7 @@ pub use hjkl_engine as editor;
 pub use host::{FoldOp, LineRange, SqeelBufferId, SqeelHost, SqeelIntent};
 
 pub use hjkl_clipboard::Clipboard;
+use hjkl_clipboard::{MimeType, Selection};
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -361,7 +362,7 @@ async fn run_loop(
 ) -> anyhow::Result<()> {
     let mut editor = Editor::new(
         hjkl_buffer::Buffer::new(),
-        SqeelHost::new(Clipboard::new()),
+        SqeelHost::new(Clipboard::new().expect("clipboard init")),
         hjkl_engine::types::Options {
             // Preserve sqeel's pre-0.1.0 default (Settings::default()
             // shiftwidth=2). Without this we'd silently flip to vim's
@@ -519,7 +520,7 @@ async fn run_loop(
     // context; cleared when the next key resolves the chord or it times out.
     let mut leader_pending_at: Option<std::time::Instant> = None;
     // Unified clipboard sink: native OS clipboard + OSC 52 fallback over SSH.
-    let mut clipboard = Clipboard::new();
+    let clipboard = Clipboard::new().expect("clipboard init");
     // Tracks an unfinished `y` in the results pane so a follow-up `y` within
     // 500ms yanks the whole row (vim `yy`).
     let mut pending_results_y: Option<std::time::Instant> = None;
@@ -801,19 +802,19 @@ async fn run_loop(
                     hl_parsed_dirty_gen = None;
                 }
                 for e in editor.take_content_edits() {
-                    let ie = hjkl_tree_sitter::InputEdit {
+                    let ie = hjkl_bonsai::InputEdit {
                         start_byte: e.start_byte,
                         old_end_byte: e.old_end_byte,
                         new_end_byte: e.new_end_byte,
-                        start_position: hjkl_tree_sitter::Point {
+                        start_position: hjkl_bonsai::Point {
                             row: e.start_position.0 as usize,
                             column: e.start_position.1 as usize,
                         },
-                        old_end_position: hjkl_tree_sitter::Point {
+                        old_end_position: hjkl_bonsai::Point {
                             row: e.old_end_position.0 as usize,
                             column: e.old_end_position.1 as usize,
                         },
-                        new_end_position: hjkl_tree_sitter::Point {
+                        new_end_position: hjkl_bonsai::Point {
                             row: e.new_end_position.0 as usize,
                             column: e.new_end_position.1 as usize,
                         },
@@ -1681,7 +1682,9 @@ async fn run_loop(
                                     }
                                     s.clamp_results_cursor();
                                 }
-                                let ok = clipboard.set_text(&text);
+                                let ok = clipboard
+                                    .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
+                                    .is_ok();
                                 toasts.push((
                                     if ok {
                                         format!("{label} copied to clipboard")
@@ -1712,7 +1715,9 @@ async fn run_loop(
                                 extract_results_row(mouse.column, mouse.row, &last_draw_areas, &s)
                             {
                                 drop(s);
-                                let ok = clipboard.set_text(&text);
+                                let ok = clipboard
+                                    .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
+                                    .is_ok();
                                 toasts.push((
                                     if ok {
                                         "Row copied to clipboard".to_string()
@@ -2820,7 +2825,9 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char('y')) if focus == Focus::Hover => {
                         let yanked = state.lock().unwrap().hover_yank();
                         if let Some((text, label)) = yanked {
-                            let ok = clipboard.set_text(&text);
+                            let ok = clipboard
+                                .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
+                                .is_ok();
                             toasts.push((
                                 if ok {
                                     format!("{label} copied to clipboard")
@@ -3052,7 +3059,9 @@ async fn run_loop(
                             Some(now)
                         };
                         if let Some((text, label)) = yanked {
-                            let ok = clipboard.set_text(&text);
+                            let ok = clipboard
+                                .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
+                                .is_ok();
                             toasts.push((
                                 if ok {
                                     format!("{label} copied to clipboard")
@@ -3280,7 +3289,10 @@ async fn run_loop(
                             && (key.modifiers == KeyModifiers::NONE
                                 || key.modifiers == KeyModifiers::SHIFT)
                             && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P'))
-                            && let Some(text) = clipboard.get_text()
+                            && let Some(text) = clipboard
+                                .get(Selection::Clipboard, MimeType::Text)
+                                .ok()
+                                .and_then(|b| String::from_utf8(b).ok())
                         {
                             editor.seed_yank(text);
                         }
@@ -3289,7 +3301,10 @@ async fn run_loop(
                         // paste handler reads the live contents instead
                         // of a stale snapshot.
                         if editor.pending_register_is_clipboard()
-                            && let Some(text) = clipboard.get_text()
+                            && let Some(text) = clipboard
+                                .get(Selection::Clipboard, MimeType::Text)
+                                .ok()
+                                .and_then(|b| String::from_utf8(b).ok())
                         {
                             editor.sync_clipboard_register(text, false);
                         }
@@ -3310,7 +3325,9 @@ async fn run_loop(
                             ));
                         }
                         if let Some(text) = editor.last_yank.take() {
-                            let ok = clipboard.set_text(&text);
+                            let ok = clipboard
+                                .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
+                                .is_ok();
                             toasts.push((
                                 if ok {
                                     "Yanked to clipboard".to_string()
@@ -4579,6 +4596,7 @@ fn draw_editor<H: Host>(
     let gutter = hjkl_buffer::Gutter {
         width: gutter_width,
         style: Style::default().fg(ui().editor_line_num),
+        line_offset: 0,
     };
     // Gutter diagnostic signs: highest severity per row wins
     // (error > warning). Painted by `BufferView` as part of its

@@ -2,7 +2,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use tree_sitter::Parser;
 
-use hjkl_tree_sitter::{HighlightSpan as InnerSpan, LanguageRegistry, ParseError as InnerError};
+use hjkl_bonsai::{HighlightSpan as InnerSpan, LanguageRegistry, ParseError as InnerError};
 
 /// SQL dialect the current connection is speaking. Drives per-dialect
 /// keyword promotion in the highlighter so things like `ILIKE` show as
@@ -224,12 +224,12 @@ pub struct ParseError {
     pub message: String,
 }
 
-/// Thin wrapper around `hjkl_tree_sitter::Highlighter` that:
+/// Thin wrapper around `hjkl_bonsai::Highlighter` that:
 /// - adds dialect-specific keyword promotion for SQL.
 /// - enriches spans with row/col from byte offsets.
 /// - caches last errors and block ranges.
 pub struct Highlighter {
-    inner: hjkl_tree_sitter::Highlighter,
+    inner: hjkl_bonsai::Highlighter,
     last_errors: Vec<ParseError>,
     last_block_ranges: Vec<(usize, usize)>,
 }
@@ -237,10 +237,10 @@ pub struct Highlighter {
 impl Highlighter {
     pub fn new() -> anyhow::Result<Self> {
         let registry = LanguageRegistry::new();
-        let config = registry.by_name("sql").ok_or_else(|| {
-            anyhow::anyhow!("sql language not found in hjkl-tree-sitter registry")
-        })?;
-        let inner = hjkl_tree_sitter::Highlighter::new(config)?;
+        let config = registry
+            .by_name("sql")
+            .ok_or_else(|| anyhow::anyhow!("sql language not found in hjkl-bonsai registry"))?;
+        let inner = hjkl_bonsai::Highlighter::new(config)?;
         Ok(Self {
             inner,
             last_errors: Vec::new(),
@@ -249,7 +249,7 @@ impl Highlighter {
     }
 
     /// Apply an `InputEdit` to the retained tree. Delegates to
-    /// `hjkl_tree_sitter::Highlighter::edit`.
+    /// `hjkl_bonsai::Highlighter::edit`.
     pub fn edit(&mut self, edit: &tree_sitter::InputEdit) {
         self.inner.edit(edit);
     }
@@ -494,7 +494,7 @@ impl Highlighter {
 
 impl Default for Highlighter {
     fn default() -> Self {
-        Self::new().expect("failed to initialize hjkl-tree-sitter SQL highlighter")
+        Self::new().expect("failed to initialize hjkl-bonsai SQL highlighter")
     }
 }
 
@@ -1003,7 +1003,7 @@ mod tests {
 
     #[test]
     fn incremental_same_result() {
-        // hjkl-tree-sitter does full re-parse on each call (incremental is
+        // hjkl-bonsai does full re-parse on each call (incremental is
         // Phase 2). Verify the span count is consistent across calls.
         let mut h = Highlighter::new().unwrap();
         let src1 = "SELECT id FROM users";
