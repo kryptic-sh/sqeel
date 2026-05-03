@@ -1029,28 +1029,16 @@
           >
         </div>
         <div class="install-block" style="margin-top: 20px">
-          <div class="tabs">
-            <button class="tab active" data-p="source">from source</button>
-            <button class="tab" data-p="conn">connection</button>
+          <div class="pane-hdr">
+            <span class="tab">from source</span>
           </div>
-          <div class="panel active" data-p="source">
-            <pre><button class="copy" data-c="git clone https://github.com/kryptic-sh/sqeel
+          <pre><button class="copy" data-c="git clone https://github.com/kryptic-sh/sqeel
 cd sqeel
 cargo build --release">copy</button><span class="ok">$</span> git clone https://github.com/kryptic-sh/sqeel
 <span class="ok">$</span> cd sqeel
 <span class="ok">$</span> cargo build --release
 
 <span class="cm"># binaries in target/release/{sqeel,sqeel-gui}</span></pre>
-          </div>
-          <div class="panel" data-p="conn">
-            <pre><button class="copy" data-c='url = "postgres://user:pass@host/db"'>copy</button><span class="cm"># ~/.config/sqeel/conns/prod.toml</span>
-url = <span class="str">"postgres://user:pass@host/db"</span>
-
-<span class="cm"># ~/.config/sqeel/conns/local.toml</span>
-url = <span class="str">"mysql://localhost/mydb"</span>
-
-<span class="cm"># filename = display name in the switcher</span></pre>
-          </div>
         </div>
       </section>
     </main>
