@@ -4343,7 +4343,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -4376,7 +4376,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-tui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "crossterm",
