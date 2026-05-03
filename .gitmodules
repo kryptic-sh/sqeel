@@ -1,0 +1,6 @@
+[submodule "crates/sqeel-core"]
+	path = crates/sqeel-core
+	url = https://github.com/kryptic-sh/sqeel-core.git
+[submodule "crates/sqeel-tui"]
+	path = crates/sqeel-tui
+	url = https://github.com/kryptic-sh/sqeel-tui.git

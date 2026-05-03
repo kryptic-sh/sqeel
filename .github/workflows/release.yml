@@ -28,6 +28,12 @@ jobs:
             macos_min: ""
             suffix: ""
             archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            glibc: "2.28"
+            macos_min: ""
+            suffix: ""
+            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             glibc: ""
@@ -49,6 +55,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Verify tag matches Cargo.toml version
         shell: bash
@@ -144,6 +152,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -167,7 +177,117 @@ jobs:
             fi
             cargo publish -p "$crate" --locked
           }
-          publish_if_new sqeel-core
-          publish_if_new sqeel-tui
+          # sqeel-core and sqeel-tui publish from their own repos (submodules
+          # at crates/sqeel-core and crates/sqeel-tui). Only sqeel-gui and
+          # the sqeel umbrella binary publish from this monorepo.
           publish_if_new sqeel-gui
           publish_if_new sqeel
+
+  # AUR auto-publish for `sqeel-bin`. Pulls the just-uploaded tarball
+  # checksums off the release, renders pkg/aur/PKGBUILD-bin.in,
+  # generates .SRCINFO, and pushes to the AUR repo over SSH. Lives in
+  # release.yml (not a separate workflow) because GITHUB_TOKEN-created
+  # releases don't fire downstream `on: release` triggers; running as a
+  # `needs: [build]` job sidesteps the cascade entirely.
+  #
+  # Required org/repo secret:
+  #   AUR_SSH_KEY  — ed25519 private key whose public half is registered
+  #                  on the AUR account that owns the `sqeel-bin` package.
+  aur-bin:
+    name: Publish sqeel-bin to AUR
+    needs: [build]
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          # base-devel pulls in makepkg + fakeroot. openssh + git for
+          # the AUR push. curl fetches the sha256 sidecars off the
+          # release without needing the GitHub CLI.
+          pacman -Sy --noconfirm --needed base-devel git openssh curl
+
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release tag: $TAG (pkgver=$VERSION)"
+
+      - name: Fetch tarball sha256 sidecars
+        id: sha
+        run: |
+          set -euo pipefail
+          V="${{ steps.tag.outputs.version }}"
+          BASE="https://github.com/kryptic-sh/sqeel/releases/download/v${V}"
+          # The build matrix uploaded both arches before this job ran
+          # (we `needs: [build]`), so the sidecars are guaranteed to exist.
+          for arch in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            curl -fsSL "$BASE/sqeel-v${V}-${arch}.tar.gz.sha256" -o "sha.${arch}"
+          done
+          # sidecar format: `<hash>  <filename>` — keep first column.
+          echo "x86_64=$(awk '{print $1}' sha.x86_64-unknown-linux-gnu)" >> "$GITHUB_OUTPUT"
+          echo "aarch64=$(awk '{print $1}' sha.aarch64-unknown-linux-gnu)" >> "$GITHUB_OUTPUT"
+
+      - name: Render PKGBUILD
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          sed \
+            -e "s/{VERSION}/${{ steps.tag.outputs.version }}/g" \
+            -e "s/{SHA256_X86_64}/${{ steps.sha.outputs.x86_64 }}/g" \
+            -e "s/{SHA256_AARCH64}/${{ steps.sha.outputs.aarch64 }}/g" \
+            pkg/aur/PKGBUILD-bin.in > out/PKGBUILD
+          echo "--- rendered PKGBUILD ---"
+          cat out/PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root. The archlinux:latest image's
+          # `nobody` user has an expired password (`su: User account has
+          # expired`), so we provision a fresh build user instead.
+          useradd -m builder
+          chown -R builder:builder out
+          # `su` parses options BEFORE the username; anything after gets
+          # passed to the shell. Put `-s` first so it's interpreted as
+          # the shell flag, not stdin-mode for bash.
+          su -s /bin/bash builder -c 'cd out && makepkg --printsrcinfo > .SRCINFO'
+          echo "--- .SRCINFO ---"
+          cat out/.SRCINFO
+
+      - name: Configure SSH for AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -dm700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+
+      - name: Push to AUR
+        # `GIT_SSH_COMMAND` injects ssh options inline so we don't depend
+        # on `~/.ssh/config` parsing. `accept-new` writes the AUR host
+        # key to known_hosts on first connect; subsequent connects
+        # strict-verify.
+        env:
+          GIT_SSH_COMMAND: "ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"
+        run: |
+          set -euo pipefail
+          git config --global user.name  "sqeel-ci"
+          git config --global user.email "ci@kryptic.sh"
+          git clone ssh://aur@aur.archlinux.org/sqeel-bin.git aur-repo
+          cp out/PKGBUILD out/.SRCINFO aur-repo/
+          cp pkg/aur/LICENSE pkg/aur/.gitignore aur-repo/
+          cd aur-repo
+          git add PKGBUILD .SRCINFO LICENSE .gitignore
+          if git diff --cached --quiet; then
+            echo "no changes vs current AUR head; nothing to push"
+            exit 0
+          fi
+          git commit -m "sqeel-bin ${{ steps.tag.outputs.version }}-1"
+          git push origin master

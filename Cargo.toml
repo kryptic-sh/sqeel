@@ -1,6 +1,6 @@
 [workspace]
-members = ["sqeel-core", "sqeel-tui", "sqeel-gui", "sqeel"]
-default-members = ["sqeel"]
+members = ["crates/*", "apps/*"]
+default-members = ["apps/sqeel"]
 resolver = "2"
 
 [workspace.package]
@@ -10,3 +10,7 @@ license = "MIT"
 repository = "https://github.com/kryptic-sh/sqeel"
 homepage = "https://sqeel.kryptic.sh"
 authors = ["mxaddict <mxaddict@kryptic.sh>"]
+
+[patch.crates-io]
+sqeel-core = { path = "crates/sqeel-core" }
+sqeel-tui = { path = "crates/sqeel-tui" }
