@@ -1181,15 +1181,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "directories"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
-dependencies = [
- "dirs-sys",
-]
-
-[[package]]
 name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2085,11 +2076,11 @@ dependencies = [
 
 [[package]]
 name = "hjkl-config"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dfc66a08516fdcda49362f9d77a7dcd00891a09e722f02c241e573a9a53cb37"
+checksum = "d8d05b075482f17725d969c2d86f54e278fdd29f004d3f3d81723cc0be005a91"
 dependencies = [
- "directories",
+ "dirs",
  "serde",
  "thiserror 2.0.18",
  "toml",
