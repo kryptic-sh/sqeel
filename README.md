@@ -9,10 +9,6 @@
 
 Fast, vim-native SQL client. No Electron. No JVM.
 
-```sh
-cargo install sqeel
-```
-
 ## Features
 
 - Native Rust — instant startup
