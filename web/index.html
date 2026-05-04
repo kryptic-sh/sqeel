@@ -1013,9 +1013,10 @@
         <h2>install</h2>
         <h3>Prebuilt binaries on every tagged release.</h3>
         <p style="color: var(--fg-muted); margin: 0 0 20px">
-          Linux (x86_64, aarch64), macOS (Apple Silicon, Intel), Windows
-          (x86_64). Arch users: AUR <code>sqeel-bin</code>. SHA-256 sidecars on
-          every artifact.
+          macOS via Homebrew tap, Arch via AUR, or grab a prebuilt binary. Linux
+          (x86_64, aarch64), macOS (Apple Silicon, Intel), Windows (x86_64).
+          Arch users: AUR <code>sqeel-bin</code>. SHA-256 sidecars on every
+          artifact.
         </p>
         <div class="cta">
           <a
@@ -1027,11 +1028,27 @@
           >
           <a
             class="btn"
+            href="https://github.com/kryptic-sh/homebrew-tap"
+            target="_blank"
+            rel="noopener"
+            >Homebrew (kryptic-sh/tap) ↗</a
+          >
+          <a
+            class="btn"
             href="https://github.com/kryptic-sh/sqeel/releases"
             target="_blank"
             rel="noopener"
             >all releases ↗</a
           >
+        </div>
+        <div class="terminal" style="margin-top: 20px">
+          <div class="bar">
+            <span class="dot r"></span><span class="dot y"></span
+            ><span class="dot g"></span>
+            <span class="title">sqeel — macOS (Homebrew)</span>
+          </div>
+          <pre><span class="ok">$</span> brew install kryptic-sh/tap/sqeel
+<span class="ok">$</span> sqeel</pre>
         </div>
         <div class="terminal" style="margin-top: 20px">
           <div class="bar">
