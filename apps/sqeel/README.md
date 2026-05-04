@@ -2,14 +2,13 @@
 
 Fast, vim-native SQL client. No Electron. No JVM.
 
-Ships two binaries: `sqeel` (terminal) and `sqeel-gui` (native GUI window
-hosting the TUI).
+Ships the `sqeel` terminal binary.
 
 - Homepage: <https://sqeel.kryptic.sh>
 - Repository: <https://github.com/kryptic-sh/sqeel>
 
-See the [main README](https://github.com/kryptic-sh/sqeel#readme) for full
-docs, install instructions, and configuration.
+See the [main README](https://github.com/kryptic-sh/sqeel#readme) for full docs,
+install instructions, and configuration.
 
 ## License
 

@@ -18,6 +18,14 @@ patch bumps.
   the formula with the just-uploaded macOS sha256s and pushes it to
   `kryptic-sh/homebrew-tap`. Install with `brew install kryptic-sh/tap/sqeel`.
 
+### Removed
+
+- `sqeel-gui` binary and `crates/sqeel-gui` crate removed pending a shared GUI
+  adapter layer (`hjkl-editor-gui`, tracked in
+  [kryptic-sh/sqeel#3](https://github.com/kryptic-sh/sqeel/issues/3)). The
+  previously published `sqeel-gui` crate on crates.io stays frozen at 0.3.0 and
+  will not be re-published from this state.
+
 ## [0.3.0] - 2026-05-03
 
 ### Changed

@@ -23,7 +23,6 @@ sha256sums_aarch64=('{SHA256_AARCH64}')
 
 package() {
     install -Dm755 "$srcdir/sqeel" "$pkgdir/usr/bin/sqeel"
-    install -Dm755 "$srcdir/sqeel-gui" "$pkgdir/usr/bin/sqeel-gui"
     install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

@@ -7,7 +7,7 @@
     <title>sqeel — vim-native SQL client for Postgres, MySQL, SQLite</title>
     <meta
       name="description"
-      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, terminal or GUI. No Electron. No JVM. No bullshit."
+      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, runs in your terminal. No Electron. No JVM. No bullshit."
     />
     <meta
       name="keywords"
@@ -21,7 +21,7 @@
     />
     <meta
       property="og:description"
-      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, terminal or GUI. No Electron. No JVM. No bullshit."
+      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, runs in your terminal. No Electron. No JVM. No bullshit."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://sqeel.kryptic.sh/" />
@@ -40,7 +40,7 @@
     />
     <meta
       name="twitter:description"
-      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, terminal or GUI. No Electron. No JVM. No bullshit."
+      content="Native Rust SQL client built for speed. First-class vim bindings, MySQL/Postgres/SQLite support, runs in your terminal. No Electron. No JVM. No bullshit."
     />
     <meta
       name="twitter:image"
@@ -51,7 +51,7 @@
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "sqeel",
-        "description": "Native Rust SQL client with vim bindings. Terminal and GUI. Supports MySQL, Postgres, and SQLite.",
+        "description": "Native Rust SQL client with vim bindings. Runs in your terminal. Supports MySQL, Postgres, and SQLite.",
         "url": "https://sqeel.kryptic.sh/",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "Linux, macOS, Windows",
@@ -874,7 +874,7 @@
         <h1>Fast, vim-native <span class="grad">SQL client.</span></h1>
         <p class="tagline">No Electron. No JVM. No bullshit.</p>
         <p class="tagline" style="color: var(--fg-muted); font-size: 16px">
-          Native Rust. Instant startup. Terminal or GUI. MySQL, Postgres,
+          Native Rust. Instant startup. Terminal-native. MySQL, Postgres,
           SQLite.
         </p>
 
@@ -957,11 +957,11 @@
             </p>
           </div>
           <div class="feat">
-            <div class="icon">03 — UIS</div>
-            <h4>TUI or GUI</h4>
+            <div class="icon">03 — TUI</div>
+            <h4>Terminal UI</h4>
             <p>
-              <code>sqeel</code> for terminal (ratatui),
-              <code>sqeel-gui</code> for native (iced). Same core, your choice.
+              <code>sqeel</code> — ratatui terminal client. Instant startup, no
+              Electron, no JVM.
             </p>
           </div>
           <div class="feat">
@@ -1074,14 +1074,14 @@
             <span class="title">sqeel — from source</span>
           </div>
           <pre><span class="cm"># crates.io</span>
-<span class="ok">$</span> cargo install sqeel sqeel-gui
+<span class="ok">$</span> cargo install sqeel
 
 <span class="cm"># or build from the repo</span>
 <span class="ok">$</span> git clone https://github.com/kryptic-sh/sqeel
 <span class="ok">$</span> cd sqeel
 <span class="ok">$</span> cargo build --release
 
-<span class="cm"># binaries in target/release/{sqeel,sqeel-gui}</span></pre>
+<span class="cm"># binary in target/release/sqeel</span></pre>
         </div>
       </section>
     </main>

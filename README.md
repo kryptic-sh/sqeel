@@ -16,7 +16,6 @@ Fast, vim-native SQL client. No Electron. No JVM.
   jumplist, page scroll, H/M/L, case/indent ops, dot-repeat, soft-wrap with
   `:set wrap` / `:set linebreak` and `gj`/`gk`)
 - Mouse support in all panes
-- Two UIs: terminal (`sqeel`) or native GUI (`sqeel-gui`)
 - MySQL, SQLite, PostgreSQL via sqlx
 - tree-sitter SQL syntax highlighting (dialect-aware)
 - LSP integration (`sqls`) — completions + inline diagnostic underlines + gutter
@@ -75,7 +74,6 @@ apk add --allow-untrusted sqeel-*.apk
 
 ```sh
 cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
-cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel-gui
 ```
 
 Or build from source:
@@ -86,7 +84,7 @@ cd sqeel
 cargo build --release
 ```
 
-Binaries land in `target/release/sqeel` and `target/release/sqeel-gui`.
+Binary lands in `target/release/sqeel`.
 
 ### Sandbox mode
 
@@ -288,10 +286,9 @@ render as a navigable grid; plain markdown is styled in-place.
 ```
 sqeel-core/            # state, DB, query runner, schema, config
 sqeel-tui/             # ratatui terminal provider
-sqeel-gui/             # iced native GUI provider
 sqeel-vim/             # vim-mode engine + ex commands (built on sqeel-buffer)
 sqeel-buffer/          # vim-shaped text buffer + cell-write render widget
-sqeel/                 # binaries: sqeel + sqeel-gui
+sqeel/                 # binary: sqeel
 ```
 
 ## License

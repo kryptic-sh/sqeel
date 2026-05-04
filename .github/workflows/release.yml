@@ -116,17 +116,17 @@ jobs:
 
       - name: Build binaries (zigbuild, glibc)
         if: matrix.glibc != ''
-        run: cargo zigbuild --release --locked --target ${{ matrix.target }}.${{ matrix.glibc }} --bin sqeel --bin sqeel-gui
+        run: cargo zigbuild --release --locked --target ${{ matrix.target }}.${{ matrix.glibc }} --bin sqeel
 
       - name: Build binaries (zigbuild, musl)
         if: matrix.zigbuild_target != '' && matrix.glibc == ''
-        run: cargo zigbuild --release --locked --target ${{ matrix.zigbuild_target }} --bin sqeel --bin sqeel-gui
+        run: cargo zigbuild --release --locked --target ${{ matrix.zigbuild_target }} --bin sqeel
 
       - name: Build binaries
         if: matrix.glibc == '' && matrix.zigbuild_target == ''
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_min }}
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin sqeel --bin sqeel-gui
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin sqeel
 
       - name: Package (Linux / macOS)
         if: matrix.archive == 'tar.gz'
@@ -135,7 +135,6 @@ jobs:
           ARCHIVE="sqeel-${TAG}-${{ matrix.target }}.tar.gz"
           mkdir -p dist
           cp target/${{ matrix.target }}/release/sqeel${{ matrix.suffix }} dist/
-          cp target/${{ matrix.target }}/release/sqeel-gui${{ matrix.suffix }} dist/
           cp README.md LICENSE dist/
           tar -czf "$ARCHIVE" -C dist .
           if command -v sha256sum >/dev/null 2>&1; then
@@ -152,7 +151,6 @@ jobs:
           $ARCHIVE = "sqeel-$TAG-${{ matrix.target }}.zip"
           New-Item -ItemType Directory -Force dist
           Copy-Item "target/${{ matrix.target }}/release/sqeel${{ matrix.suffix }}" dist/
-          Copy-Item "target/${{ matrix.target }}/release/sqeel-gui${{ matrix.suffix }}" dist/
           Copy-Item README.md, LICENSE dist/
           Compress-Archive -Path dist/* -DestinationPath $ARCHIVE
           $hash = (Get-FileHash -Algorithm SHA256 $ARCHIVE).Hash.ToLower()
@@ -202,9 +200,8 @@ jobs:
             cargo publish -p "$crate" --locked
           }
           # sqeel-core and sqeel-tui publish from their own repos (submodules
-          # at crates/sqeel-core and crates/sqeel-tui). Only sqeel-gui and
-          # the sqeel umbrella binary publish from this monorepo.
-          publish_if_new sqeel-gui
+          # at crates/sqeel-core and crates/sqeel-tui). Only the sqeel umbrella
+          # binary publishes from this monorepo.
           publish_if_new sqeel
 
   # AUR auto-publish for `sqeel-bin`. Pulls the just-uploaded tarball
