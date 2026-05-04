@@ -64,6 +64,13 @@ brew install kryptic-sh/tap/sqeel
 paru -S sqeel-bin
 ```
 
+**Alpine Linux**
+
+```sh
+# Download the .apk from https://github.com/kryptic-sh/sqeel/releases/latest
+apk add --allow-untrusted sqeel-*.apk
+```
+
 **From source**
 
 ```sh

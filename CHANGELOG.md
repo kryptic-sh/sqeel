@@ -10,6 +10,9 @@ patch bumps.
 
 ### Added
 
+- Alpine .apk packaging pipeline (release CI builds .apk in `alpine:latest` and
+  uploads it as a release asset; install with
+  `apk add --allow-untrusted sqeel-*.apk`).
 - Homebrew tap auto-publish for `sqeel` on tag push. New
   `pkg/homebrew/sqeel.rb.in` template + `brew-tap` job in `release.yml` renders
   the formula with the just-uploaded macOS sha256s and pushes it to
