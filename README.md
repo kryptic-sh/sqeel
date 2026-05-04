@@ -56,6 +56,20 @@ Results hidden → editor fills right pane. Query runs → results expand to 50%
 
 ## Install
 
+**macOS (Homebrew)**
+
+```sh
+brew install kryptic-sh/tap/sqeel
+```
+
+**Arch Linux (AUR)**
+
+```sh
+paru -S sqeel-bin
+```
+
+**From source**
+
 ```sh
 cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
 cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel-gui

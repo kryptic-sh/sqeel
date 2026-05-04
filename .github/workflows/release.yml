@@ -293,3 +293,82 @@ jobs:
           fi
           git commit -m "sqeel-bin ${{ steps.tag.outputs.version }}-1"
           git push origin master
+
+  # Homebrew tap auto-publish for `sqeel`. Pulls the just-uploaded macOS
+  # tarball checksums off the release, renders pkg/homebrew/sqeel.rb.in,
+  # and pushes the formula to kryptic-sh/homebrew-tap over SSH. Mirrors
+  # the aur-bin job shape; same `needs: [build]` cascade so the macOS
+  # sidecars are guaranteed to exist by the time this runs.
+  #
+  # Required org/repo secret:
+  #   BREW_SSH_KEY  — ed25519 private key whose public half is registered
+  #                   as a deploy key (write access) on
+  #                   kryptic-sh/homebrew-tap. Org-level SELECTED-scope —
+  #                   already granted to this repo.
+  brew-tap:
+    name: Publish sqeel formula to homebrew-tap
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release tag: $TAG (formula version=$VERSION)"
+
+      - name: Fetch macOS sha256 sidecars
+        id: sha
+        run: |
+          set -euo pipefail
+          V="${{ steps.tag.outputs.version }}"
+          BASE="https://github.com/kryptic-sh/sqeel/releases/download/v${V}"
+          for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+            curl -fsSL "$BASE/sqeel-v${V}-${arch}.tar.gz.sha256" -o "sha.${arch}"
+          done
+          echo "aarch64=$(awk '{print $1}' sha.aarch64-apple-darwin)" >> "$GITHUB_OUTPUT"
+          echo "x86_64=$(awk '{print $1}' sha.x86_64-apple-darwin)" >> "$GITHUB_OUTPUT"
+
+      - name: Render formula
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          sed \
+            -e "s|{VERSION}|${{ steps.tag.outputs.version }}|g" \
+            -e "s|{SHA256_AARCH64_DARWIN}|${{ steps.sha.outputs.aarch64 }}|g" \
+            -e "s|{SHA256_X86_64_DARWIN}|${{ steps.sha.outputs.x86_64 }}|g" \
+            pkg/homebrew/sqeel.rb.in > out/sqeel.rb
+          echo "--- rendered formula ---"
+          cat out/sqeel.rb
+
+      - name: Configure SSH for homebrew-tap
+        env:
+          BREW_SSH_KEY: ${{ secrets.BREW_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -dm700 ~/.ssh
+          printf '%s\n' "$BREW_SSH_KEY" > ~/.ssh/brew
+          chmod 600 ~/.ssh/brew
+
+      - name: Push formula to homebrew-tap
+        env:
+          GIT_SSH_COMMAND: "ssh -i ~/.ssh/brew -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"
+        run: |
+          set -euo pipefail
+          git config --global user.name  "sqeel-ci"
+          git config --global user.email "ci@kryptic.sh"
+          git clone git@github.com:kryptic-sh/homebrew-tap.git tap
+          mkdir -p tap/Formula
+          cp out/sqeel.rb tap/Formula/sqeel.rb
+          cd tap
+          git add Formula/sqeel.rb
+          if git diff --cached --quiet; then
+            echo "no changes vs current tap head; nothing to push"
+            exit 0
+          fi
+          git commit -m "sqeel ${{ steps.tag.outputs.version }}"
+          git push origin HEAD:main

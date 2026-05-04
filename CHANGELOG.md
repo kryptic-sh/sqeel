@@ -8,6 +8,13 @@ patch bumps.
 
 ## [Unreleased]
 
+### Added
+
+- Homebrew tap auto-publish for `sqeel` on tag push. New
+  `pkg/homebrew/sqeel.rb.in` template + `brew-tap` job in `release.yml` renders
+  the formula with the just-uploaded macOS sha256s and pushes it to
+  `kryptic-sh/homebrew-tap`. Install with `brew install kryptic-sh/tap/sqeel`.
+
 ## [0.3.0] - 2026-05-03
 
 ### Changed
