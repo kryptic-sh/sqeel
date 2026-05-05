@@ -8,6 +8,8 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-06
+
 ### Added
 
 - Startup splash screen: on TUI launch the `sqeel` letterform animation (powered
@@ -199,7 +201,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.2
 [0.4.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.1
 [0.4.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.3.0
