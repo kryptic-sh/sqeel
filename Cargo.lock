@@ -2396,6 +2396,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqeel-config"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "hjkl-config",
+ "hjkl-engine",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "sqeel-core"
 version = "0.3.1"
 dependencies = [
@@ -2410,6 +2422,7 @@ dependencies = [
  "pulldown-cmark",
  "serde",
  "serde_json",
+ "sqeel-config",
  "sqlx",
  "tempfile",
  "tokio",

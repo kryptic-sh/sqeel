@@ -1,0 +1,21 @@
+[package]
+name = "sqeel-config"
+description = "Config loading for sqeel: MainConfig / EditorConfig on top of hjkl-config."
+keywords = ["sql", "tui", "config"]
+categories = ["database", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+hjkl-config = "0.2"
+hjkl-engine = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

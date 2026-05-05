@@ -8,6 +8,12 @@ patch bumps.
 
 ## [Unreleased]
 
+### Added
+
+- New `crates/sqeel-config` workspace member. `MainConfig` and `EditorConfig`
+  now live in `sqeel-config` (on top of `hjkl-config::AppConfig`) and are
+  re-exported from `sqeel-core::config` for backwards compatibility.
+
 ## [0.4.0] - 2026-05-05
 
 ### Changed
