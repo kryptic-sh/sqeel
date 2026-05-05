@@ -2428,6 +2428,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
  "tree-sitter",
  "tree-sitter-sequel",
  "uuid",

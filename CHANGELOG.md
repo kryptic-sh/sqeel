@@ -8,6 +8,14 @@ patch bumps.
 
 ## [Unreleased]
 
+### Added
+
+- **No first-highlight freeze.** The SQL grammar (tree-sitter-sql) is now loaded
+  in the background via `hjkl_bonsai::AsyncGrammarLoader`. On a fresh install
+  the 1–3 s git clone + `cc` compile no longer blocks the TUI main loop. The
+  editor renders in plain text until the grammar resolves, then switches to full
+  syntax highlighting automatically on the next render tick.
+
 ### Changed
 
 - **Connection storage moved to `sqeel-config`** (`ConnectionConfig`,
