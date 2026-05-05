@@ -14,6 +14,9 @@ patch bumps.
   renders vim-accurate `"N substitutions on M lines"` using the new
   `ExEffect::Substituted { count, lines_changed }` shape. Old text was
   `"N substitution(s)"`.
+- **`sqeel-tui`: `hjkl-clipboard` 0.4 → 0.5.** Additive upgrade — public
+  `Backend` trait, `Capabilities` bitflags, `BackendKind` enum, and async
+  variants land upstream. sqeel-tui's text copy/paste paths are unchanged.
 
 ### Added
 

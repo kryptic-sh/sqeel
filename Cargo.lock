@@ -89,6 +89,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -947,10 +958,12 @@ dependencies = [
 
 [[package]]
 name = "hjkl-clipboard"
-version = "0.4.8"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "739de1b764fd1997230832922ca2b1f2d8efa3e196f3a99c59c552e2e4aa44c0"
+checksum = "68de06f560ffcf79aaf49045483b16970317e66f6a1eb8063ff23c5c80b76d71"
 dependencies = [
+ "async-trait",
+ "bitflags 2.11.1",
  "libc",
  "miniz_oxide",
 ]
