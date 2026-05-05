@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use sqeel_core::{
-    AppState, UiProvider,
+    AppState,
     config::{load_connections, load_main_config, load_session_data, save_session},
     db::DbConnection,
     ddl::parse_ddl,
@@ -11,7 +11,6 @@ use sqeel_core::{
     schema::SchemaNode,
     state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest},
 };
-use sqeel_tui::TuiProvider;
 
 const SAMPLE_QUERY: &str = "CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -152,6 +151,10 @@ struct Args {
     /// and the add-connection form opens automatically.
     #[arg(long, requires = "sandbox")]
     empty: bool,
+
+    /// Skip the splash screen on startup.
+    #[arg(long)]
+    no_splash: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -414,7 +417,7 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    TuiProvider::run(state.clone())?;
+    sqeel_tui::run(state.clone(), !args.no_splash)?;
 
     // Sandbox-cleanup prompt. The TUI has surrendered the terminal,
     // so a plain stderr prompt + stdin read is fine — the user is

@@ -1045,6 +1045,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hjkl-splash"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd7c4e1b3c731219d07f0bf3cfff65eff9193c070fc25b83f83a535f7c2d04ac"
+dependencies = [
+ "ratatui",
+]
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2448,6 +2457,7 @@ dependencies = [
  "hjkl-form",
  "hjkl-picker",
  "hjkl-ratatui",
+ "hjkl-splash",
  "lsp-types",
  "pulldown-cmark",
  "ratatui",

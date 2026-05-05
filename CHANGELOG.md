@@ -8,6 +8,12 @@ patch bumps.
 
 ## [Unreleased]
 
+### Added
+
+- Startup splash screen: on TUI launch the `sqeel` letterform animation (powered
+  by `hjkl-splash`) plays until the user presses any key.
+- `--no-splash` CLI flag to skip the splash screen.
+
 ## [0.4.1] - 2026-05-05
 
 ### Added
