@@ -17,6 +17,13 @@ patch bumps.
 - **`sqeel-tui`: `hjkl-clipboard` 0.4 → 0.5.** Additive upgrade — public
   `Backend` trait, `Capabilities` bitflags, `BackendKind` enum, and async
   variants land upstream. sqeel-tui's text copy/paste paths are unchanged.
+- **`hjkl-bonsai` 0.3 → 0.5** (both `sqeel-core` and `sqeel-tui`). Migrates
+  through two major releases: 0.4 introduced `ManifestMeta` as a required
+  argument to `GrammarLoader::user_default` and `Grammar::load`; 0.5 adds
+  `Highlighter::highlight_range_with_injections` for viewport-scoped
+  highlighting. The 0.4 call-site updates are applied; 0.5 adoption is available
+  but not yet wired into the render path (SQL grammars don't ship injection
+  rules, so the perf win is deferred until injections land).
 
 ### Added
 
