@@ -8,6 +8,13 @@ patch bumps.
 
 ## [Unreleased]
 
+### Changed
+
+- **Connection storage moved to `sqeel-config`** (`ConnectionConfig`,
+  `load_connections`, `save_connection`, `delete_connection`). All sqeel TOML
+  I/O now lives in one crate. `sqeel-core` re-exports the symbols, so
+  `sqeel-tui` and `apps/sqeel` are unaffected.
+
 ### Added
 
 - **`sqeel-config` extracted to its own repo + submodule**
