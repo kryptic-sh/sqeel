@@ -8,7 +8,17 @@ patch bumps.
 
 ## [Unreleased]
 
-## [0.4.3] - 2026-05-06
+## [0.4.4] - 2026-05-06
+
+### Fixed
+
+- Re-cut of v0.4.3. The v0.4.3 umbrella release failed at the cross-platform
+  binary-build step because the tag's submodule pointer for `crates/sqeel-tui`
+  was left at the pre-bump SHA (sqeel-tui 0.4.2), while parent `Cargo.lock` had
+  already been refreshed against sqeel-tui 0.4.3. CI's `--locked` build refused
+  to reconcile. v0.4.4 ships the same content as v0.4.3 with the submodule
+  pointer correctly aligned. `sqeel-tui` v0.4.3 published cleanly during the
+  v0.4.3 attempt, so the regression is umbrella-only.
 
 ### Added
 
@@ -220,8 +230,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.3...HEAD
-[0.4.3]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.3
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.4
 [0.4.2]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.2
 [0.4.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.1
 [0.4.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.0
