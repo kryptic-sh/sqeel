@@ -8,6 +8,8 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-05
+
 ### Changed
 
 - **`sqeel-tui`: `hjkl-editor` 0.3 → 0.4.** Status toast after `:s/…/…/` now
@@ -161,7 +163,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.3.0
 [0.2.4]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.4
 [0.2.3]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.3
