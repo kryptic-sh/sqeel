@@ -14,6 +14,11 @@ patch bumps.
   `load_connections`, `save_connection`, `delete_connection`). All sqeel TOML
   I/O now lives in one crate. `sqeel-core` re-exports the symbols, so
   `sqeel-tui` and `apps/sqeel` are unaffected.
+- `sqeel-tui` theme loader (`theme.rs`) now resolves `theme.toml` through
+  `sqeel_core::config::config_dir()` (the sqeel-config-backed central path
+  resolver) instead of `dirs::config_dir()` directly. The `--sandbox` override
+  now applies to theme loading too. Drops the direct `dirs` dep from
+  `sqeel-tui`.
 
 ### Added
 

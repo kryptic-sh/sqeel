@@ -2438,7 +2438,6 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "dirs",
  "hjkl-bonsai",
  "hjkl-buffer",
  "hjkl-clipboard",
