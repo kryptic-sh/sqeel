@@ -8,6 +8,25 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-06
+
+### Added
+
+- Tmux/SSH-friendly alternate bindings for query execution: `<leader><CR>` runs
+  the statement under the cursor (alt for `Ctrl+Enter`) and `<leader><Tab>` runs
+  all statements in the file (alt for `Ctrl+Shift+Enter`). The modifier+Enter
+  combos rely on terminal protocols that don't pass cleanly through tmux
+  passthrough; the leader-chord variants use plain bytes that transmit over any
+  pipe.
+
+### Changed
+
+- `sqeel-tui` 0.4.2 → 0.4.3. Picks up the alternate binds above plus internal
+  dedup against upstream hjkl crates (local `spinner` module removed in favor of
+  `hjkl_ratatui::spinner::frame`) and a refactor extracting
+  `run_statement_under_cursor` / `run_all_statements` free fns from four
+  near-identical handler bodies.
+
 ## [0.4.2] - 2026-05-06
 
 ### Added
@@ -201,7 +220,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.3
 [0.4.2]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.2
 [0.4.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.1
 [0.4.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.0
