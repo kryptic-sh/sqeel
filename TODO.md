@@ -41,12 +41,15 @@ file:line targets; each item carries them so the work is mechanical.
   raises a "Reconnecting to {name}…" status. Bound to `r` when
   `focus == Focus::Schema`; the placeholder text now shows
   `Connection failed: {e}\n\n[r] retry {name}` so the binding is discoverable.
-- **Connection state badge in switcher (S).** Switcher only marks the active
-  connection with `*` (`sqeel-tui/src/lib.rs:6210-6281`). Plumb the live state
-  from `AppState` (`connection_status: Connected | Connecting | Error`) into the
-  rendered list — e.g. `● mysql-prod` (green) for connected, `◌ mysql-staging`
-  (yellow) for connecting, `✗ broken-conn` (red) for the last-tried connection
-  that failed. State already lives in core; switcher just doesn't read it yet.
+- ~~**Connection state badge in switcher (S).**~~ Done.
+  `draw_connection_switcher` in `sqeel-tui/src/lib.rs` now renders a colored
+  glyph before each row using `AppState`'s existing fields (`schema_connecting`,
+  `schema_connect_error`, `active_connection`): `●` green for a live connection,
+  `◌` yellow while the handshake is in flight, `✗` red when the last attempt
+  failed. Non-active connections show a blank badge (they have no tracked state
+  this session). The active connection name is also bolded so it remains
+  identifiable when the cursor highlight is on a different row. The `*` prefix
+  is removed.
 - ~~**Better connection error messages (S).**~~ Done. New `ConnectError` plus
   `ConnectErrorKind { Auth, Network, Dns, Tls, Config, Other }` in
   `sqeel-core/src/db.rs`; `DbConnection::connect` returns this instead of

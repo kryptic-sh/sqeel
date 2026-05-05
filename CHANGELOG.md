@@ -10,6 +10,10 @@ patch bumps.
 
 ### Added
 
+- Connection state badge in the connection switcher. Each row now shows a
+  colored glyph: `●` green for a live connection, `◌` yellow while the handshake
+  is in flight, `✗` red when the last attempt failed. The active connection name
+  is bolded. The old `*` prefix is removed.
 - Alpine .apk packaging pipeline (release CI builds .apk in `alpine:latest` and
   uploads it as a release asset; install with
   `apk add --allow-untrusted sqeel-*.apk`).

@@ -936,9 +936,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-buffer"
-version = "0.3.3"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1075c3b4c7e243e4b9f3d1176b84ece98186861b252440deaa7c691a756b3605"
+checksum = "51c15dd2d6a1050f2423b892c9149540e20e12cde2b5aaf1c7f08f52a07a1621"
 dependencies = [
  "ratatui",
  "regex",
@@ -969,9 +969,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-editor"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cb5654dab3aca0c5799b89196390f513504d5653f2c3aaf8074c07434cf94c5"
+checksum = "503e13046186d4ed9c0ccb9fd1a8896a49d7e75da5642df9fe2b597248a642d3"
 dependencies = [
  "hjkl-buffer",
  "hjkl-engine",
@@ -980,9 +980,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-engine"
-version = "0.3.3"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce37f6a04fabdbc19665db83f6879f87d40dc1e51e0b779ecace216b21a2b0dc"
+checksum = "13d1855e54f1feafb088a00d3658dc24ce3af205b3bd3b6196b57e2c7c7b919d"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm",
@@ -995,9 +995,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-form"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05640cecfd86b4baeb16d2423d3d23ea4f8ed30bd74a3a9e29e65e2d285ca621"
+checksum = "04b695cc00bd637947a097afca4afb1d5a6515945e57ca3940094fd487ac081a"
 dependencies = [
  "hjkl-buffer",
  "hjkl-engine",
@@ -1005,9 +1005,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-picker"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27d1f6fcb06622c85a697bc1c5d6b63965c651242c83c0bf163499f64c6d6c32"
+checksum = "d124f9c34f336ea885ae92764baff7e99148101ef07937922c13c9e58505d880"
 dependencies = [
  "crossterm",
  "hjkl-buffer",
@@ -1019,9 +1019,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-ratatui"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e68aec168ae29d9b8cf3ff9d13057e9d608223d7ce190b24b864f24b43d2e14f"
+checksum = "84a8a9055150cdc4de5303f69913ee118ce5feb2e4681dc7d37d0ae709c5dde6"
 dependencies = [
  "crossterm",
  "hjkl-engine",
