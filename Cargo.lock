@@ -624,7 +624,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -931,15 +931,16 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hjkl-bonsai"
-version = "0.5.0"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6001f8775512ccbe446be1590e9752742a20b301470581af7779c442c127b3dc"
+checksum = "5563a5b39ca5b49278e69e2e4ecc09c42dc6023cdf39bbfc18d654e55585a32e"
 dependencies = [
  "anyhow",
  "dirs",
  "libloading",
  "ratatui",
  "serde",
+ "thiserror 2.0.18",
  "toml",
  "tracing",
  "tree-sitter",
@@ -959,9 +960,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-clipboard"
-version = "0.5.1"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68de06f560ffcf79aaf49045483b16970317e66f6a1eb8063ff23c5c80b76d71"
+checksum = "f6b836b408f98d0563fe4d7cffda20bbddfdfc474a7809579c68644bf20c653c"
 dependencies = [
  "async-trait",
  "bitflags 2.11.1",
@@ -2118,7 +2119,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2764,7 +2765,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
