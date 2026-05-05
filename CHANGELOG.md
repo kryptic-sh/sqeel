@@ -8,6 +8,13 @@ patch bumps.
 
 ## [Unreleased]
 
+### Changed
+
+- **`sqeel-tui`: `hjkl-editor` 0.3 → 0.4.** Status toast after `:s/…/…/` now
+  renders vim-accurate `"N substitutions on M lines"` using the new
+  `ExEffect::Substituted { count, lines_changed }` shape. Old text was
+  `"N substitution(s)"`.
+
 ### Added
 
 - Connection state badge in the connection switcher. Each row now shows a
