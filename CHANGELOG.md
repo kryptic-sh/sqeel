@@ -8,8 +8,18 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-05
+
 ### Added
 
+- **`sqeel-config` extracted to its own repo + submodule**
+  ([kryptic-sh/sqeel-config](https://github.com/kryptic-sh/sqeel-config),
+  published v0.1.0 → v0.2.0). Hosts `MainConfig`, `EditorConfig`, and the
+  connection-storage API on top of `hjkl_config::AppConfig`, re-exported from
+  `sqeel-core::config` for backwards compatibility. Mirrors the buffr-config /
+  sqeel-core / sqeel-tui standalone-repo pattern: own ci.yml + release.yml,
+  depended on by `sqeel-core` from crates.io and patched to local path in the
+  umbrella workspace for development.
 - **No first-highlight freeze.** The SQL grammar (tree-sitter-sql) is now loaded
   in the background via `hjkl_bonsai::AsyncGrammarLoader`. On a fresh install
   the 1–3 s git clone + `cc` compile no longer blocks the TUI main loop. The
@@ -27,17 +37,6 @@ patch bumps.
   resolver) instead of `dirs::config_dir()` directly. The `--sandbox` override
   now applies to theme loading too. Drops the direct `dirs` dep from
   `sqeel-tui`.
-
-### Added
-
-- **`sqeel-config` extracted to its own repo + submodule**
-  ([kryptic-sh/sqeel-config](https://github.com/kryptic-sh/sqeel-config),
-  published v0.1.0). Hosts `MainConfig` / `EditorConfig` on top of
-  `hjkl_config::AppConfig`, re-exported from `sqeel-core::config` for backwards
-  compatibility. Mirrors the buffr-config / sqeel-core / sqeel-tui
-  standalone-repo pattern: own ci.yml + release.yml, depended on by `sqeel-core`
-  from crates.io and patched to local path in the umbrella workspace for
-  development.
 
 ## [0.4.0] - 2026-05-05
 
@@ -194,7 +193,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.1
 [0.4.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.3.0
 [0.2.4]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.2.4
