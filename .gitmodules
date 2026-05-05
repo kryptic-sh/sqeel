@@ -4,3 +4,6 @@
 [submodule "crates/sqeel-tui"]
 	path = crates/sqeel-tui
 	url = https://github.com/kryptic-sh/sqeel-tui.git
+[submodule "crates/sqeel-config"]
+	path = crates/sqeel-config
+	url = https://github.com/kryptic-sh/sqeel-config.git

@@ -10,9 +10,14 @@ patch bumps.
 
 ### Added
 
-- New `crates/sqeel-config` workspace member. `MainConfig` and `EditorConfig`
-  now live in `sqeel-config` (on top of `hjkl-config::AppConfig`) and are
-  re-exported from `sqeel-core::config` for backwards compatibility.
+- **`sqeel-config` extracted to its own repo + submodule**
+  ([kryptic-sh/sqeel-config](https://github.com/kryptic-sh/sqeel-config),
+  published v0.1.0). Hosts `MainConfig` / `EditorConfig` on top of
+  `hjkl_config::AppConfig`, re-exported from `sqeel-core::config` for backwards
+  compatibility. Mirrors the buffr-config / sqeel-core / sqeel-tui
+  standalone-repo pattern: own ci.yml + release.yml, depended on by `sqeel-core`
+  from crates.io and patched to local path in the umbrella workspace for
+  development.
 
 ## [0.4.0] - 2026-05-05
 

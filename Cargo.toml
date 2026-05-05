@@ -12,5 +12,6 @@ homepage = "https://sqeel.kryptic.sh"
 authors = ["mxaddict <mxaddict@kryptic.sh>"]
 
 [patch.crates-io]
+sqeel-config = { path = "crates/sqeel-config" }
 sqeel-core = { path = "crates/sqeel-core" }
 sqeel-tui = { path = "crates/sqeel-tui" }
