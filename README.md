@@ -1,13 +1,35 @@
-# SQEEL
+# sqeel
+
+Vim-native SQL client. Native Rust TUI. No Electron. No JVM.
 
 [![CI](https://github.com/kryptic-sh/sqeel/actions/workflows/ci.yml/badge.svg)](https://github.com/kryptic-sh/sqeel/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/sqeel.svg)](https://crates.io/crates/sqeel)
-[![docs.rs](https://img.shields.io/docsrs/sqeel)](https://docs.rs/sqeel)
 [![Release](https://img.shields.io/github/v/release/kryptic-sh/sqeel)](https://github.com/kryptic-sh/sqeel/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-sqeel.kryptic.sh-7ee787)](https://sqeel.kryptic.sh)
 
-Fast, vim-native SQL client. No Electron. No JVM.
+Modal SQL client built with [`ratatui`](https://crates.io/crates/ratatui). Vim
+bindings powered by [hjkl-engine](https://crates.io/crates/hjkl-engine).
+
+## Status
+
+`0.4.5` — active development. MySQL, SQLite, and PostgreSQL support; full vim
+modal engine; LSP integration (`sqls`) with completions, hover, and
+goto-definition; tree-sitter SQL syntax highlighting; schema browser; splash
+screen; tmux/SSH-friendly leader bindings. See [CHANGELOG.md](CHANGELOG.md).
+
+## Supported platforms
+
+Each release publishes binary artifacts for:
+
+| OS           | Architecture    | Format       |
+| ------------ | --------------- | ------------ |
+| Linux        | x86_64, aarch64 | `.tar.gz`    |
+| Linux (musl) | x86_64          | `.tar.gz`    |
+| Alpine Linux | x86_64          | `.apk`       |
+| Arch Linux   | x86_64, aarch64 | AUR (`paru`) |
+| macOS        | arm64, x86_64   | `.tar.gz`    |
+| Windows      | x86_64          | `.zip`       |
 
 ## Features
 
@@ -25,13 +47,14 @@ Fast, vim-native SQL client. No Electron. No JVM.
 - Schema browser — click or keyboard to expand/collapse
 - Editor tabs with lazy loading and 5-min RAM eviction
 - Auto-save SQL buffers, result history, query history
-- tmux-aware pane navigation
+- tmux/SSH-aware leader bindings (no modifier+key required)
 - Vim-style status bar + command mode (`:`)
 - Vim-style results pane — cell cursor, visual-line / visual-block selection
   with TSV yank, `/` search, count prefix nav, mouse drag select
 - Focus-stealing hover popup — markdown rendered with pulldown-cmark, GFM tables
   turned into a navigable cell grid (yank, visual selection, `/` search),
   schema-cache fast path for tables, lazy column fetch on miss
+- Startup splash screen animation
 
 ## Layout
 
@@ -48,6 +71,15 @@ Fast, vim-native SQL client. No Electron. No JVM.
 ```
 
 Results hidden → editor fills right pane. Query runs → results expand to 50%.
+
+## Crates
+
+| Crate          | Role                                                             |
+| -------------- | ---------------------------------------------------------------- |
+| `sqeel-config` | Config + connection storage on top of `hjkl-config`.             |
+| `sqeel-core`   | sqlx connection pool, tree-sitter SQL, LSP integration, schema.  |
+| `sqeel-tui`    | ratatui TUI front-end: vim-modal editing, keybindings, renderer. |
+| `sqeel`        | Binary: CLI args, sandbox mode, wires state into sqeel-tui.      |
 
 ## Install
 
@@ -70,21 +102,17 @@ paru -S sqeel-bin
 apk add --allow-untrusted sqeel-*.apk
 ```
 
+**Pre-built binaries**
+
+Download the tarball for your platform from the
+[Releases](https://github.com/kryptic-sh/sqeel/releases) page and extract the
+`sqeel` binary onto your `$PATH`.
+
 **From source**
 
 ```sh
 cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
 ```
-
-Or build from source:
-
-```sh
-git clone https://github.com/kryptic-sh/sqeel
-cd sqeel
-cargo build --release
-```
-
-Binary lands in `target/release/sqeel`.
 
 ### Sandbox mode
 
@@ -97,7 +125,17 @@ auto-seeds:
   inserts + a select.
 
 The temp dir path is printed to stderr at startup. It survives the process
-(under `/tmp/sqeel-sandbox-*`) — clean it up with `rm -rf` when you're done.
+(under `/tmp/sqeel-sandbox-*`) — clean it up with `rm -rf` when done.
+
+## Build
+
+```sh
+git clone --recurse-submodules https://github.com/kryptic-sh/sqeel
+cd sqeel
+cargo build --release
+```
+
+Binary lands in `target/release/sqeel`.
 
 ## Config
 
@@ -152,13 +190,15 @@ Press `?` in normal mode to open the help overlay.
 
 ### Leader (default `Space` — config: `editor.leader_key`)
 
-| Key                | Action                       |
-| ------------------ | ---------------------------- |
-| `<leader>c`        | Connection switcher          |
-| `<leader>n`        | New scratch tab              |
-| `<leader>r`        | Rename current tab           |
-| `<leader>d`        | Delete current tab (confirm) |
-| `<leader><leader>` | Fuzzy file picker            |
+| Key                | Action                                                            |
+| ------------------ | ----------------------------------------------------------------- |
+| `<leader>c`        | Connection switcher                                               |
+| `<leader>n`        | New scratch tab                                                   |
+| `<leader>r`        | Rename current tab                                                |
+| `<leader>d`        | Delete current tab (confirm)                                      |
+| `<leader><leader>` | Fuzzy file picker                                                 |
+| `<leader><CR>`     | Run statement under cursor (tmux/SSH-friendly alt for Ctrl+Enter) |
+| `<leader><Tab>`    | Run all statements (tmux/SSH-friendly alt for Ctrl+Shift+Enter)   |
 
 ### Pane Focus
 
@@ -279,16 +319,6 @@ render as a navigable grid; plain markdown is styled in-place.
 ~/.local/share/sqeel/
   queries/    # auto-saved SQL buffers (grouped by connection)
   results/    # last 10 successful results (JSON, grouped by connection)
-```
-
-## Workspace
-
-```
-sqeel-core/            # state, DB, query runner, schema, config
-sqeel-tui/             # ratatui terminal provider
-sqeel-vim/             # vim-mode engine + ex commands (built on sqeel-buffer)
-sqeel-buffer/          # vim-shaped text buffer + cell-write render widget
-sqeel/                 # binary: sqeel
 ```
 
 ## License
