@@ -716,12 +716,26 @@
         color: var(--accent);
         background: var(--bg-alt);
       }
-      .install-block pre {
+      .install-note {
+        color: var(--fg-muted);
+        margin: 0 0 20px;
+      }
+      .install-sample {
+        margin-top: 20px;
+      }
+      .install-code {
         margin: 0;
+        padding: 14px 16px;
+        font-size: 13px;
+        line-height: 1.6;
+        overflow-x: auto;
+        color: var(--fg);
+        font-family: var(--mono);
+      }
+      .install-block .install-code {
         padding: 20px;
         font-size: 13.5px;
         line-height: 1.7;
-        color: var(--fg);
       }
       .install-block .panel {
         display: none;
@@ -1012,7 +1026,7 @@
       <section id="install">
         <h2>install</h2>
         <h3>Prebuilt binaries on every tagged release.</h3>
-        <p style="color: var(--fg-muted); margin: 0 0 20px">
+        <p class="install-note">
           macOS via Homebrew tap, Arch via AUR, Alpine via .apk, or grab a
           prebuilt binary. Linux (x86_64, aarch64), macOS (Apple Silicon,
           Intel), Windows (x86_64). Arch users: AUR <code>sqeel-bin</code>.
@@ -1041,41 +1055,49 @@
             >all releases ↗</a
           >
         </div>
-        <div class="terminal" style="margin-top: 20px">
+        <div class="terminal install-sample">
           <div class="bar">
             <span class="dot r"></span><span class="dot y"></span
             ><span class="dot g"></span>
             <span class="title">sqeel — macOS (Homebrew)</span>
           </div>
-          <pre><span class="ok">$</span> brew install kryptic-sh/tap/sqeel
+          <pre
+            class="install-code"
+          ><span class="ok">$</span> brew install kryptic-sh/tap/sqeel
 <span class="ok">$</span> sqeel</pre>
         </div>
-        <div class="terminal" style="margin-top: 20px">
+        <div class="terminal install-sample">
           <div class="bar">
             <span class="dot r"></span><span class="dot y"></span
             ><span class="dot g"></span>
             <span class="title">sqeel — Arch Linux (AUR)</span>
           </div>
-          <pre><span class="ok">$</span> yay -S sqeel-bin</pre>
-          <pre><span class="cm"># or </span></pre>
-          <pre><span class="ok">$</span> paru -S sqeel-bin</pre>
+          <pre
+            class="install-code"
+          ><span class="ok">$</span> yay -S sqeel-bin</pre>
+          <pre class="install-code"><span class="cm"># or </span></pre>
+          <pre
+            class="install-code"
+          ><span class="ok">$</span> paru -S sqeel-bin</pre>
         </div>
-        <div class="terminal" style="margin-top: 20px">
+        <div class="terminal install-sample">
           <div class="bar">
             <span class="dot r"></span><span class="dot y"></span
             ><span class="dot g"></span>
             <span class="title">sqeel — Alpine Linux</span>
           </div>
-          <pre><span class="cm"># download .apk from https://github.com/kryptic-sh/sqeel/releases/latest</span>
+          <pre
+            class="install-code"
+          ><span class="cm"># download .apk from https://github.com/kryptic-sh/sqeel/releases/latest</span>
 <span class="ok">$</span> apk add --allow-untrusted sqeel-*.apk</pre>
         </div>
-        <div class="terminal" style="margin-top: 20px">
+        <div class="terminal install-sample">
           <div class="bar">
             <span class="dot r"></span><span class="dot y"></span
             ><span class="dot g"></span>
             <span class="title">sqeel — from source</span>
           </div>
-          <pre><span class="cm"># crates.io</span>
+          <pre class="install-code"><span class="cm"># crates.io</span>
 <span class="ok">$</span> cargo install sqeel
 
 <span class="cm"># or build from the repo</span>
