@@ -8,6 +8,15 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-05-07
+
+### Changed
+
+- CI: collapsed `ci.yml` + `release.yml` into a single `ci.yml` with tag-gated
+  release jobs; added dependabot config for Cargo and GitHub Actions (weekly).
+  Submodules (`sqeel-config` 0.2.1, `sqeel-core` 0.4.1, `sqeel-tui` 0.4.4) cut
+  matching patch releases.
+
 ## [0.4.4] - 2026-05-06
 
 ### Fixed
@@ -230,7 +239,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.5
 [0.4.4]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.4
 [0.4.2]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.2
 [0.4.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.1
