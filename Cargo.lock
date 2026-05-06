@@ -984,9 +984,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-editor"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17801d2c8f4b3e404ed149d730be297ee235b0262ca6e0ee24d1771c205a523"
+checksum = "daf4813cbcee1a2ac1fdde3f2614b41c7242678fdb3a48467e6f03aba30f9a8e"
 dependencies = [
  "hjkl-buffer",
  "hjkl-engine",
