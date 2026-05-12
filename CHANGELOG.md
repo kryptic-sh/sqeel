@@ -8,6 +8,18 @@ patch bumps.
 
 ## [Unreleased]
 
+### Added
+
+- `sqls` auto-install via `hjkl-anvil` with PATH-aware detection. On startup
+  sqeel resolves `editor.lsp_binary` (default `sqls`) via `which` — if present,
+  uses it untouched. If missing and the new `editor.lsp_auto_install = true`
+  (default) config knob is on, a toast prompts `Run :Anvil install sqls`. The
+  ex-commands `:Anvil` / `:Anvil install <name>` / `:Anvil uninstall <name>` /
+  `:Anvil update [name]` / `:LspInfo` mirror the hjkl convention. `:LspInfo`
+  reports whether the active binary came from `$PATH` or `hjkl-anvil`. Set
+  `lsp_auto_install = false` to silence the prompt (banner only). True modal
+  prompt deferred — current UX is toast-with-instruction. (#13)
+
 ## [0.4.6] - 2026-05-13
 
 ### Changed
