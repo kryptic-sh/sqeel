@@ -1,21 +1,26 @@
 # cargo-nextest config.
 #
-# nextest runs each test in its own process, in parallel. That exposes a
-# shared-state race in `sqeel-core`'s `highlight::tests`: every test in
-# that module clones the tree-sitter-sql grammar into one shared cache
-# dir (`~/.cache/bonsai/grammars/sql-*.tmp`). Run in parallel, multiple
-# processes race the same `git init` / `remote add` / `fetch`, producing
-# "remote origin already exists" / ".git/FETCH_HEAD: No such file"
-# corruption. Under `cargo test` the same-process thread pool happened to
-# serialize them; nextest does not.
+# nextest runs each test in its own process, in parallel. Any test that
+# builds a SQL `Highlighter` triggers a tree-sitter-sql grammar load,
+# which clones into one fixed cache dir
+# (`~/.cache/bonsai/grammars/sql-b9d109588d5b.tmp`). Run concurrently,
+# multiple processes race the same `git init` / `remote add` / `fetch` /
+# `checkout`, producing "remote origin already exists" /
+# ".git/FETCH_HEAD: No such file" / "not a git repository" corruption.
+# `cargo test`'s same-process thread pool happened to serialize them.
 #
-# Pin the grammar-touching tests into a single-threaded test group so at
-# most one runs at a time. The other ~270 workspace tests stay fully
-# parallel.
+# Grammar-loading tests span two crates — `sqeel-core::highlight::tests`
+# and `sqeel-tui::tests::apply_window_spans_*` (plus any future ones) —
+# so both packages go into ONE single-threaded test group: at most one
+# grammar-touching test runs at a time, across crates. `apps/sqeel`
+# (CLI version/help tests, no grammar) stays fully parallel.
+#
+# Proper upstream fix (follow-up): hjkl-bonsai should clone into a
+# per-process temp dir or hold a file lock over the clone.
 
 [test-groups]
 grammar-cache = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(sqeel-core) & test(/highlight::/)'
+filter = 'package(sqeel-core) | package(sqeel-tui)'
 test-group = 'grammar-cache'
