@@ -8,6 +8,23 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-05-15
+
+### Fixed
+
+- **CI: force `~/.cargo/bin` to win PATH resolution on macOS jobs.** The
+  `macos-15-arm64` runner image (version 20260511.0048+) ships a Homebrew
+  `cargo` shim that wraps `rustup-init` on some pool members. The dtolnay
+  `rust-toolchain` action prepends `~/.cargo/bin` to `$GITHUB_PATH` but the
+  ordering doesn't always beat the brew shim, causing `cargo build` to invoke
+  `rustup-init` with the subcommand as an unknown argument. The aarch64-darwin
+  build matrix entry flaked three times in a row on v0.4.12, never publishing.
+  This release adds an explicit `echo "$HOME/.cargo/bin" >> $GITHUB_PATH` step
+  on macOS in both the `test` and `build` jobs. See
+  [actions/runner-images#14099](https://github.com/actions/runner-images/issues/14099).
+- v0.4.12 was tagged but failed to publish — same content ships here on a
+  workflow that survives the runner image regression.
+
 ## [0.4.12] - 2026-05-15
 
 ### Added
@@ -369,7 +386,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.12...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.13...HEAD
+[0.4.13]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.13
 [0.4.12]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.12
 [0.4.11]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.11
 [0.4.10]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.10

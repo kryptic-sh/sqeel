@@ -59,6 +59,14 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      # Force ~/.cargo/bin to win PATH resolution on macos-15-arm64. The
+      # image's Homebrew rust formula ships a `cargo` shim that wraps
+      # `rustup-init` on some pool members, which the dtolnay PATH prepend
+      # doesn't always beat. See actions/runner-images#14099.
+      - name: Force cargo PATH on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-features --no-fail-fast
@@ -159,6 +167,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
           components: clippy, rustfmt
+
+      # Force ~/.cargo/bin to win PATH resolution on macos-15-arm64. The
+      # image's Homebrew rust formula ships a `cargo` shim that wraps
+      # `rustup-init` on some pool members, which the dtolnay PATH prepend
+      # doesn't always beat. See actions/runner-images#14099.
+      - name: Force cargo PATH on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
