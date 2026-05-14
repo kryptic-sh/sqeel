@@ -8,6 +8,34 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-05-14
+
+### Changed
+
+- **Engine-0.5 → 0.6 migration train across the sqeel stack.** The engine-0.5
+  hjkl ecosystem snapshot rotted within a day of v0.4.10 — `hjkl-form 0.3.6`,
+  `hjkl-editor 0.4.5+`, `hjkl-picker 0.5.1+`, `hjkl-ratatui 0.3.6` all
+  caret-minor-bumped their engine pin to 0.6 without majoring themselves,
+  dragging engine 0.6 alongside any consumer pinned to 0.5 → two engines in
+  graph → `Input` / `VimMode` mismatches. Bumps all three submodule pointers in
+  lockstep so the graph holds exactly one engine major:
+  - `sqeel-config` 0.2.3 → 0.2.4 (hjkl-engine 0.5 → 0.6).
+  - `sqeel-core` 0.4.3 → 0.4.4 (hjkl-engine 0.5 → 0.6).
+  - `sqeel-tui` 0.4.8 → 0.4.10 (hjkl-engine 0.5 → 0.6; full hjkl stack on
+    engine-0.6-compatible caret-minor pins; no source-level API breakage).
+- v0.4.9 (umbrella) and sqeel-tui v0.4.9 were tagged on the rotted graph and did
+  not publish; this release ships the equivalent fix on engine 0.6.
+
+### Fixed
+
+- **Cursor off-by-one for buffers with <10 lines** (via sqeel-tui v0.4.10).
+  Renderer used `gutter_width = digits + 2` which under-reserved by one cell vs
+  the engine's `Editor::cursor_screen_pos` formula
+  `max(digits + 1, numberwidth)` (vim's `numberwidth=4` floor). Cursor landed
+  one column right of where text started. Tracks
+  [hjkl#96](https://github.com/kryptic-sh/hjkl/issues/96) to replace with
+  `editor.lnum_width()` once the engine helper ships.
+
 ## [0.4.10] - 2026-05-13
 
 ### Changed
@@ -318,7 +346,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.10...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.11...HEAD
+[0.4.11]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.11
 [0.4.10]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.10
 [0.4.9]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.9
 [0.4.8]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.8
