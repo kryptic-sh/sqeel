@@ -8,6 +8,29 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-05-15
+
+### Added
+
+- **`:export csv|json [<path>]` ex-command** (via sqeel-tui v0.4.11). Writes the
+  active results tab to disk via the existing
+  `sqeel-core::persistence::export_{csv,json}` backend. Bare form (no path)
+  defaults to `~/.local/share/sqeel/results/<conn>/<utc_timestamp>.{csv,json}`.
+  Tab-completion deferred to engine-level work (#53). (#16)
+- **`:refreshschema` / `:refresh` ex-command + `<leader>R` binding** (via
+  sqeel-tui v0.4.11 + sqeel-core v0.4.5). Busts the 300s schema TTL cache
+  without re-opening the DB pool. Backed by the new `refresh_schema()` public
+  method on `AppState`. (#18)
+- **`:describe <table>` / `:desc <table>` ex-command** (via sqeel-tui v0.4.11).
+  Dialect-aware column schema dump rendered into the active results pane. MySQL:
+  native `DESCRIBE`. Postgres: `information_schema.columns`. SQLite:
+  `PRAGMA table_info`. Rejects single-quotes in the table name. (#21)
+
+### Changed
+
+- Submodule bumps: `sqeel-core` 0.4.4 → 0.4.5 (new `refresh_schema` public
+  method); `sqeel-tui` 0.4.10 → 0.4.11 (three new ex-commands above).
+
 ## [0.4.11] - 2026-05-14
 
 ### Changed
@@ -346,7 +369,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.11...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.12...HEAD
+[0.4.12]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.12
 [0.4.11]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.11
 [0.4.10]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.10
 [0.4.9]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.9
