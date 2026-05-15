@@ -236,9 +236,16 @@ fn main() -> anyhow::Result<()> {
         s.set_available_connections(conns.clone());
         // First-run UX: with no connections on disk and none passed
         // on the CLI, drop the user straight into the add-connection
-        // form so the launch isn't a blank TUI.
+        // form so the launch isn't a blank TUI. When ~/.pgpass entries
+        // exist offer the picker first so credentials auto-populate.
         if conns.is_empty() && args.url.is_none() && args.connection.is_none() {
-            s.open_add_connection();
+            let pgpass = sqeel_core::config::load_pgpass();
+            if pgpass.is_empty() {
+                s.open_add_connection();
+            } else {
+                s.pgpass_entries = pgpass;
+                s.open_pgpass_picker();
+            }
         }
     }
 
