@@ -1004,28 +1004,41 @@ async fn schema_loader_task(
                     }
                 }
                 SchemaLoadRequest::Columns { db, table } => {
-                    let col_nodes = match retry_once(|| conn.list_columns(&db, &table)).await {
-                        Ok(cols) => cols
-                            .into_iter()
-                            .map(|c| SchemaNode::Column {
-                                name: c.name,
-                                type_name: c.type_name,
-                                nullable: c.nullable,
-                                is_pk: c.is_pk,
-                            })
-                            .collect(),
-                        Err(e) => {
-                            state
-                                .lock()
-                                .unwrap()
-                                .set_status(format!("Columns load failed ({db}.{table}): {e}"));
-                            vec![]
-                        }
-                    };
+                    // Fetch columns, indexes, and FK constraints concurrently.
+                    // tokio::join! is used inside list_table_relations so a failed
+                    // index/FK query doesn't abort the column load.
+                    let (raw_cols, raw_idxs, raw_fks) =
+                        conn.list_table_relations(&db, &table).await;
+                    let col_nodes: Vec<SchemaNode> = raw_cols
+                        .into_iter()
+                        .map(|c| SchemaNode::Column {
+                            name: c.name,
+                            type_name: c.type_name,
+                            nullable: c.nullable,
+                            is_pk: c.is_pk,
+                        })
+                        .collect();
+                    let idx_nodes: Vec<SchemaNode> = raw_idxs
+                        .into_iter()
+                        .map(|i| SchemaNode::Index {
+                            name: i.name,
+                            cols: i.cols,
+                            unique: i.unique,
+                        })
+                        .collect();
+                    let fk_nodes: Vec<SchemaNode> = raw_fks
+                        .into_iter()
+                        .map(|f| SchemaNode::ForeignKey {
+                            name: f.name,
+                            cols: f.cols,
+                            ref_table: f.ref_table,
+                            ref_cols: f.ref_cols,
+                        })
+                        .collect();
                     state
                         .lock()
                         .unwrap()
-                        .set_table_columns(&db, &table, col_nodes);
+                        .set_table_relations(&db, &table, col_nodes, idx_nodes, fk_nodes);
                 }
             }
             state.lock().unwrap().finish_schema_load(&finish_req);
