@@ -3383,12 +3383,14 @@ name = "sqeel-config"
 version = "0.2.8"
 dependencies = [
  "anyhow",
+ "dirs",
  "hjkl-config",
  "hjkl-engine",
  "keyring-core",
  "serde",
  "tempfile",
  "toml",
+ "tracing",
  "url",
 ]
 
