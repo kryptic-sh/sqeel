@@ -3453,6 +3453,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
  "unicode-width",
  "which",
 ]
