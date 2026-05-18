@@ -1596,9 +1596,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-lsp"
-version = "0.1.1"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeb0997070694955aac054d0f47e5ede8c53f646e9aa139dc79c375209061db0"
+checksum = "8b48751f7aaeb600960a6b29727060cc390ecdce34bb9ca1edcf70584cd270ab"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
