@@ -1,0 +1,33 @@
+# sqeel default configuration. Bundled into the binary via include_str!()
+# and parsed at runtime as the source of truth for default values.
+#
+# A user config at $XDG_CONFIG_HOME/sqeel/config.toml is layered on top
+# of these defaults via hjkl_config::load_layered_from — only the fields
+# you want to override need to appear there. Unknown keys are an error.
+#
+# Resolved paths:
+#   Linux   ~/.config/sqeel/config.toml
+#   macOS   ~/Library/Application Support/sh.kryptic.sqeel/config.toml
+#   Windows %APPDATA%\kryptic\sqeel\config\config.toml
+
+[editor]
+# "vim" or "emacs". Drives modal editing inside the SQL panes.
+keybindings = "vim"
+
+# Path to the SQL LSP binary (sqls recommended:
+# https://github.com/sqls-server/sqls).
+lsp_binary = "sqls"
+
+# Number of lines to scroll per mouse wheel tick (applies to all panes).
+mouse_scroll_lines = 3
+
+# Leader key for chord shortcuts (e.g. <leader>c opens the connection
+# switcher). Use a single character; " " for Space.
+leader_key = " "
+
+# Stop running a Ctrl+Shift+Enter batch on the first query error.
+stop_on_error = true
+
+# Seconds before cached schema (databases / tables / columns) is considered
+# stale and silently re-fetched. 0 disables TTL.
+schema_ttl_secs = 300

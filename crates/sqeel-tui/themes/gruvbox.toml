@@ -1,0 +1,231 @@
+name = "Gruvbox"
+
+[palette]
+# Dark background variants
+bg0_hard = "#1d2021"
+bg0      = "#282828"
+bg0_soft = "#32302f"
+bg1      = "#3c3836"
+bg2      = "#504945"
+bg3      = "#665c54"
+bg4      = "#7c6f64"
+
+# Foreground variants
+fg0 = "#fbf1c7"
+fg1 = "#ebdbb2"
+fg2 = "#d5c4a1"
+fg3 = "#bdae93"
+fg4 = "#a89984"
+
+# Accent colors (bright variants)
+bright_red     = "#fb4934"
+bright_green   = "#b8bb26"
+bright_yellow  = "#fabd2f"
+bright_blue    = "#83a598"
+bright_purple  = "#d3869b"
+bright_aqua    = "#8ec07c"
+bright_orange  = "#fe8019"
+
+# Neutral accent colors
+neutral_red    = "#cc241d"
+neutral_green  = "#98971a"
+neutral_yellow = "#d79921"
+neutral_blue   = "#458588"
+neutral_purple = "#b16286"
+neutral_aqua   = "#689d6a"
+neutral_orange = "#d65d0e"
+
+# Faded (for comments/inactive)
+faded_aqua   = "#427b58"
+gray         = "#928374"
+
+# Common aliases used in mappings
+black        = "#1d2021"
+
+# ── Core groups ───────────────────────────────────────────────────────────
+
+[hl.Normal]
+fg = "fg1"
+bg = "bg0"
+
+[hl.NonText]
+fg = "bg2"
+
+[hl.Cursor]
+fg = "bg0"
+bg = "fg1"
+
+[hl.CursorLine]
+bg = "bg1"
+
+[hl.CursorLineNr]
+fg = "bright_yellow"
+
+[hl.LineNr]
+fg = "bg4"
+
+[hl.Comment]
+fg = "gray"
+attrs = ["italic"]
+
+# ── Syntax groups ─────────────────────────────────────────────────────────
+
+[hl.Constant]
+fg = "bright_purple"
+
+[hl.String]
+fg = "bright_green"
+
+[hl.Number]
+fg = "bright_purple"
+
+[hl.Boolean]
+fg = "bright_orange"
+
+[hl.Identifier]
+fg = "bright_blue"
+
+[hl.Function]
+fg = "bright_green"
+attrs = ["bold"]
+
+[hl.Statement]
+fg = "bright_red"
+attrs = ["bold"]
+
+[hl.Keyword]
+fg = "bright_red"
+attrs = ["bold"]
+
+[hl.Type]
+fg = "bright_yellow"
+attrs = ["bold"]
+
+[hl.Special]
+fg = "bright_orange"
+
+[hl.Operator]
+fg = "bright_orange"
+
+[hl.PreProc]
+fg = "bright_aqua"
+
+[hl.Underlined]
+fg = "bright_blue"
+attrs = ["underline"]
+
+[hl.Error]
+fg = "bright_red"
+attrs = ["bold", "italic"]
+
+[hl.Todo]
+fg = "bright_aqua"
+attrs = ["bold", "italic"]
+
+# ── UI groups ─────────────────────────────────────────────────────────────
+
+[hl.Visual]
+bg = "bg2"
+
+[hl.Search]
+fg = "bg0"
+bg = "bright_yellow"
+
+[hl.IncSearch]
+fg = "bg0"
+bg = "bright_orange"
+
+[hl.MatchParen]
+bg = "bg3"
+attrs = ["bold"]
+
+[hl.Pmenu]
+fg = "fg1"
+bg = "bg1"
+
+[hl.PmenuSel]
+fg = "bg0"
+bg = "bright_blue"
+
+[hl.TabLine]
+fg = "bg4"
+bg = "bg1"
+
+[hl.TabLineFill]
+fg = "bg4"
+bg = "bg1"
+
+[hl.TabLineSel]
+fg = "bg0"
+bg = "bright_yellow"
+attrs = ["bold"]
+
+[hl.StatusLine]
+fg = "fg1"
+bg = "bg2"
+
+[hl.StatusLineNC]
+fg = "fg4"
+bg = "bg1"
+
+[hl.Folded]
+fg = "gray"
+bg = "bg1"
+attrs = ["italic"]
+
+[hl.FoldColumn]
+fg = "gray"
+bg = "bg1"
+
+[hl.SignColumn]
+fg = "bg4"
+bg = "bg1"
+
+# ── Diff groups ───────────────────────────────────────────────────────────
+
+[hl.DiffAdd]
+fg = "bright_green"
+
+[hl.DiffChange]
+fg = "bright_yellow"
+
+[hl.DiffDelete]
+fg = "bright_red"
+
+[hl.DiffText]
+fg = "bright_aqua"
+
+# ── Message groups ────────────────────────────────────────────────────────
+
+[hl.ErrorMsg]
+fg = "bg0"
+bg = "bright_red"
+
+[hl.WarningMsg]
+fg = "bright_yellow"
+
+[hl.ModeMsg]
+fg = "bg0"
+bg = "bright_aqua"
+
+[hl.Title]
+fg = "bright_green"
+attrs = ["bold"]
+
+[hl.Directory]
+fg = "bright_blue"
+attrs = ["bold"]
+
+# ── Diagnostic groups ─────────────────────────────────────────────────────
+
+[hl.DiagnosticError]
+fg = "bright_red"
+
+[hl.DiagnosticWarn]
+fg = "bright_yellow"
+
+[hl.DiagnosticInfo]
+fg = "bright_blue"
+
+[hl.DiagnosticHint]
+fg = "bright_aqua"

@@ -1,0 +1,53 @@
+[package]
+name = "sqeel-core"
+description = "Core SQL engine for sqeel: sqlx-backed connection pool, tree-sitter SQL parser, LSP integration."
+keywords = ["sql", "tui", "client", "lsp", "vim"]
+categories = ["database", "command-line-utilities"]
+version = "0.4.13"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kryptic-sh/sqeel-core"
+homepage = "https://sqeel.kryptic.sh"
+authors = ["mxaddict <mxaddict@kryptic.sh>"]
+rust-version = "1.95"
+readme = "README.md"
+
+[dependencies]
+sqeel-config = { version = "0.2", path = "../sqeel-config" }
+hjkl-engine = "0.7"
+hjkl-bonsai = "0.6"
+hjkl-config = "0.2"
+hjkl-lsp = "0.1"
+anyhow = "1"
+tracing = "0.1"
+dirs = "6.0.0"
+lsp-types = "0.97.0"
+url = "2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sqlx = { version = "0.8.6", features = ["mysql", "runtime-tokio-rustls", "macros", "sqlite", "postgres", "chrono", "bigdecimal", "uuid"] }
+chrono = "0.4"
+bigdecimal = "0.4"
+uuid = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "1.1.2"
+duckdb = { version = "1", optional = true, features = ["bundled"] }
+# Keep tree-sitter + tree-sitter-sequel for the SQL-specific helpers
+# (statement_ranges, first_syntax_error) that walk the tree directly.
+# hjkl-bonsai pulls tree-sitter transitively, but we need the
+# tree_sitter_sequel::LANGUAGE constant and Parser here.
+tree-sitter = "0.26"
+tree-sitter-sequel = "0.3"
+# Markdown parser for LSP hover payloads — sqls (and most servers)
+# return rich markdown; pulldown-cmark gives us GFM tables + the event
+# stream we use to build styled Lines in the TUI.
+pulldown-cmark = { version = "0.11", default-features = false }
+
+[features]
+default = ["duckdb"]
+duckdb = ["dep:duckdb"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["full", "test-util"] }
+keyring-core = "1"

@@ -1,0 +1,195 @@
+name = "Tokyo Night"
+
+[palette]
+bg           = "#24283b"
+bg_dark      = "#1a1b26"
+bg_highlight = "#292e42"
+fg           = "#c0caf5"
+fg_dark      = "#a9b1d6"
+comment      = "#565f89"
+blue         = "#7aa2f7"
+cyan         = "#7dcfff"
+green        = "#9ece6a"
+magenta      = "#bb9af7"
+orange       = "#ff9e64"
+purple       = "#9d7cd8"
+red          = "#f7768e"
+yellow       = "#e0af68"
+black        = "#15161e"
+white        = "#c0caf5"
+
+# ── Core groups ───────────────────────────────────────────────────────────
+
+[hl.Normal]
+fg = "fg"
+bg = "bg_dark"
+
+[hl.NonText]
+fg = "comment"
+
+[hl.Cursor]
+fg = "bg_dark"
+bg = "fg"
+
+[hl.CursorLine]
+bg = "bg_highlight"
+
+[hl.CursorLineNr]
+fg = "yellow"
+
+[hl.LineNr]
+fg = "comment"
+
+[hl.Comment]
+fg = "comment"
+attrs = ["italic"]
+
+# ── Syntax groups ─────────────────────────────────────────────────────────
+
+[hl.Constant]
+fg = "orange"
+
+[hl.String]
+fg = "green"
+
+[hl.Number]
+fg = "magenta"
+
+[hl.Boolean]
+fg = "orange"
+
+[hl.Identifier]
+fg = "fg"
+
+[hl.Function]
+fg = "blue"
+
+[hl.Statement]
+fg = "magenta"
+
+[hl.Keyword]
+fg = "cyan"
+
+[hl.Type]
+fg = "cyan"
+
+[hl.Special]
+fg = "cyan"
+
+[hl.Operator]
+fg = "yellow"
+
+[hl.PreProc]
+fg = "magenta"
+
+[hl.Underlined]
+fg = "blue"
+attrs = ["underline"]
+
+[hl.Error]
+fg = "red"
+
+[hl.Todo]
+fg = "cyan"
+
+# ── UI groups ─────────────────────────────────────────────────────────────
+
+[hl.Visual]
+bg = "bg_highlight"
+
+[hl.Search]
+fg = "black"
+bg = "yellow"
+
+[hl.IncSearch]
+fg = "black"
+bg = "orange"
+
+[hl.MatchParen]
+fg = "yellow"
+attrs = ["bold"]
+
+[hl.Pmenu]
+fg = "fg"
+bg = "bg_highlight"
+
+[hl.PmenuSel]
+fg = "black"
+bg = "blue"
+
+[hl.TabLine]
+fg = "comment"
+bg = "bg"
+
+[hl.TabLineFill]
+fg = "comment"
+bg = "bg"
+
+[hl.TabLineSel]
+fg = "black"
+bg = "cyan"
+
+[hl.StatusLine]
+fg = "fg_dark"
+bg = "bg_highlight"
+
+[hl.StatusLineNC]
+fg = "comment"
+bg = "bg"
+
+[hl.Folded]
+fg = "comment"
+bg = "bg_highlight"
+
+[hl.FoldColumn]
+fg = "comment"
+
+[hl.SignColumn]
+fg = "comment"
+
+# ── Diff groups ───────────────────────────────────────────────────────────
+
+[hl.DiffAdd]
+fg = "green"
+
+[hl.DiffChange]
+fg = "yellow"
+
+[hl.DiffDelete]
+fg = "red"
+
+[hl.DiffText]
+fg = "cyan"
+
+# ── Message groups ────────────────────────────────────────────────────────
+
+[hl.ErrorMsg]
+fg = "black"
+bg = "red"
+
+[hl.WarningMsg]
+fg = "yellow"
+
+[hl.ModeMsg]
+fg = "black"
+bg = "blue"
+
+[hl.Title]
+fg = "yellow"
+
+[hl.Directory]
+fg = "green"
+
+# ── Diagnostic groups ─────────────────────────────────────────────────────
+
+[hl.DiagnosticError]
+fg = "red"
+
+[hl.DiagnosticWarn]
+fg = "yellow"
+
+[hl.DiagnosticInfo]
+fg = "cyan"
+
+[hl.DiagnosticHint]
+fg = "comment"
