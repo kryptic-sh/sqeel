@@ -78,13 +78,12 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     needs: [test]
-    # Tag-gated: the cross-platform binary matrix runs only on v*.*.* tag
-    # pushes (the release pipeline) or manual workflow_dispatch. Its
-    # consumers (aur-bin / alpine / brew-tap / publish-crates) are already
-    # tag-gated, so building on every main push wastes the artifacts.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    # Dry-run gate (#59): build the cross-platform binary matrix on every
+    # main push so packaging bugs surface before a tag is cut. PRs are
+    # excluded to keep branch CI lean. The publish consumers (aur-bin /
+    # alpine / brew-tap / publish-crates) keep their own tag-gates and only
+    # upload to registries/releases on v* tags.
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
