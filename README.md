@@ -3,8 +3,8 @@
 Vim-native SQL client. Native Rust TUI. No Electron. No JVM.
 
 [![CI](https://github.com/kryptic-sh/sqeel/actions/workflows/ci.yml/badge.svg)](https://github.com/kryptic-sh/sqeel/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/kryptic-sh/sqeel)](https://github.com/kryptic-sh/sqeel/releases/latest)
 [![crates.io](https://img.shields.io/crates/v/sqeel.svg)](https://crates.io/crates/sqeel)
-[![Release](https://img.shields.io/github/v/release/kryptic-sh/sqeel)](https://github.com/kryptic-sh/sqeel/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-sqeel.kryptic.sh-7ee787)](https://sqeel.kryptic.sh)
 
@@ -320,6 +320,10 @@ render as a navigable grid; plain markdown is styled in-place.
   queries/    # auto-saved SQL buffers (grouped by connection)
   results/    # last 10 successful results (JSON, grouped by connection)
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) (if exists) or open an issue / PR.
 
 ## License
 
