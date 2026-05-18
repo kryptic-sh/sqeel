@@ -1637,9 +1637,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-splash"
-version = "0.2.0"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e38f603523defba5c303f13b8c4d2a998f77c0d656296f1a79efd4a3ac73707a"
+checksum = "89ab7d7a29c3d2cef92386cf5498802cc8b7e24cf5e34f20d625605ee351bad5"
 dependencies = [
  "ratatui",
 ]
