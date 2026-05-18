@@ -1493,7 +1493,7 @@ dependencies = [
  "crossbeam-channel",
  "flate2",
  "hex",
- "hjkl-xdg",
+ "hjkl-xdg 0.1.0",
  "reqwest 0.13.1",
  "serde",
  "sha2 0.11.0",
@@ -1505,15 +1505,16 @@ dependencies = [
 
 [[package]]
 name = "hjkl-bonsai"
-version = "0.6.2"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3776cfca536a004ae962cb8cac098571f9222caaef85fe80d16fa06c134e601"
+checksum = "f4465a9aebdf13991631347e5f2d5ddcca61e2a5e30efa9ee5dca496647dc96e"
 dependencies = [
  "anyhow",
  "dirs",
- "hjkl-xdg",
+ "hjkl-theme",
+ "hjkl-xdg 0.25.0",
  "libloading",
- "ratatui",
+ "regex",
  "serde",
  "thiserror 2.0.18",
  "toml",
@@ -1551,7 +1552,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14194a3cc6446ba99ad692aa4b2c7f7571a02c8e5ea710eb3d01e11ccf9d8ba3"
 dependencies = [
- "hjkl-xdg",
+ "hjkl-xdg 0.1.0",
  "serde",
  "thiserror 2.0.18",
  "toml",
@@ -1645,6 +1646,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hjkl-theme"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53ef443d2d00c58f215f94822fe0a1209eb7065f8a36d268808c19b1aa52fc52"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "hjkl-vim"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1660,6 +1672,16 @@ name = "hjkl-xdg"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a9818d4389b1cc9d8ea54f57f388f3a58d3f80315e0ceb66903813a26c3fa1f"
+dependencies = [
+ "dirs",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hjkl-xdg"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a1384812d93c772b57c2999f2172ef4649d72c48909ebacad30e668e7ca915f"
 dependencies = [
  "dirs",
  "thiserror 2.0.18",
