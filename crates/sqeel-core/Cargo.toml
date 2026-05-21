@@ -16,7 +16,7 @@ readme = "README.md"
 sqeel-config = { version = "0.2", path = "../sqeel-config" }
 hjkl-engine = "0.7"
 hjkl-bonsai = "0.25"
-hjkl-config = "0.2"
+hjkl-config = "0.27"
 hjkl-lsp = "0.25"
 anyhow = "1"
 tracing = "0.1"
