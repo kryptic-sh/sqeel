@@ -22,7 +22,7 @@ hjkl-editor = "0.4"
 hjkl-buffer = { version = "0.6", features = ["ratatui"] }
 hjkl-clipboard = "0.25"
 hjkl-picker = "0.5"
-hjkl-form = "0.3"
+hjkl-form = "0.27"
 hjkl-ratatui = "0.3"
 hjkl-bonsai = "0.25"
 anyhow = "1"
