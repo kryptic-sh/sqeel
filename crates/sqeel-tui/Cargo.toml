@@ -20,7 +20,7 @@ hjkl-engine = "0.7"
 hjkl-vim = "0.19"
 hjkl-editor = "0.4"
 hjkl-buffer = { version = "0.6", features = ["ratatui"] }
-hjkl-clipboard = "0.5"
+hjkl-clipboard = "0.25"
 hjkl-picker = "0.5"
 hjkl-form = "0.3"
 hjkl-ratatui = "0.3"
