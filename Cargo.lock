@@ -1480,14 +1480,14 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hjkl-anvil"
-version = "0.2.4"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9bfbbca60213a93e34b82c97d14f06834b7e894117a7a9eecd11430aaa59a05"
+checksum = "41461154f960312d1c3e64197d1ba350b18bea4232713d1f068342d9c2d3e4bf"
 dependencies = [
  "crossbeam-channel",
  "flate2",
  "hex",
- "hjkl-xdg 0.1.0",
+ "hjkl-xdg 0.28.0",
  "reqwest 0.13.1",
  "serde",
  "sha2 0.11.0",
@@ -1676,6 +1676,16 @@ name = "hjkl-xdg"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1384812d93c772b57c2999f2172ef4649d72c48909ebacad30e668e7ca915f"
+dependencies = [
+ "dirs",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hjkl-xdg"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56bbddb77dfe991f5566368e5256672db12e556293b91d29919f29da52aff99e"
 dependencies = [
  "dirs",
  "thiserror 2.0.18",
