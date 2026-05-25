@@ -17,7 +17,7 @@ sqeel-config = { version = "0.2", path = "../sqeel-config" }
 sqeel-core = { version = "0.4", path = "../sqeel-core" }
 hjkl-splash = { version = "0.25", features = ["ratatui"] }
 hjkl-engine = "0.7"
-hjkl-vim = "0.19"
+hjkl-vim = "0.28"
 hjkl-editor = "0.4"
 hjkl-buffer = { version = "0.6", features = ["ratatui"] }
 hjkl-clipboard = "0.25"
