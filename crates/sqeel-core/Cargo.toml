@@ -41,7 +41,7 @@ tree-sitter-sequel = "0.3"
 # Markdown parser for LSP hover payloads — sqls (and most servers)
 # return rich markdown; pulldown-cmark gives us GFM tables + the event
 # stream we use to build styled Lines in the TUI.
-pulldown-cmark = { version = "0.11", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [features]
 default = ["duckdb"]
