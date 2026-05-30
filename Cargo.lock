@@ -1663,16 +1663,6 @@ dependencies = [
 
 [[package]]
 name = "hjkl-xdg"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9818d4389b1cc9d8ea54f57f388f3a58d3f80315e0ceb66903813a26c3fa1f"
-dependencies = [
- "dirs",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "hjkl-xdg"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1384812d93c772b57c2999f2172ef4649d72c48909ebacad30e668e7ca915f"
@@ -2826,9 +2816,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.11.3"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "679341d22c78c6c649893cbd6c3278dcbe9fc4faa62fea3a9296ae2b50c14625"
+checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
 dependencies = [
  "bitflags 2.11.1",
  "memchr",
