@@ -24,7 +24,7 @@ hjkl-clipboard = "0.25"
 hjkl-picker = "0.5"
 hjkl-form = "0.3"
 hjkl-ratatui = "0.3"
-hjkl-bonsai = "0.25"
+hjkl-bonsai = "0.28"
 anyhow = "1"
 ratatui = "0.30"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
