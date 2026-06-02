@@ -1529,6 +1529,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hjkl-buffer"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44ad76d7ae5ab757d95ce2e990b0800217ed34515e54f182d52d666d1834ee6b"
+dependencies = [
+ "ratatui",
+ "regex",
+ "unicode-width",
+]
+
+[[package]]
 name = "hjkl-clipboard"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1558,7 +1569,7 @@ version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "321b26a55b419b6bee54240f099a289b149238673b0e1feb21dfc0d57c6de931"
 dependencies = [
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "hjkl-engine",
  "regex",
 ]
@@ -1571,7 +1582,7 @@ checksum = "6eb6dd7ccc80c8782e88a8cc2a4eb7775ecc91d46f2d4806eb41b366f27136c7"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm 0.29.0",
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "ratatui",
  "regex",
  "serde",
@@ -1584,7 +1595,7 @@ version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2f2a058b1fd1eac92c74913a4703a61b6589982caa7ad4b8faff91e696c93e0"
 dependencies = [
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "hjkl-engine",
  "hjkl-vim",
 ]
@@ -1611,7 +1622,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f764e06474338ada8f1b72bf38434a1acd73035d7d5aea637b1b5fcd93e602d7"
 dependencies = [
  "crossterm 0.29.0",
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "hjkl-form",
  "ignore",
  "ratatui",
@@ -1657,18 +1668,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ecd781ed6f829da60b82ee11b459d9e57cff2959502a43a70a9efefd9d16b0"
 dependencies = [
  "crossterm 0.29.0",
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "hjkl-engine",
-]
-
-[[package]]
-name = "hjkl-xdg"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9818d4389b1cc9d8ea54f57f388f3a58d3f80315e0ceb66903813a26c3fa1f"
-dependencies = [
- "dirs",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3763,7 +3764,7 @@ dependencies = [
  "dirs",
  "hjkl-anvil",
  "hjkl-bonsai",
- "hjkl-buffer",
+ "hjkl-buffer 0.25.0",
  "hjkl-clipboard",
  "hjkl-editor",
  "hjkl-engine",
