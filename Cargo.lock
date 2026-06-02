@@ -1505,10 +1505,34 @@ checksum = "f4465a9aebdf13991631347e5f2d5ddcca61e2a5e30efa9ee5dca496647dc96e"
 dependencies = [
  "anyhow",
  "dirs",
- "hjkl-theme",
+ "hjkl-theme 0.25.0",
  "hjkl-xdg 0.25.0",
  "libloading",
  "regex",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "hjkl-bonsai"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "385797ea650dc6b580ad6439f2b568c345854e5768c4b007d889bc0479b0f373"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "dirs",
+ "hjkl-theme 0.28.1",
+ "hjkl-xdg 0.28.0",
+ "libloading",
+ "libmimalloc-sys",
+ "memchr",
+ "regex",
+ "ropey",
  "serde",
  "thiserror 2.0.18",
  "toml",
@@ -1525,6 +1549,17 @@ checksum = "fc015974706a0895c46e5223a9bbef4b027445ec9c135072da9173b617971bfb"
 dependencies = [
  "ratatui",
  "regex",
+ "unicode-width",
+]
+
+[[package]]
+name = "hjkl-buffer"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c412a11100cff708c61d0c02af3220784c2cd8ec34a54c189389c8c8c365f1ac"
+dependencies = [
+ "regex",
+ "ropey",
  "unicode-width",
 ]
 
@@ -1558,8 +1593,8 @@ version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "321b26a55b419b6bee54240f099a289b149238673b0e1feb21dfc0d57c6de931"
 dependencies = [
- "hjkl-buffer",
- "hjkl-engine",
+ "hjkl-buffer 0.6.2",
+ "hjkl-engine 0.7.0",
  "regex",
 ]
 
@@ -1571,11 +1606,27 @@ checksum = "6eb6dd7ccc80c8782e88a8cc2a4eb7775ecc91d46f2d4806eb41b366f27136c7"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm 0.29.0",
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "ratatui",
  "regex",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hjkl-engine"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b891cee08af22738f253ad6beb8a4710ced082b3f6599902ad0ad0f393ce613"
+dependencies = [
+ "bitflags 2.11.1",
+ "hjkl-buffer 0.28.1",
+ "hjkl-lang",
+ "regex",
+ "ropey",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -1584,9 +1635,20 @@ version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2f2a058b1fd1eac92c74913a4703a61b6589982caa7ad4b8faff91e696c93e0"
 dependencies = [
- "hjkl-buffer",
- "hjkl-engine",
+ "hjkl-buffer 0.6.2",
+ "hjkl-engine 0.7.0",
  "hjkl-vim",
+]
+
+[[package]]
+name = "hjkl-lang"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4d720c02c19ce124faa349005e74a20352d31ce276fc8d9f2765630da079a50"
+dependencies = [
+ "anyhow",
+ "hjkl-bonsai 0.28.1",
+ "tracing",
 ]
 
 [[package]]
@@ -1611,7 +1673,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f764e06474338ada8f1b72bf38434a1acd73035d7d5aea637b1b5fcd93e602d7"
 dependencies = [
  "crossterm 0.29.0",
- "hjkl-buffer",
+ "hjkl-buffer 0.6.2",
  "hjkl-form",
  "ignore",
  "ratatui",
@@ -1625,7 +1687,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29770861608f5eb98799b127d424bb0e99498a5d4d35a99a00ed9d4e526bf1c"
 dependencies = [
  "crossterm 0.29.0",
- "hjkl-engine",
+ "hjkl-engine 0.7.0",
  "hjkl-form",
  "ratatui",
 ]
@@ -1651,24 +1713,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hjkl-theme"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc11b02d8d7bed77272f42a7553c88356f4d239d98d5568495433d68cf61b824"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "hjkl-vim"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ecd781ed6f829da60b82ee11b459d9e57cff2959502a43a70a9efefd9d16b0"
 dependencies = [
  "crossterm 0.29.0",
- "hjkl-buffer",
- "hjkl-engine",
-]
-
-[[package]]
-name = "hjkl-xdg"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9818d4389b1cc9d8ea54f57f388f3a58d3f80315e0ceb66903813a26c3fa1f"
-dependencies = [
- "dirs",
- "thiserror 2.0.18",
+ "hjkl-buffer 0.6.2",
+ "hjkl-engine 0.7.0",
 ]
 
 [[package]]
@@ -2243,6 +2306,15 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "libredox"
@@ -3251,6 +3323,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ropey"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
+dependencies = [
+ "smallvec",
+ "str_indices",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3714,7 +3796,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "hjkl-config",
- "hjkl-engine",
+ "hjkl-engine 0.28.1",
  "keyring-core",
  "serde",
  "tempfile",
@@ -3732,9 +3814,9 @@ dependencies = [
  "chrono",
  "dirs",
  "duckdb",
- "hjkl-bonsai",
+ "hjkl-bonsai 0.25.0",
  "hjkl-config",
- "hjkl-engine",
+ "hjkl-engine 0.28.1",
  "hjkl-lsp",
  "keyring-core",
  "lsp-types",
@@ -3762,11 +3844,11 @@ dependencies = [
  "crossterm 0.29.0",
  "dirs",
  "hjkl-anvil",
- "hjkl-bonsai",
- "hjkl-buffer",
+ "hjkl-bonsai 0.25.0",
+ "hjkl-buffer 0.6.2",
  "hjkl-clipboard",
  "hjkl-editor",
- "hjkl-engine",
+ "hjkl-engine 0.28.1",
  "hjkl-form",
  "hjkl-picker",
  "hjkl-ratatui",
@@ -4000,6 +4082,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "str_indices"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 
 [[package]]
 name = "streaming-iterator"
