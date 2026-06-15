@@ -1591,9 +1591,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-lsp"
-version = "0.25.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b48751f7aaeb600960a6b29727060cc390ecdce34bb9ca1edcf70584cd270ab"
+checksum = "42bc0a157a6ce9fccc14c07d305452c6cfe1384e494d772a5de9310ca99f69c6"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1659,16 +1659,6 @@ dependencies = [
  "crossterm 0.29.0",
  "hjkl-buffer",
  "hjkl-engine",
-]
-
-[[package]]
-name = "hjkl-xdg"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9818d4389b1cc9d8ea54f57f388f3a58d3f80315e0ceb66903813a26c3fa1f"
-dependencies = [
- "dirs",
- "thiserror 2.0.18",
 ]
 
 [[package]]
