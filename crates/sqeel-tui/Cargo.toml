@@ -16,7 +16,7 @@ readme = "README.md"
 sqeel-config = { version = "0.2", path = "../sqeel-config" }
 sqeel-core = { version = "0.4", path = "../sqeel-core" }
 hjkl-splash = { version = "0.25", features = ["ratatui"] }
-hjkl-engine = "0.7"
+hjkl-engine = "0.32"
 hjkl-vim = "0.19"
 hjkl-editor = "0.4"
 hjkl-buffer = { version = "0.6", features = ["ratatui"] }
