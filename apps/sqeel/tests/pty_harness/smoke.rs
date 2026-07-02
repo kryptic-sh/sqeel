@@ -148,6 +148,32 @@ fn destructive_guard_prompts_and_confirms() {
     );
 }
 
+/// `:w <path>` must export the buffer to a filesystem path without touching
+/// the tab's identity.
+#[test]
+fn w_path_exports_buffer_to_file() {
+    let mut s = TerminalSession::spawn_sandbox();
+    assert!(
+        s.wait_for_text("CREATE TABLE", 5_000),
+        "editor never rendered\n{}",
+        s.screen_dump()
+    );
+    let out = std::env::temp_dir().join(format!("sqeel-e2e-export-{}.sql", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    s.keys(&format!(":w {}<Enter>", out.display()));
+    assert!(
+        s.wait_for_text("Written", 5_000),
+        "export toast never appeared\n{}",
+        s.screen_dump()
+    );
+    let written = std::fs::read_to_string(&out).expect("exported file missing");
+    assert!(
+        written.contains("CREATE TABLE IF NOT EXISTS users"),
+        "exported content wrong: {written}"
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
 /// Ctrl-C during a long-running query must cancel it: the "Query cancelled"
 /// pane renders and the editor stays responsive. Uses an unbounded recursive
 /// CTE — effectively infinite in SQLite — so without a working cancel the
