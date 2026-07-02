@@ -416,6 +416,7 @@ async fn run_loop(
     let mut active_lsp_uri: lsp_types::Uri = {
         let s = state.lock().unwrap();
         tab_lsp_uri(
+            s.active_connection.as_deref(),
             s.tabs
                 .get(s.active_tab)
                 .map(|t| t.name.as_str())
@@ -707,7 +708,7 @@ async fn run_loop(
         // periodic maintenance, and take any pending tasks/content.
         // Dropping to ~1 lock cycle here instead of 5+ reduces per-event
         // contention with the highlight / executor worker threads.
-        let (pending_load, pending_tab_content, active_tab_name) = {
+        let (pending_load, pending_tab_content, active_tab_name, active_conn_name) = {
             let mut s = state.lock().unwrap();
             for (tab_index, content) in drained_tab_loads {
                 s.apply_loaded_tab_content(tab_index, content);
@@ -722,7 +723,13 @@ async fn run_loop(
             let pending_load = s.pending_tab_load.take();
             let pending_tab_content = s.tab_content_pending.take();
             let active_tab_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
-            (pending_load, pending_tab_content, active_tab_name)
+            let active_conn_name = s.active_connection.clone();
+            (
+                pending_load,
+                pending_tab_content,
+                active_tab_name,
+                active_conn_name,
+            )
         };
 
         // Kick off any pending cold-tab disk read on a blocking task
@@ -742,12 +749,13 @@ async fn run_loop(
             });
         }
 
-        // Track the active tab's LSP document. A tab switch (or rename)
-        // repoints the uri; `open_document` didOpens new docs lazily and
-        // full-text-syncs already-open ones. Diagnostics on screen belong
-        // to the previous document — drop them until this doc publishes.
+        // Track the active tab's LSP document. A tab switch, rename, or
+        // connection change repoints the uri; `open_document` didOpens new
+        // docs lazily and full-text-syncs already-open ones. Diagnostics on
+        // screen belong to the previous document — drop them until this doc
+        // publishes.
         if let Some(name) = &active_tab_name {
-            let uri = tab_lsp_uri(name);
+            let uri = tab_lsp_uri(active_conn_name.as_deref(), name);
             if uri != active_lsp_uri {
                 active_lsp_uri = uri;
                 needs_redraw = true;
@@ -2757,16 +2765,23 @@ async fn run_loop(
                                         let mut s = state.lock().unwrap();
                                         s.editor_content = editor.content_arc();
                                         s.editor_content_synced = true;
-                                        let old_name =
-                                            s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                        let old_name = s
+                                            .tabs
+                                            .get(s.active_tab)
+                                            .map(|t| (s.active_connection.clone(), t.name.clone()));
                                         s.rename_active_tab(&path).map(|()| old_name)
                                     };
                                     match renamed {
                                         Ok(old_name) => {
                                             // Close the pre-rename uri's LSP doc;
                                             // the new one didOpens next iteration.
-                                            if let (Some(client), Some(old)) = (&lsp, old_name) {
-                                                client.close_document(&tab_lsp_uri(&old));
+                                            if let (Some(client), Some((old_conn, old))) =
+                                                (&lsp, old_name)
+                                            {
+                                                client.close_document(&tab_lsp_uri(
+                                                    old_conn.as_deref(),
+                                                    &old,
+                                                ));
                                             }
                                             let prepared =
                                                 state.lock().unwrap().prepare_save_active_tab();
@@ -2826,13 +2841,21 @@ async fn run_loop(
                             hjkl_ex::ExEffect::RenameBuffer { name } => {
                                 let renamed = {
                                     let mut s = state.lock().unwrap();
-                                    let old_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                    let old_name = s
+                                        .tabs
+                                        .get(s.active_tab)
+                                        .map(|t| (s.active_connection.clone(), t.name.clone()));
                                     s.rename_active_tab(&name).map(|()| old_name)
                                 };
                                 match renamed {
                                     Ok(old_name) => {
-                                        if let (Some(client), Some(old)) = (&lsp, old_name) {
-                                            client.close_document(&tab_lsp_uri(&old));
+                                        if let (Some(client), Some((old_conn, old))) =
+                                            (&lsp, old_name)
+                                        {
+                                            client.close_document(&tab_lsp_uri(
+                                                old_conn.as_deref(),
+                                                &old,
+                                            ));
                                         }
                                         toasts.push((
                                             format!("Renamed to {name}"),
@@ -2972,7 +2995,10 @@ async fn run_loop(
                             let name_str = rename_input.take().unwrap_or_default().text;
                             let renamed = {
                                 let mut s = state.lock().unwrap();
-                                let old_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                let old_name = s
+                                    .tabs
+                                    .get(s.active_tab)
+                                    .map(|t| (s.active_connection.clone(), t.name.clone()));
                                 s.rename_active_tab(&name_str).map(|()| old_name)
                             };
                             match renamed {
@@ -2980,8 +3006,12 @@ async fn run_loop(
                                     // The old uri's LSP document is orphaned by
                                     // the rename — close it server-side. The new
                                     // uri didOpens on the next loop iteration.
-                                    if let (Some(client), Some(old)) = (&lsp, old_name) {
-                                        client.close_document(&tab_lsp_uri(&old));
+                                    if let (Some(client), Some((old_conn, old))) = (&lsp, old_name)
+                                    {
+                                        client.close_document(&tab_lsp_uri(
+                                            old_conn.as_deref(),
+                                            &old,
+                                        ));
                                     }
                                 }
                                 Err(e) => {
@@ -3010,15 +3040,22 @@ async fn run_loop(
                             delete_confirm = None;
                             let deleted = {
                                 let mut s = state.lock().unwrap();
-                                let old_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                let old_name = s
+                                    .tabs
+                                    .get(s.active_tab)
+                                    .map(|t| (s.active_connection.clone(), t.name.clone()));
                                 s.delete_active_tab().map(|()| old_name)
                             };
                             match deleted {
                                 Ok(old_name) => {
                                     // Close the deleted tab's LSP document so
                                     // the server doesn't keep analysing it.
-                                    if let (Some(client), Some(old)) = (&lsp, old_name) {
-                                        client.close_document(&tab_lsp_uri(&old));
+                                    if let (Some(client), Some((old_conn, old))) = (&lsp, old_name)
+                                    {
+                                        client.close_document(&tab_lsp_uri(
+                                            old_conn.as_deref(),
+                                            &old,
+                                        ));
                                     }
                                 }
                                 Err(e) => {

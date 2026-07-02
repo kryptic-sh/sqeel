@@ -127,6 +127,17 @@ pub struct ConnHandles {
     pub schema_load_tx: tokio::sync::mpsc::Sender<SchemaLoadRequest>,
 }
 
+/// In-memory sidebar snapshot for a connection the user switched away
+/// from. Restored (instead of refetched) when a tab bound to that
+/// connection becomes active again; the TTL machinery re-fetches stale
+/// subtrees after restore, so the tree comes back instantly and still
+/// converges to fresh data.
+pub struct SchemaSnapshot {
+    nodes: Vec<SchemaNode>,
+    cursor: usize,
+    databases_loaded_at: Option<Instant>,
+}
+
 /// One open editor tab. Content is lazily loaded and evicted after 5 min of inactivity.
 #[derive(Debug, Clone)]
 pub struct TabEntry {
@@ -513,6 +524,10 @@ pub struct AppState {
     /// tabs between connections is a channel swap, not a reconnect, and
     /// in-flight queries on other connections keep running.
     pub connection_registry: std::collections::HashMap<String, ConnHandles>,
+    /// Sidebar snapshots for connections the user switched away from,
+    /// keyed by connection name. Bounded by the number of configured
+    /// connections; in-memory only.
+    pub schema_snapshots: std::collections::HashMap<String, SchemaSnapshot>,
     /// Set by the executor when a query finishes; cleared by the run loop after redraw.
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
@@ -3029,6 +3044,7 @@ impl AppState {
             .find(|c| c.name == name)
             .map(|c| c.url.clone());
         if let Some(handles) = self.connection_registry.get(name).cloned() {
+            self.stash_schema_snapshot();
             self.query_tx = Some(handles.query_tx);
             self.schema_load_tx = Some(handles.schema_load_tx);
             self.active_connection = Some(name.to_string());
@@ -3038,17 +3054,27 @@ impl AppState {
                     self.pending_sqls_config = Some(cfg);
                 }
             }
-            // The sidebar shows the previous connection's schema — reset
-            // and reload through the (warm) loader.
-            self.schema_nodes.clear();
-            self.mark_schema_cache_dirty();
-            self.databases_loaded_at = None;
+            // The sidebar shows the previous connection's schema. Restore
+            // this connection's stashed tree when we have one (instant,
+            // TTL re-fetches stale subtrees); otherwise reset and reload
+            // through the (warm) loader.
             self.schema_loads_inflight.clear();
-            self.request_schema_load(SchemaLoadRequest::Databases);
+            if let Some(snap) = self.schema_snapshots.remove(name) {
+                self.schema_nodes = snap.nodes;
+                self.schema_cursor = snap.cursor;
+                self.databases_loaded_at = snap.databases_loaded_at;
+                self.mark_schema_cache_dirty();
+            } else {
+                self.schema_nodes.clear();
+                self.mark_schema_cache_dirty();
+                self.databases_loaded_at = None;
+                self.request_schema_load(SchemaLoadRequest::Databases);
+            }
             self.set_status(format!("Connection: {name}"));
         } else if let Some(u) = url {
             // Never connected this session — full handshake via the
             // watcher loop, same as the switcher's cold path.
+            self.stash_schema_snapshot();
             self.schema_connecting = true;
             self.schema_connect_error = None;
             self.schema_connect_error_kind = None;
@@ -3059,6 +3085,24 @@ impl AppState {
         } else {
             self.set_status(format!("Unknown connection: {name}"));
         }
+    }
+
+    /// Stash the current sidebar tree under the outgoing connection's name
+    /// so switching back restores it instantly. No-op when no connection is
+    /// active or the tree is empty (nothing worth restoring).
+    fn stash_schema_snapshot(&mut self) {
+        let Some(old) = self.active_connection.clone() else {
+            return;
+        };
+        if self.schema_nodes.is_empty() {
+            return;
+        }
+        let snapshot = SchemaSnapshot {
+            nodes: std::mem::take(&mut self.schema_nodes),
+            cursor: self.schema_cursor,
+            databases_loaded_at: self.databases_loaded_at,
+        };
+        self.schema_snapshots.insert(old, snapshot);
     }
 
     pub fn refresh_schema(&mut self) -> bool {
@@ -4229,6 +4273,46 @@ mod tests {
         s.tabs[0].connection = Some("a".into());
         s.activate_tab_connection();
         assert!(s.pending_reconnect.is_none(), "same conn must be a no-op");
+    }
+
+    #[test]
+    fn schema_snapshot_restores_on_warm_switch_back() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.available_connections = vec![
+            conn_cfg("a", "sqlite:///tmp/a.db"),
+            conn_cfg("b", "sqlite:///tmp/b.db"),
+        ];
+        let (handles_a, _qrx_a, mut lrx_a) = registry_handles();
+        let (handles_b, _qrx_b, _lrx_b) = registry_handles();
+        s.connection_registry.insert("a".into(), handles_a);
+        s.connection_registry.insert("b".into(), handles_b);
+        s.active_connection = Some("a".into());
+        // a's sidebar has a loaded tree.
+        s.schema_nodes = vec![SchemaNode::Database {
+            name: "adb".into(),
+            expanded: false,
+            tables: vec![],
+            tables_loaded_at: None,
+        }];
+        s.schema_cursor = 0;
+        s.databases_loaded_at = Some(Instant::now());
+        // a → b → a.
+        s.activate_connection_by_name("b");
+        assert!(s.schema_nodes.is_empty(), "b starts with an empty tree");
+        s.activate_connection_by_name("a");
+        assert_eq!(s.schema_nodes.len(), 1, "a's tree restored from snapshot");
+        assert!(
+            s.databases_loaded_at.is_some(),
+            "restored TTL timestamp keeps the tree from an eager refetch"
+        );
+        // Snapshot restore must NOT fire a Databases reload for `a`.
+        while let Ok(req) = lrx_a.try_recv() {
+            assert!(
+                !matches!(req, SchemaLoadRequest::Databases),
+                "restored snapshot should not trigger a Databases refetch"
+            );
+        }
     }
 
     #[test]

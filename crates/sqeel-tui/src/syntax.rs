@@ -363,22 +363,28 @@ pub(crate) fn buffer_lines(buffer: &hjkl_buffer::Buffer) -> Vec<String> {
         .collect()
 }
 
-/// `file://` URI for a sqeel tab's LSP document. One document per tab
-/// (keyed by sanitized tab name) so diagnostics publishes can be matched
-/// back to the document they describe. The path is virtual — nothing is
-/// written there; sqls only needs a stable, distinct identity per doc.
-pub(crate) fn tab_lsp_uri(name: &str) -> lsp_types::Uri {
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let p = std::env::temp_dir().join(format!("sqeel-tab-{sanitized}.sql"));
+/// `file://` URI for a sqeel tab's LSP document, keyed by
+/// `(connection, tab name)` so diagnostics publishes can be matched back
+/// to the document they describe. The connection component matters with
+/// per-tab connections: the same buffer name validated against two
+/// different databases yields different diagnostics, so they must be
+/// distinct documents. The path is virtual — nothing is written there;
+/// sqls only needs a stable, distinct identity per doc.
+pub(crate) fn tab_lsp_uri(connection: Option<&str>, name: &str) -> lsp_types::Uri {
+    let sanitize = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    let conn = sanitize(connection.unwrap_or("default"));
+    let sanitized = sanitize(name);
+    let p = std::env::temp_dir().join(format!("sqeel-tab-{conn}-{sanitized}.sql"));
     let p = p.to_string_lossy();
     let uri_str = if p.starts_with('/') {
         format!("file://{p}")
