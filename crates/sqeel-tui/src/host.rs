@@ -132,6 +132,13 @@ impl SqeelHost {
         }
     }
 
+    /// Drain queued clipboard writes without touching the platform
+    /// backend. The event loop uses this to copy + toast per yank
+    /// (the engine pushes every yank/cut here via `Host::write_clipboard`).
+    pub fn take_clipboard_writes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.clipboard_outbox)
+    }
+
     /// Drain queued intents. Host calls this once per render frame.
     pub fn drain_intents(&mut self) -> Vec<SqeelIntent> {
         std::mem::take(&mut self.intents)

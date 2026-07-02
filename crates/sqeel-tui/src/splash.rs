@@ -139,7 +139,8 @@ pub fn render(
                 }
             }
             CellKind::Trail { age } => {
-                let color: Color = default_trail_color(age).into();
+                let hjkl_splash::Rgb(r, g, b) = default_trail_color(age);
+                let color = Color::Rgb(r, g, b);
                 if let Some(buf_cell) = buf.cell_mut((cell.x, cell.y)) {
                     buf_cell.set_char(cell.ch);
                     buf_cell.set_style(Style::default().fg(color));

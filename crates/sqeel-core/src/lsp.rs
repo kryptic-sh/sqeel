@@ -123,6 +123,7 @@ impl LspClient {
                 args: args.to_vec(),
                 root_markers: vec![],
                 shutdown_idle_after_secs: 0,
+                initialization_options: None,
             },
         );
         let config = LspConfig {
@@ -156,7 +157,9 @@ impl LspClient {
         _version: i32,
         text: &str,
     ) -> anyhow::Result<()> {
-        self.inner.manager.notify_change(BUF, text);
+        self.inner
+            .manager
+            .notify_change(BUF, Arc::new(text.to_string()));
         Ok(())
     }
 
@@ -184,7 +187,9 @@ impl LspWriter {
         _version: i32,
         text: &str,
     ) -> anyhow::Result<()> {
-        self.inner.manager.notify_change(BUF, text);
+        self.inner
+            .manager
+            .notify_change(BUF, Arc::new(text.to_string()));
         Ok(())
     }
 

@@ -3,8 +3,8 @@ mod host;
 pub mod splash;
 mod theme;
 
-// Re-export the editor crate so existing call sites like
-// `sqeel_tui::hjkl_editor::runtime::ex::ExEffect` keep compiling.
+// Re-export the engine crate so existing call sites like
+// `sqeel_tui::editor::VimMode` keep compiling.
 pub use hjkl_engine as editor;
 pub use host::{FoldOp, LineRange, SqeelBufferId, SqeelHost, SqeelIntent};
 
@@ -14,7 +14,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use hjkl_ratatui::spinner::frame as spinner_frame;
+use hjkl_editor_tui::spinner::frame as spinner_frame;
+use hjkl_engine_tui::{EditorRatatuiExt, crossterm_to_input, style_from_ratatui};
 
 use completion_thread::CompletionThread;
 use crossterm::{
@@ -27,6 +28,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use hjkl_engine::types::Style as EngineStyle;
 use hjkl_engine::{Editor, Host};
 use hjkl_form::TextFieldEditor;
 
@@ -675,6 +677,11 @@ async fn run_loop(
     }
 
     // Install pool for background anvil installs (`:Anvil install <name>`).
+    // Ex-command registry — `:w`, `:q`, `:s///`, `:set`, … all resolve
+    // through hjkl-ex since 0.33 (`hjkl_editor::runtime::ex` was removed).
+    // Commands the registry doesn't know come back as `ExEffect::Unknown`
+    // and fall through to sqeel's own `:colorscheme` / `:export` / … arms.
+    let ex_registry = hjkl_ex::default_registry::<SqeelHost>();
     let install_pool = hjkl_anvil::InstallPool::new();
     // Active install handle — at most one in-flight at a time.
     let mut active_install: Option<hjkl_anvil::InstallHandle> = None;
@@ -1012,8 +1019,7 @@ async fn run_loop(
             .map(|t| t.elapsed() >= CONTENT_PUBLISH_DEBOUNCE)
             .unwrap_or(false);
         let buffer_bytes = if should_publish {
-            let lines = editor.buffer().lines();
-            lines.iter().map(|l| l.len()).sum::<usize>() + lines.len()
+            <hjkl_buffer::Buffer as hjkl_engine::Query>::len_bytes(editor.buffer())
         } else {
             0
         };
@@ -1105,7 +1111,7 @@ async fn run_loop(
             );
             let dragging_editor = mouse_drag_pane == Some(Focus::Editor);
 
-            if should_submit && viewport_height > 0 && !editor.buffer().lines().is_empty() {
+            if should_submit && viewport_height > 0 && editor.buffer().row_count() > 0 {
                 if editor.take_content_reset() {
                     highlighter.reset();
                     hl_parsed_dirty_gen = None;
@@ -1141,12 +1147,13 @@ async fn run_loop(
                 if rebuild {
                     hl_cache_source.clear();
                     hl_cache_source.reserve(lb);
+                    let rope = buffer.rope();
                     let row_count = lc as usize;
                     for r in 0..row_count {
                         if r > 0 {
                             hl_cache_source.push('\n');
                         }
-                        hl_cache_source.push_str(buffer.line(r).unwrap_or(""));
+                        hl_cache_source.push_str(&hjkl_buffer::rope_line_str(&rope, r));
                     }
                     hl_cache_dirty_gen = dg;
                     hl_cache_len_bytes = lb;
@@ -1171,7 +1178,7 @@ async fn run_loop(
                 }
 
                 if parse_ok {
-                    let lines_count = buffer.lines().len();
+                    let lines_count = buffer.row_count();
                     let start = viewport_top.saturating_sub(HIGHLIGHT_WINDOW_MARGIN);
                     let end =
                         (viewport_top + viewport_height + HIGHLIGHT_WINDOW_MARGIN).min(lines_count);
@@ -1223,7 +1230,7 @@ async fn run_loop(
                             .collect(),
                     };
 
-                    let row_count = buffer.lines().len();
+                    let row_count = buffer.row_count();
                     let diagnostics = merged_diagnostics(&s.lsp_diagnostics, &result.parse_errors);
                     apply_window_spans(&mut editor, &result, row_count, &diagnostics);
                     s.set_highlights(result.spans.clone());
@@ -1273,14 +1280,15 @@ async fn run_loop(
             // only suppresses when ctx is `Any` — inside Table/Column/Qualified
             // contexts, an empty prefix should still surface candidates (e.g.
             // right after `where `).
-            let char_left = editor.buffer().lines().get(row).and_then(|line| {
+            let buf_lines = buffer_lines(editor.buffer());
+            let char_left = buf_lines.get(row).and_then(|line| {
                 let before = &line[..col.min(line.len())];
                 before.chars().next_back()
             });
             let hard_suppress = matches!(char_left, Some(';')) || char_left.is_none();
 
-            let prefix = word_prefix_at(editor.buffer().lines(), row, col);
-            let byte_offset = row_col_to_byte(editor.buffer().lines(), row, col);
+            let prefix = word_prefix_at(&buf_lines, row, col);
+            let byte_offset = row_col_to_byte(&buf_lines, row, col);
             let ctx = completion_ctx::parse_context(content, byte_offset);
 
             let whitespace_left = matches!(char_left, Some(c) if c.is_whitespace());
@@ -2002,11 +2010,13 @@ async fn run_loop(
                             };
                             drop(s);
                             if pane == Focus::Editor {
-                                editor.mouse_click_in_rect(
+                                let (doc_row, doc_col) = editor_cell_to_doc(
+                                    &editor,
                                     last_draw_areas.editor,
                                     mouse.column,
                                     mouse.row,
                                 );
+                                editor.mouse_click_doc(doc_row, doc_col);
                             }
                             mouse_drag_pane = Some(pane);
                             mouse_did_drag = false;
@@ -2017,11 +2027,13 @@ async fn run_loop(
                             if !mouse_did_drag {
                                 editor.mouse_begin_drag();
                             }
-                            editor.mouse_extend_drag_in_rect(
+                            let (doc_row, doc_col) = editor_cell_to_doc(
+                                &editor,
                                 last_draw_areas.editor,
                                 mouse.column,
                                 mouse.row,
                             );
+                            editor.mouse_extend_drag_doc(doc_row, doc_col);
                         } else if mouse_drag_pane == Some(Focus::Results)
                             && let Some(anchor) = mouse_drag_anchor
                         {
@@ -2438,7 +2450,7 @@ async fn run_loop(
                 // ── Command input mode ───────────────────────────────────────────
                 if let Some(ref mut cmd) = command_input {
                     use hjkl_engine::{Input as EngineInput, Key as EngineKey};
-                    let input: EngineInput = key.into();
+                    let input: EngineInput = crossterm_to_input(key);
                     if input.key == EngineKey::Esc {
                         // Esc-once / Esc-twice grammar (mirrors apps/hjkl):
                         // empty (any mode) or Normal+non-empty → close.
@@ -2631,8 +2643,13 @@ async fn run_loop(
                         if let Some(msg) = opts_result.info {
                             toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
                         }
-                        match hjkl_editor::runtime::ex::run(&mut editor, &opts_result.forward) {
-                            hjkl_editor::runtime::ex::ExEffect::Quit { force, save } => {
+                        let ex_effect =
+                            hjkl_ex::try_dispatch(&ex_registry, &mut editor, &opts_result.forward)
+                                .unwrap_or_else(|| {
+                                    hjkl_ex::ExEffect::Unknown(opts_result.forward.to_string())
+                                });
+                        match ex_effect {
+                            hjkl_ex::ExEffect::Quit { force, save } => {
                                 let local_dirty = editor_dirty;
                                 let any_dirty = {
                                     let mut s = state.lock().unwrap();
@@ -2664,7 +2681,7 @@ async fn run_loop(
                                     break;
                                 }
                             }
-                            hjkl_editor::runtime::ex::ExEffect::Save => {
+                            hjkl_ex::ExEffect::Save => {
                                 let prepared = {
                                     let mut s = state.lock().unwrap();
                                     // The heavy content pipeline is
@@ -2719,7 +2736,7 @@ async fn run_loop(
                                     )),
                                 }
                             }
-                            hjkl_editor::runtime::ex::ExEffect::Substituted {
+                            hjkl_ex::ExEffect::Substituted {
                                 count,
                                 lines_changed,
                             } => {
@@ -2737,10 +2754,10 @@ async fn run_loop(
                                     std::time::Instant::now(),
                                 ));
                             }
-                            hjkl_editor::runtime::ex::ExEffect::Ok => {
+                            hjkl_ex::ExEffect::Ok => {
                                 state.lock().unwrap().focus = Focus::Editor;
                             }
-                            hjkl_editor::runtime::ex::ExEffect::Info(msg) => {
+                            hjkl_ex::ExEffect::Info(msg) => {
                                 // Suppress the engine's bare `:set` info dump
                                 // when we already surfaced a query result for
                                 // a cursor-opt token (`?` form).
@@ -2748,10 +2765,10 @@ async fn run_loop(
                                     toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
                                 }
                             }
-                            hjkl_editor::runtime::ex::ExEffect::Error(msg) => {
+                            hjkl_ex::ExEffect::Error(msg) => {
                                 toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
                             }
-                            hjkl_editor::runtime::ex::ExEffect::Unknown(c) => {
+                            hjkl_ex::ExEffect::Unknown(c) => {
                                 if c == "colorscheme" {
                                     toasts.push((
                                         format!("Available: {}", theme::available_colorschemes()),
@@ -2834,10 +2851,65 @@ async fn run_loop(
                                     ));
                                 }
                             }
-                            hjkl_editor::runtime::ex::ExEffect::None => {}
-                            hjkl_editor::runtime::ex::ExEffect::SaveAs(_) => {
+                            hjkl_ex::ExEffect::None => {}
+                            hjkl_ex::ExEffect::SaveAs(_) => {
                                 toasts.push((
                                     ":w <path> not yet supported in sqeel-tui".to_string(),
+                                    ToastKind::Error,
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            hjkl_ex::ExEffect::InfoTitled { content, .. } => {
+                                toasts.push((content, ToastKind::Info, std::time::Instant::now()));
+                            }
+                            // `:e <name>` — open a saved query from sqeel's
+                            // queries dir, mirroring the file-picker path.
+                            hjkl_ex::ExEffect::EditFile { path, .. } => {
+                                let name = std::path::Path::new(&path)
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                if name.is_empty() {
+                                    toasts.push((
+                                        ":e needs a file name".to_string(),
+                                        ToastKind::Error,
+                                        std::time::Instant::now(),
+                                    ));
+                                } else {
+                                    let mut s = state.lock().unwrap();
+                                    if editor_dirty {
+                                        s.editor_content = editor.content_arc();
+                                        s.mark_active_dirty();
+                                        editor_dirty = false;
+                                    }
+                                    if let Some(idx) = s.tabs.iter().position(|t| t.name == name) {
+                                        s.switch_to_tab(idx);
+                                    } else if let Ok(content) =
+                                        sqeel_core::persistence::load_query(&name)
+                                    {
+                                        s.tabs.push(sqeel_core::state::TabEntry {
+                                            name,
+                                            content: Some(content),
+                                            last_accessed: Some(Instant::now()),
+                                            cursor: None,
+                                            dirty: false,
+                                        });
+                                        let idx = s.tabs.len() - 1;
+                                        s.switch_to_tab(idx);
+                                    } else {
+                                        toasts.push((
+                                            format!("no saved query named {name}"),
+                                            ToastKind::Error,
+                                            std::time::Instant::now(),
+                                        ));
+                                    }
+                                }
+                            }
+                            // Quickfix / location lists, buffer ops, cwd, …
+                            // — hjkl-app machinery sqeel doesn't model.
+                            other => {
+                                toasts.push((
+                                    format!("unsupported in sqeel: {other:?}"),
                                     ToastKind::Error,
                                     std::time::Instant::now(),
                                 ));
@@ -2901,7 +2973,7 @@ async fn run_loop(
                 // ── File picker (leader+space) ───────────────────────────────────
                 if let Some(ref mut picker) = file_picker {
                     use hjkl_picker::{PickerAction, PickerEvent};
-                    match picker.handle_key(key) {
+                    match hjkl_picker_tui::handle_key(picker, key) {
                         PickerEvent::Cancel => {
                             file_picker = None;
                         }
@@ -2999,7 +3071,7 @@ async fn run_loop(
                 // ── Results-pane `/` search prompt ───────────────────────────────
                 if let Some(ref mut prompt) = results_search_prompt {
                     use hjkl_engine::{Input as EngineInput, Key as EngineKey};
-                    let input: EngineInput = key.into();
+                    let input: EngineInput = crossterm_to_input(key);
                     if input.key == EngineKey::Esc {
                         let text = prompt.text();
                         if text.is_empty() || prompt.vim_mode() != hjkl_engine::VimMode::Insert {
@@ -3093,7 +3165,7 @@ async fn run_loop(
                 // The `/` / `?` search prompt is owned by the editor now;
                 // just forward the key and let sqeel-vim handle it.
                 if editor.search_prompt().is_some() {
-                    hjkl_vim::handle_key(&mut editor, key);
+                    hjkl_vim::dispatch_input(&mut editor, crossterm_to_input(key));
                     continue;
                 }
 
@@ -3308,7 +3380,7 @@ async fn run_loop(
                                 // Route through the editor so the regular
                                 // insert-Esc handling (back-one + sticky col
                                 // sync) runs. force_normal() bypasses both.
-                                hjkl_vim::handle_key(&mut editor, key);
+                                hjkl_vim::dispatch_input(&mut editor, crossterm_to_input(key));
                             }
                             continue;
                         }
@@ -3988,7 +4060,7 @@ async fn run_loop(
                         if focus == Focus::Editor && vim_mode == VimMode::Normal =>
                     {
                         let (row, col) = editor.cursor();
-                        let word = word_at_cursor(editor.buffer().lines(), row, col);
+                        let word = word_at_cursor(&buffer_lines(editor.buffer()), row, col);
                         // Three-tier dispatch for K:
                         //   1. Word matches a table whose columns are
                         //      cached → render from cache instantly.
@@ -4048,7 +4120,7 @@ async fn run_loop(
                         {
                             editor.sync_clipboard_register(text, false);
                         }
-                        hjkl_vim::handle_key(&mut editor, key);
+                        hjkl_vim::dispatch_input(&mut editor, crossterm_to_input(key));
                         // Drain any LSP intent raised by the vim
                         // engine (e.g. `gd` → GotoDefinition) and
                         // route it to `sqls`. Response lands on the
@@ -4064,7 +4136,7 @@ async fn run_loop(
                                 col as u32,
                             ));
                         }
-                        if let Some(text) = editor.last_yank.take() {
+                        if let Some(text) = editor.host_mut().take_clipboard_writes().pop() {
                             let ok = clipboard
                                 .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
                                 .is_ok();
@@ -4136,7 +4208,7 @@ fn run_statement_under_cursor(
     let stmt = if let Some(sel) = visual_selection_text(editor) {
         sel
     } else {
-        let cursor_byte = cursor_byte_offset(editor.buffer().lines(), editor.cursor());
+        let cursor_byte = cursor_byte_offset(&buffer_lines(editor.buffer()), editor.cursor());
         statement_at_byte(&content, cursor_byte)
             .map(|(s, e)| content[s..e].trim().to_string())
             .filter(|s| !s.is_empty())
@@ -4146,9 +4218,12 @@ fn run_statement_under_cursor(
     // clean cursor (the user expects Ctrl+Enter to also "commit" the
     // selection — like running it commits to it).
     if editor.vim_mode() != hjkl_engine::VimMode::Normal {
-        hjkl_vim::handle_key(
+        hjkl_vim::dispatch_input(
             editor,
-            crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            hjkl_engine::Input {
+                key: hjkl_engine::Key::Esc,
+                ..hjkl_engine::Input::default()
+            },
         );
     }
     let stmt = stmt.trim().to_string();
@@ -4269,13 +4344,46 @@ fn diag_label(state: &AppState) -> Option<Span<'static>> {
     }
 }
 
+/// Width of the dedicated diagnostic-sign column rendered to the left of
+/// the number gutter (vim `signcolumn=yes`). Shared by the renderer, the
+/// terminal-cursor placement, and the mouse→doc translation so all three
+/// agree on where the text column starts.
+const EDITOR_SIGN_COL_WIDTH: u16 = 1;
+
+/// Translate a terminal-cell mouse position inside the editor pane into
+/// document `(row, col)` coordinates. Mirrors the geometry `draw_editor`
+/// renders with: one tab-bar row on top, a 1-col horizontal margin, then
+/// `[sign][number]` gutter before the text. Replaces the engine's removed
+/// `mouse_click_in_rect` (the mouse API takes doc coordinates since
+/// hjkl-engine 0.8).
+fn editor_cell_to_doc<H: Host>(
+    editor: &Editor<hjkl_buffer::Buffer, H>,
+    area: Rect,
+    col: u16,
+    row: u16,
+) -> (usize, usize) {
+    let rope = editor.buffer().rope();
+    let inner_top = area.y.saturating_add(1); // tab bar row
+    let content_x = area
+        .x
+        .saturating_add(1) // horizontal margin
+        .saturating_add(EDITOR_SIGN_COL_WIDTH)
+        .saturating_add(editor.lnum_width());
+    let v = editor.host().viewport();
+    let rel_row = row.saturating_sub(inner_top) as usize;
+    let doc_row = (v.top_row + rel_row).min(rope.len_lines().saturating_sub(1));
+    let rel_col = col.saturating_sub(content_x) as usize + v.top_col;
+    let line_chars = hjkl_buffer::rope_line_str(&rope, doc_row).chars().count();
+    (doc_row, rel_col.min(line_chars.saturating_sub(1)))
+}
+
 /// Status-bar block showing `/<pat> <i>/<n>` when an editor search is active.
 /// `i` is the 1-based index of the match at-or-after the cursor; 0 means no
 /// match has been navigated to yet (cursor is past the last match).
 fn search_label<H: Host>(editor: &Editor<hjkl_buffer::Buffer, H>) -> Option<Span<'static>> {
     let re = editor.search_state().pattern.as_ref()?;
     let pat = re.as_str().to_string();
-    let lines = editor.buffer().lines();
+    let lines = buffer_lines(editor.buffer());
     let (cur_row, cur_col) = editor.cursor();
     let mut total = 0usize;
     let mut current = 0usize;
@@ -4346,7 +4454,7 @@ fn parse_error_position(msg: &str) -> Option<(usize, usize)> {
 ///   "the lines I marked" matches user intent and matches what
 ///   VisualLine would have produced.
 fn visual_selection_text<H: Host>(editor: &Editor<hjkl_buffer::Buffer, H>) -> Option<String> {
-    let lines = editor.buffer().lines();
+    let lines = buffer_lines(editor.buffer());
     match editor.vim_mode() {
         hjkl_engine::VimMode::Visual => {
             let ((sr, sc), (er, ec)) = editor.char_highlight()?;
@@ -4802,7 +4910,13 @@ fn draw<H: Host>(
             width: pane.width.saturating_sub(2),
             height: pane.height.saturating_sub(1),
         };
-        let pos = editor.cursor_screen_pos_in_rect(textarea_rect);
+        let pos = editor.cursor_screen_pos(
+            textarea_rect.x,
+            textarea_rect.y,
+            textarea_rect.width,
+            textarea_rect.height,
+            EDITOR_SIGN_COL_WIDTH,
+        );
         let shape = if state.vim_mode == VimMode::Insert {
             CursorShape::Bar
         } else {
@@ -5457,7 +5571,9 @@ fn draw_editor<H: Host>(
         let v = editor.host_mut().viewport_mut();
         v.width = chunks[1].width;
         v.height = chunks[1].height;
-        v.text_width = chunks[1].width.saturating_sub(gutter_width);
+        v.text_width = chunks[1]
+            .width
+            .saturating_sub(gutter_width + EDITOR_SIGN_COL_WIDTH);
         v.wrap = wrap_mode;
     }
 
@@ -5478,26 +5594,28 @@ fn draw_editor<H: Host>(
 
     // Gutter width matches what tui-textarea reserved: digit count
     // for the largest line number, plus a leading + trailing space.
-    let gutter = hjkl_buffer::Gutter {
+    let gutter = hjkl_buffer_tui::Gutter {
         width: gutter_width,
         style: Style::default().fg(ui().editor_line_num),
         line_offset: 0,
-        numbers: hjkl_buffer::GutterNumbers::Absolute,
+        numbers: hjkl_buffer_tui::GutterNumbers::Absolute,
+        sign_column_width: EDITOR_SIGN_COL_WIDTH,
+        fold_column_width: 0,
     };
     // Gutter diagnostic signs: highest severity per row wins
     // (error > warning). Painted by `BufferView` as part of its
     // gutter pass — no post-render overlay.
-    let signs: Vec<hjkl_buffer::Sign> = state
+    let signs: Vec<hjkl_buffer_tui::Sign> = state
         .lsp_diagnostics
         .iter()
         .filter_map(|d| match d.severity {
-            lsp_types::DiagnosticSeverity::ERROR => Some(hjkl_buffer::Sign {
+            lsp_types::DiagnosticSeverity::ERROR => Some(hjkl_buffer_tui::Sign {
                 row: d.line as usize,
                 ch: '●',
                 style: Style::default().fg(ui().status_diag_error),
                 priority: 2,
             }),
-            lsp_types::DiagnosticSeverity::WARNING => Some(hjkl_buffer::Sign {
+            lsp_types::DiagnosticSeverity::WARNING => Some(hjkl_buffer_tui::Sign {
                 row: d.line as usize,
                 ch: '⚠',
                 style: Style::default().fg(ui().status_diag_warning),
@@ -5507,7 +5625,7 @@ fn draw_editor<H: Host>(
         })
         .collect();
 
-    let style_table: Vec<Style> = editor.style_table().to_vec();
+    let style_table: Vec<Style> = editor.ratatui_style_table();
     let resolver = move |id: u32| style_table.get(id as usize).copied().unwrap_or_default();
     let selection = editor.buffer_selection();
     let (cursorline, cursorcolumn) = cursor_opts;
@@ -5521,12 +5639,15 @@ fn draw_editor<H: Host>(
     } else {
         Style::default()
     };
-    let view = hjkl_buffer::BufferView {
+    let view = hjkl_buffer_tui::BufferView {
         buffer: editor.buffer(),
         viewport: editor.host().viewport(),
         selection,
         resolver: &resolver,
         cursor_line_bg: cursorline_style,
+        cursor_line_row: None,
+        fold_line_bg: Style::default(),
+        folds_override: None,
         cursor_column_bg: cursorcolumn_style,
         selection_bg: Style::default().add_modifier(Modifier::REVERSED),
         cursor_style: Style::default().bg(cursor_line_bg),
@@ -5539,9 +5660,20 @@ fn draw_editor<H: Host>(
         spans: editor.buffer_spans(),
         search_pattern: editor.search_state().pattern.as_ref(),
         non_text_style: Style::default(),
+        show_eob: false,
         diag_overlays: &[],
         colorcolumn_cols: &[],
         colorcolumn_style: Style::default(),
+        listchars: None,
+        indent_guides_enabled: false,
+        indent_guide_char: '│',
+        indent_guide_shiftwidth: 4,
+        indent_guide_fg: Color::DarkGray,
+        indent_guide_active_fg: Color::DarkGray,
+        indent_guide_active_col: None,
+        eol_hints: &[],
+        blame_plan: None,
+        diff_filler: None,
     };
     f.render_widget(view, chunks[1]);
 
@@ -6399,13 +6531,9 @@ fn apply_window_spans<H: Host>(
     }
     // Materialize only the rows in the highlight window.
     let seed_start = window_start;
-    let buffer_lines: Vec<String> = editor
-        .buffer()
-        .lines()
-        .iter()
-        .skip(seed_start)
-        .take(window_end.saturating_sub(seed_start))
-        .cloned()
+    let rope = editor.buffer().rope();
+    let buffer_lines: Vec<String> = (seed_start..window_end.min(rope.len_lines()))
+        .map(|r| hjkl_buffer::rope_line_str(&rope, r))
         .collect();
     // Lookup helper: absolute row → slice index, or `None` for rows
     // outside the materialized window.
@@ -6421,7 +6549,7 @@ fn apply_window_spans<H: Host>(
         if s.capture.starts_with("comment.marker.") {
             continue;
         }
-        let Some(style) = capture_style(s.capture.as_str()) else {
+        let Some(style) = capture_style(s.capture.as_str()).map(style_from_ratatui) else {
             continue;
         };
         let sr = s.start_row + window_start;
@@ -6456,7 +6584,7 @@ fn apply_window_spans<H: Host>(
         if sr >= buffer_rows {
             continue;
         }
-        let Some(style) = marker_capture_style(s.capture.as_str()) else {
+        let Some(style) = marker_capture_style(s.capture.as_str()).map(style_from_ratatui) else {
             continue;
         };
         if sr == er {
@@ -6483,7 +6611,7 @@ fn apply_window_spans<H: Host>(
     for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
         row_spans.sort_by_key(|&(s, _, _)| s);
     }
-    editor.install_ratatui_syntax_spans(by_row);
+    editor.install_syntax_spans(by_row);
 }
 
 /// Layer an LSP diagnostic's error / warning underline onto `by_row`
@@ -6492,7 +6620,7 @@ fn apply_window_spans<H: Host>(
 /// paint the underline colour with the diagnostic severity colour, so
 /// keyword / marker colouring inside the range still renders.
 fn apply_diagnostic_underline(
-    by_row: &mut [Vec<(usize, usize, Style)>],
+    by_row: &mut [Vec<(usize, usize, EngineStyle)>],
     d: &sqeel_core::lsp::Diagnostic,
     line_len: &impl Fn(usize) -> usize,
     buffer_rows: usize,
@@ -6531,12 +6659,22 @@ fn apply_diagnostic_underline(
     }
 }
 
-/// Split `row` at `[start, end)` boundaries, adding `UNDERLINED`
-/// modifier + `underline_color = color` to the overlap region of
-/// each existing span. Uncovered bytes in `[start, end)` get a bare
-/// underline span using `color` as both fg and underline colour.
-fn merge_underline(row: &mut Vec<(usize, usize, Style)>, start: usize, end: usize, color: Color) {
-    let mut out: Vec<(usize, usize, Style)> = Vec::with_capacity(row.len() + 4);
+/// Split `row` at `[start, end)` boundaries, adding the `UNDERLINE`
+/// attr to the overlap region of each existing span. Uncovered bytes
+/// in `[start, end)` get a bare underline span using `color` as fg.
+///
+/// Engine-native styles carry no separate underline colour (hjkl 0.33
+/// interns `hjkl_engine::Style`), so the diagnostic colour goes on the
+/// fg — which the old ratatui path also did for visibility in terminals
+/// without colored-underline support.
+fn merge_underline(
+    row: &mut Vec<(usize, usize, EngineStyle)>,
+    start: usize,
+    end: usize,
+    color: Color,
+) {
+    let ecolor = style_from_ratatui(Style::default().fg(color)).fg;
+    let mut out: Vec<(usize, usize, EngineStyle)> = Vec::with_capacity(row.len() + 4);
     let mut overlap_ranges: Vec<(usize, usize)> = Vec::new();
     for &(s, e, sty) in row.iter() {
         if e <= start || s >= end {
@@ -6553,10 +6691,11 @@ fn merge_underline(row: &mut Vec<(usize, usize, Style)>, start: usize, end: usiz
         // in terminals without colored-underline support. The range is
         // small (usually one token) so losing syntax colour there is a
         // fair trade for unambiguous error visibility.
-        let merged = sty
-            .fg(color)
-            .add_modifier(Modifier::UNDERLINED)
-            .underline_color(color);
+        let merged = EngineStyle {
+            fg: ecolor,
+            attrs: sty.attrs | hjkl_engine::types::Attrs::UNDERLINE,
+            ..sty
+        };
         out.push((olap_s, olap_e, merged));
         overlap_ranges.push((olap_s, olap_e));
         if e > end {
@@ -6565,10 +6704,11 @@ fn merge_underline(row: &mut Vec<(usize, usize, Style)>, start: usize, end: usiz
     }
     // Fill gaps in [start, end) uncovered by any existing span.
     overlap_ranges.sort_by_key(|&(s, _)| s);
-    let bare = Style::default()
-        .fg(color)
-        .add_modifier(Modifier::UNDERLINED)
-        .underline_color(color);
+    let bare = EngineStyle {
+        fg: ecolor,
+        attrs: hjkl_engine::types::Attrs::UNDERLINE,
+        ..EngineStyle::default()
+    };
     let mut cursor = start;
     for (s, e) in overlap_ranges {
         if s > cursor {
@@ -6620,8 +6760,13 @@ fn marker_capture_style(capture: &str) -> Option<Style> {
 /// Insert a marker span `[ms, me)` with `style` into `row`, trimming /
 /// splitting any existing span that overlaps so the marker isn't masked
 /// by an outer tree-sitter comment span.
-fn overlay_span(row: &mut Vec<(usize, usize, Style)>, ms: usize, me: usize, style: Style) {
-    let mut trimmed: Vec<(usize, usize, Style)> = Vec::with_capacity(row.len() + 2);
+fn overlay_span(
+    row: &mut Vec<(usize, usize, EngineStyle)>,
+    ms: usize,
+    me: usize,
+    style: EngineStyle,
+) {
+    let mut trimmed: Vec<(usize, usize, EngineStyle)> = Vec::with_capacity(row.len() + 2);
     for &(s, e, sty) in row.iter() {
         if e <= ms || s >= me {
             trimmed.push((s, e, sty));
@@ -6637,6 +6782,20 @@ fn overlay_span(row: &mut Vec<(usize, usize, Style)>, ms: usize, me: usize, styl
     }
     trimmed.push((ms, me, style));
     *row = trimmed;
+}
+
+/// Materialize the buffer's logical lines as owned `String`s.
+///
+/// `hjkl_buffer::Buffer` went rope-only in 0.33 (`Buffer::lines` deleted);
+/// the line-slice helpers below (`word_prefix_at`, `row_col_to_byte`, …)
+/// keep their `&[String]` shape and get fed through this adapter. O(n) per
+/// call — fine for sqeel's SQL-scratch buffer sizes (the heavy pipeline is
+/// already gated off above 2 MB).
+fn buffer_lines(buffer: &hjkl_buffer::Buffer) -> Vec<String> {
+    let rope = buffer.rope();
+    (0..rope.len_lines())
+        .map(|r| hjkl_buffer::rope_line_str(&rope, r))
+        .collect()
 }
 
 /// Convert a `(row, col)` character position into a byte offset in the
@@ -8913,12 +9072,19 @@ mod tests {
 
     #[test]
     fn diagnostic_underline_marks_range_with_severity_color() {
-        use ratatui::style::{Color, Modifier, Style};
+        use hjkl_engine::types::{Attrs, Color as EColor, Style as EngineStyle};
         use sqeel_core::lsp::Diagnostic;
         let _ = super::theme::load();
 
-        let blue = Color::Rgb(10, 20, 30);
-        let mut row: Vec<(usize, usize, Style)> = vec![(0, 10, Style::default().fg(blue))];
+        let blue = EColor(10, 20, 30);
+        let mut row: Vec<(usize, usize, EngineStyle)> = vec![(
+            0,
+            10,
+            EngineStyle {
+                fg: Some(blue),
+                ..EngineStyle::default()
+            },
+        )];
         let by_row = std::slice::from_mut(&mut row);
         let diag = Diagnostic {
             line: 0,
@@ -8937,16 +9103,18 @@ mod tests {
         );
 
         let u = super::theme::ui();
+        let expected_fg =
+            super::style_from_ratatui(ratatui::style::Style::default().fg(u.status_diag_error)).fg;
         let overlap = row
             .iter()
             .find(|&&(s, e, _)| s == 2 && e == 7)
             .expect("overlap span missing");
         // fg flips to error colour so the range reads loud even in
         // terminals without colored-underline support.
-        assert_eq!(overlap.2.fg, Some(u.status_diag_error));
+        assert_eq!(overlap.2.fg, expected_fg);
         assert!(
-            overlap.2.add_modifier.contains(Modifier::UNDERLINED),
-            "overlap missing UNDERLINED modifier"
+            overlap.2.attrs.contains(Attrs::UNDERLINE),
+            "overlap missing UNDERLINE attr"
         );
         // Bytes outside the range keep their original fg.
         let left = row
@@ -8963,11 +9131,11 @@ mod tests {
 
     #[test]
     fn diagnostic_underline_paints_gap_when_no_existing_spans() {
-        use ratatui::style::{Modifier, Style};
+        use hjkl_engine::types::{Attrs, Style as EngineStyle};
         use sqeel_core::lsp::Diagnostic;
         let _ = super::theme::load();
 
-        let mut row: Vec<(usize, usize, Style)> = Vec::new();
+        let mut row: Vec<(usize, usize, EngineStyle)> = Vec::new();
         let by_row = std::slice::from_mut(&mut row);
         let diag = Diagnostic {
             line: 0,
@@ -8986,21 +9154,23 @@ mod tests {
         );
 
         let u = super::theme::ui();
+        let expected_fg =
+            super::style_from_ratatui(ratatui::style::Style::default().fg(u.status_diag_error)).fg;
         let span = row
             .iter()
             .find(|&&(s, e, _)| s == 3 && e == 8)
             .expect("bare diagnostic span missing");
-        assert_eq!(span.2.fg, Some(u.status_diag_error));
-        assert!(span.2.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(span.2.fg, expected_fg);
+        assert!(span.2.attrs.contains(Attrs::UNDERLINE));
     }
 
     #[test]
     fn diagnostic_underline_zero_width_range_falls_back() {
-        use ratatui::style::Style;
+        use hjkl_engine::types::Style as EngineStyle;
         use sqeel_core::lsp::Diagnostic;
         let _ = super::theme::load();
 
-        let mut row: Vec<(usize, usize, Style)> = Vec::new();
+        let mut row: Vec<(usize, usize, EngineStyle)> = Vec::new();
         let by_row = std::slice::from_mut(&mut row);
         let diag = Diagnostic {
             line: 0,
@@ -9022,9 +9192,9 @@ mod tests {
 
     #[test]
     fn overlay_splits_outer_span_around_marker() {
-        use ratatui::style::Style;
-        let base = Style::default();
-        let marker = Style::default();
+        use hjkl_engine::types::Style as EngineStyle;
+        let base = EngineStyle::default();
+        let marker = EngineStyle::default();
         let mut row = vec![(0usize, 30usize, base)];
         super::overlay_span(&mut row, 10, 15, marker);
         row.sort_by_key(|&(s, _, _)| s);
@@ -9091,7 +9261,7 @@ mod tests {
         super::apply_window_spans(&mut editor, &result, row_count, &[]);
         let by_row = editor.styled_spans.clone();
 
-        let keyword_style = super::capture_style("keyword").unwrap();
+        let keyword_style = super::style_from_ratatui(super::capture_style("keyword").unwrap());
         for row in [21usize, 23] {
             let spans = &by_row[row];
             let has_kw_at_zero = spans
@@ -9159,7 +9329,7 @@ mod tests {
 
         // Row 21 and row 23 each hold `DESC users;`. Both should have
         // at least one span starting at col 0 with Keyword styling.
-        let keyword_style = super::capture_style("keyword").unwrap();
+        let keyword_style = super::style_from_ratatui(super::capture_style("keyword").unwrap());
         for row in [21usize, 23] {
             let spans = &by_row[row];
             let has_kw_at_zero = spans
