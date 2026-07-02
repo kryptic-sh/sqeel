@@ -20,7 +20,19 @@
 
 [test-groups]
 grammar-cache = { max-threads = 1 }
+pty-e2e = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(sqeel-core) | package(sqeel-tui)'
 test-group = 'grammar-cache'
+
+# ── pty-e2e ──────────────────────────────────────────────────────────────────
+# The `sqeel` e2e suite spawns the real binary under a pty and asserts on
+# rendered frames with timing-based polls. Parallel pty sessions on one
+# runner skew each other's settle timing (and each spawns its own SQLite +
+# tokio runtime), so cap the group to one test at a time — same effect as
+# `--test-threads=1` scoped to just this suite.
+
+[[profile.default.overrides]]
+filter = 'package(sqeel) and binary(e2e)'
+test-group = 'pty-e2e'

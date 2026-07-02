@@ -480,9 +480,18 @@ fn main() -> anyhow::Result<()> {
     // Sandbox-cleanup prompt. The TUI has surrendered the terminal,
     // so a plain stderr prompt + stdin read is fine — the user is
     // back at their shell-style cursor.
+    //
+    // SQEEL_SANDBOX_AUTOCLEAN=1 skips the prompt and always deletes —
+    // for the pty e2e harness, where the TUI's async stdin reader races
+    // the prompt for any scripted answer bytes (kill-on-drop would leak
+    // a temp dir per test otherwise).
     if let Some(root) = sandbox_root {
         eprintln!("\nsqeel sandbox: {}", root.display());
-        if prompt_yes_no("Delete sandbox dir?") {
+        let autoclean = matches!(
+            std::env::var("SQEEL_SANDBOX_AUTOCLEAN"),
+            Ok(ref v) if v == "1"
+        );
+        if autoclean || prompt_yes_no("Delete sandbox dir?") {
             cleanup_sandbox(&root);
         } else {
             eprintln!(
@@ -517,7 +526,9 @@ fn saved_ref_from_tab(t: &ResultsTab) -> Option<sqeel_core::config::SavedResultR
             error: Some(msg.clone()),
             cancelled: false,
         }),
-        P::Cancelled => Some(SavedResultRef {
+        // Skipped persists as `cancelled` too — after a restart the
+        // distinction (user Ctrl-C vs batch abort) no longer matters.
+        P::Cancelled | P::Skipped => Some(SavedResultRef {
             filename: None,
             query: t.query.clone(),
             scroll: t.scroll,
@@ -802,12 +813,14 @@ fn spawn_executor(
                         };
                         let _ = is_err;
                         if stop {
-                            // Mark remaining loading tabs as cancelled so the
-                            // UI stops showing them as pending.
+                            // Mark remaining loading tabs as skipped so the
+                            // UI stops showing them as pending. `Skipped`
+                            // (not `Cancelled`): these never ran because an
+                            // earlier statement failed or was cancelled.
                             let mut s = state.lock().unwrap();
                             for j in (i + 1)..query_count {
                                 let remaining_idx = start_idx + j;
-                                s.finish_result_tab(remaining_idx, ResultsPane::Cancelled);
+                                s.finish_result_tab(remaining_idx, ResultsPane::Skipped);
                             }
                             s.results_dirty = true;
                             break;

@@ -59,9 +59,18 @@ pub struct EditorConfig {
     /// status-line banner is shown; no prompt, no network call.
     #[serde(default = "default_lsp_auto_install")]
     pub lsp_auto_install: bool,
+    /// Ask for a y/N confirm before running a destructive statement:
+    /// `UPDATE` / `DELETE` with no top-level `WHERE`, `DROP`, `TRUNCATE`.
+    /// Default `true`. Set `false` to dispatch everything unprompted.
+    #[serde(default = "default_confirm_destructive")]
+    pub confirm_destructive: bool,
 }
 
 fn default_lsp_auto_install() -> bool {
+    true
+}
+
+fn default_confirm_destructive() -> bool {
     true
 }
 

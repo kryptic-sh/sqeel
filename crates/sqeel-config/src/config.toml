@@ -41,3 +41,8 @@ cursorcolumn = false
 # Automatically prompt to install sqls via hjkl-anvil when it is not found on
 # $PATH. Set to false to suppress the prompt entirely (banner only).
 lsp_auto_install = true
+
+# Ask for a y/N confirm before running a destructive statement: UPDATE or
+# DELETE with no top-level WHERE, DROP, TRUNCATE. Set to false to dispatch
+# everything unprompted.
+confirm_destructive = true

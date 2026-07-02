@@ -629,6 +629,7 @@ async fn run_loop(
         .unwrap_or_else(|_| "file:///tmp/sqeel-scratch.sql".parse().unwrap());
     let lsp_binary = main_config.editor.lsp_binary.clone();
     let lsp_auto_install = main_config.editor.lsp_auto_install;
+    let confirm_destructive = main_config.editor.confirm_destructive;
     let mouse_scroll_lines = main_config.editor.mouse_scroll_lines;
     let leader_char: char = main_config.editor.leader_key;
 
@@ -770,6 +771,9 @@ async fn run_loop(
     let mut rename_input: Option<TextInput> = None;
     let mut file_picker: Option<hjkl_picker::Picker> = None;
     let mut delete_confirm: Option<String> = None;
+    // Run the destructive-statement guard intercepted; `Some` while its y/N
+    // confirm modal is up.
+    let mut destructive_confirm: Option<PendingRun> = None;
     let mut schema_search =
         SchemaSearch::from_initial(state.lock().unwrap().schema_search_query.clone());
 
@@ -1692,6 +1696,8 @@ async fn run_loop(
                     .map(|(msg, kind, _)| (msg.clone(), *kind))
                     .collect()
             };
+            let destructive_confirm_label: Option<String> =
+                destructive_confirm.as_ref().map(PendingRun::warn_label);
             let editor_search_text = editor.search_prompt().map(|p| p.text.as_str().to_owned());
             let last_editor_search = editor.last_search().map(str::to_owned);
             let results_search_text = results_search_prompt.as_ref().map(|p| p.text());
@@ -1708,6 +1714,7 @@ async fn run_loop(
                     rename_input.as_ref(),
                     file_picker.as_mut(),
                     delete_confirm.as_deref(),
+                    destructive_confirm_label.as_deref(),
                     quit_prompt_dirty.as_deref(),
                     sqls_prompt_open,
                     &schema_search,
@@ -2290,6 +2297,7 @@ async fn run_loop(
                     && rename_input.is_none()
                     && file_picker.is_none()
                     && delete_confirm.is_none()
+                    && destructive_confirm.is_none()
                     && editor.search_prompt().is_none()
                     && !sqls_prompt_open
                     && !show_switcher
@@ -2387,13 +2395,21 @@ async fn run_loop(
                                 // <leader><CR> — run statement under cursor
                                 // (tmux/SSH-friendly alt for Ctrl+Enter)
                                 KeyCode::Enter => {
-                                    run_statement_under_cursor(&mut editor, &state);
+                                    destructive_confirm = run_statement_under_cursor(
+                                        &mut editor,
+                                        &state,
+                                        confirm_destructive,
+                                    );
                                     continue;
                                 }
                                 // <leader><Tab> — run all statements in file
                                 // (tmux/SSH-friendly alt for Ctrl+Shift+Enter)
                                 KeyCode::Tab => {
-                                    run_all_statements(&mut editor, &state);
+                                    destructive_confirm = run_all_statements(
+                                        &mut editor,
+                                        &state,
+                                        confirm_destructive,
+                                    );
                                     continue;
                                 }
                                 _ => {}
@@ -2442,6 +2458,27 @@ async fn run_loop(
                         _ => {
                             // Any other key (Esc, c, …) cancels.
                             quit_prompt = None;
+                        }
+                    }
+                    continue;
+                }
+
+                // ── Destructive-run confirmation ─────────────────────────────────
+                if destructive_confirm.is_some() {
+                    match (key.modifiers, key.code) {
+                        // Only an explicit `y` confirms. Enter deliberately
+                        // does NOT — the run chord ends in Enter, so a
+                        // double-tap would blow straight through the guard.
+                        (KeyModifiers::NONE, KeyCode::Char('y'))
+                        | (KeyModifiers::SHIFT, KeyCode::Char('Y')) => {
+                            if let Some(pending) = destructive_confirm.take() {
+                                dispatch_pending_run(&state, pending);
+                            }
+                        }
+                        _ => {
+                            // n / Esc / anything else cancels — a guard that
+                            // can be blown through by a stray key isn't one.
+                            destructive_confirm = None;
                         }
                     }
                     continue;
@@ -4006,13 +4043,15 @@ async fn run_loop(
                     // selected text instead of the statement under
                     // cursor. Lets the user mark exactly what to run.
                     (KeyModifiers::CONTROL, KeyCode::Enter) => {
-                        run_statement_under_cursor(&mut editor, &state);
+                        destructive_confirm =
+                            run_statement_under_cursor(&mut editor, &state, confirm_destructive);
                     }
                     // Run all statements in the file: Ctrl+Shift+Enter
                     (m, KeyCode::Enter)
                         if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) =>
                     {
-                        run_all_statements(&mut editor, &state);
+                        destructive_confirm =
+                            run_all_statements(&mut editor, &state, confirm_destructive);
                     }
                     // History navigation: Ctrl+P (prev) / Ctrl+N (next)
                     (KeyModifiers::CONTROL, KeyCode::Char('p')) if focus == Focus::Editor => {
@@ -4211,10 +4250,89 @@ async fn run_loop(
 
 /// Run the SQL statement under the cursor (or the visual selection) against the
 /// active connection.  Mirrors the `Ctrl+Enter` / `<leader><CR>` key handlers.
+/// A run the destructive-statement guard intercepted, parked while the y/N
+/// confirm modal is up. `y` dispatches it via [`dispatch_pending_run`];
+/// anything else drops it.
+enum PendingRun {
+    /// Single statement (Ctrl+Enter / `<leader><CR>`).
+    Single(String),
+    /// Whole-buffer batch (Ctrl+Shift+Enter / `<leader><Tab>`).
+    Batch(Vec<String>),
+}
+
+impl PendingRun {
+    /// One-line description of why the guard fired, for the confirm dialog.
+    fn warn_label(&self) -> String {
+        match self {
+            PendingRun::Single(stmt) => sqeel_core::safety::destructive_kind(stmt)
+                .map(|k| k.label().to_string())
+                .unwrap_or_else(|| "destructive statement".to_string()),
+            PendingRun::Batch(stmts) => {
+                let kinds: Vec<&'static str> = stmts
+                    .iter()
+                    .filter_map(|s| sqeel_core::safety::destructive_kind(s))
+                    .map(|k| k.label())
+                    .collect();
+                let uniq: Vec<&'static str> = {
+                    let mut seen = Vec::new();
+                    for k in kinds {
+                        if !seen.contains(&k) {
+                            seen.push(k);
+                        }
+                    }
+                    seen
+                };
+                uniq.join(", ")
+            }
+        }
+    }
+}
+
+/// Actually dispatch a (possibly guard-confirmed) run to the executor.
+/// Shared by the direct path (guard off / statement safe) and the confirm
+/// modal's `y` arm.
+fn dispatch_pending_run(state: &Arc<Mutex<AppState>>, pending: PendingRun) {
+    let mut s = state.lock().unwrap();
+    s.dismiss_results();
+    match pending {
+        PendingRun::Single(stmt) => {
+            let tab_idx = s.push_loading_tab(stmt.clone());
+            let sent = s.send_query(stmt.clone(), tab_idx);
+            if !sent {
+                s.push_history(&stmt);
+                s.dismiss_results();
+                s.set_error(
+                    "No DB connected. Use --url / --connection or <leader>c to switch.".into(),
+                );
+            }
+        }
+        PendingRun::Batch(stmts) => {
+            for stmt in &stmts {
+                s.push_loading_tab(stmt.clone());
+            }
+            if !s.send_batch(stmts, 0) {
+                s.dismiss_results();
+                s.set_error(
+                    "No DB connected. Use --url / --connection or <leader>c to switch.".into(),
+                );
+            }
+        }
+    }
+}
+
+/// Run the SQL statement under the cursor (or the visual selection) against
+/// the active connection. Mirrors the `Ctrl+Enter` / `<leader><CR>` key
+/// handlers.
+///
+/// With `guard` on, a destructive statement (see
+/// [`sqeel_core::safety::destructive_kind`]) is NOT dispatched — it's
+/// returned as a [`PendingRun`] for the caller to park behind the y/N
+/// confirm modal.
 fn run_statement_under_cursor(
     editor: &mut Editor<hjkl_buffer::Buffer, SqeelHost>,
     state: &Arc<Mutex<AppState>>,
-) {
+    guard: bool,
+) -> Option<PendingRun> {
     let content = editor.content();
     let stmt = if let Some(sel) = visual_selection_text(editor) {
         sel
@@ -4238,37 +4356,45 @@ fn run_statement_under_cursor(
         );
     }
     let stmt = stmt.trim().to_string();
-    let mut s = state.lock().unwrap();
-    s.dismiss_completions();
-    let dialect = s.active_dialect;
-    if strip_sql_comments(&stmt).trim().is_empty() {
-        // nothing to run
-    } else if !dialect.is_native_statement(&stmt)
-        && let Some(err) = first_syntax_error(&stmt)
     {
-        s.dismiss_results();
-        s.set_error(format!(
-            "Syntax error at {}:{} — {}",
-            err.line, err.col, err.message
-        ));
-    } else {
-        s.dismiss_results();
-        let tab_idx = s.push_loading_tab(stmt.clone());
-        let sent = s.send_query(stmt.clone(), tab_idx);
-        if !sent {
-            s.push_history(&stmt);
+        let mut s = state.lock().unwrap();
+        s.dismiss_completions();
+        let dialect = s.active_dialect;
+        if strip_sql_comments(&stmt).trim().is_empty() {
+            return None; // nothing to run
+        }
+        if !dialect.is_native_statement(&stmt)
+            && let Some(err) = first_syntax_error(&stmt)
+        {
             s.dismiss_results();
-            s.set_error("No DB connected. Use --url / --connection or <leader>c to switch.".into());
+            s.set_error(format!(
+                "Syntax error at {}:{} — {}",
+                err.line, err.col, err.message
+            ));
+            return None;
         }
     }
+    let pending = PendingRun::Single(stmt);
+    if guard
+        && matches!(&pending, PendingRun::Single(s) if sqeel_core::safety::destructive_kind(s).is_some())
+    {
+        return Some(pending);
+    }
+    dispatch_pending_run(state, pending);
+    None
 }
 
 /// Run every non-empty statement in the editor buffer against the active
 /// connection.  Mirrors the `Ctrl+Shift+Enter` / `<leader><Tab>` key handlers.
+///
+/// With `guard` on and any destructive statement in the batch, nothing is
+/// dispatched — the whole batch comes back as a [`PendingRun`] for the
+/// confirm modal (all-or-nothing keeps statement order intact).
 fn run_all_statements(
     editor: &mut Editor<hjkl_buffer::Buffer, SqeelHost>,
     state: &Arc<Mutex<AppState>>,
-) {
+    guard: bool,
+) -> Option<PendingRun> {
     let content = editor.content();
     let stmts: Vec<String> = statement_ranges(&content)
         .into_iter()
@@ -4276,36 +4402,40 @@ fn run_all_statements(
         .filter(|s| !s.is_empty())
         .filter(|s| !strip_sql_comments(s).trim().is_empty())
         .collect();
-    let mut s = state.lock().unwrap();
-    s.dismiss_completions();
-    let dialect = s.active_dialect;
-    // Syntax pre-check only if none of the statements are engine-native
-    // (DESC, SHOW, PRAGMA, …) — tree-sitter-sequel rejects those but the DB
-    // runs them fine.
-    let any_native = stmts.iter().any(|s| dialect.is_native_statement(s));
-    let syntax_err = if any_native {
-        None
-    } else {
-        first_syntax_error(&content)
-    };
-    if stmts.is_empty() {
-        // nothing to run
-    } else if let Some(err) = syntax_err {
-        s.dismiss_results();
-        s.set_error(format!(
-            "Syntax error at {}:{} — {}",
-            err.line, err.col, err.message
-        ));
-    } else {
-        s.dismiss_results();
-        for stmt in &stmts {
-            s.push_loading_tab(stmt.clone());
+    {
+        let mut s = state.lock().unwrap();
+        s.dismiss_completions();
+        let dialect = s.active_dialect;
+        // Syntax pre-check only if none of the statements are engine-native
+        // (DESC, SHOW, PRAGMA, …) — tree-sitter-sequel rejects those but the
+        // DB runs them fine.
+        let any_native = stmts.iter().any(|s| dialect.is_native_statement(s));
+        let syntax_err = if any_native {
+            None
+        } else {
+            first_syntax_error(&content)
+        };
+        if stmts.is_empty() {
+            return None; // nothing to run
         }
-        if !s.send_batch(stmts, 0) {
+        if let Some(err) = syntax_err {
             s.dismiss_results();
-            s.set_error("No DB connected. Use --url / --connection or <leader>c to switch.".into());
+            s.set_error(format!(
+                "Syntax error at {}:{} — {}",
+                err.line, err.col, err.message
+            ));
+            return None;
         }
     }
+    let any_destructive = stmts
+        .iter()
+        .any(|s| sqeel_core::safety::destructive_kind(s).is_some());
+    let pending = PendingRun::Batch(stmts);
+    if guard && any_destructive {
+        return Some(pending);
+    }
+    dispatch_pending_run(state, pending);
+    None
 }
 
 fn tmux_navigate(direction: char) {
@@ -4569,6 +4699,7 @@ fn draw<H: Host>(
     rename_input: Option<&TextInput>,
     file_picker: Option<&mut hjkl_picker::Picker>,
     delete_confirm: Option<&str>,
+    destructive_confirm: Option<&str>,
     quit_prompt_dirty: Option<&[String]>,
     sqls_prompt_open: bool,
     schema_search: &SchemaSearch,
@@ -4832,6 +4963,11 @@ fn draw<H: Host>(
         draw_confirm_dialog(f, area, &format!("Delete '{name}'?  (y / n)"));
     }
 
+    // Destructive-run guard: centered borderless dialog.
+    if let Some(label) = destructive_confirm {
+        draw_confirm_dialog(f, area, &format!("Run {label}?  (y / n)"));
+    }
+
     // Quit confirmation when there are unsaved buffers.
     if let Some(names) = quit_prompt_dirty {
         let list = if names.len() <= 3 {
@@ -4969,6 +5105,7 @@ fn extract_results_left_click(
         state.results(),
         sqeel_core::state::ResultsPane::Results(_)
             | sqeel_core::state::ResultsPane::Cancelled
+            | sqeel_core::state::ResultsPane::Skipped
             | sqeel_core::state::ResultsPane::Error(_)
             | sqeel_core::state::ResultsPane::NonQuery { .. }
     ) && has_query;
@@ -5054,7 +5191,8 @@ fn extract_results_left_click(
             }
             None
         }
-        sqeel_core::state::ResultsPane::Cancelled => {
+        pane @ (sqeel_core::state::ResultsPane::Cancelled
+        | sqeel_core::state::ResultsPane::Skipped) => {
             let content_y = results_area.y + tab_bar_rows;
             if y < content_y {
                 return None;
@@ -5070,11 +5208,12 @@ fn extract_results_left_click(
                 return Some((query, "Query", ResultsCursor::Query));
             }
             if rel_y >= body_start {
-                return Some((
-                    "Skipped after earlier error".to_string(),
-                    "Line",
-                    ResultsCursor::MessageLine(0),
-                ));
+                let msg = if matches!(pane, sqeel_core::state::ResultsPane::Cancelled) {
+                    "Query cancelled"
+                } else {
+                    "Skipped after earlier error"
+                };
+                return Some((msg.to_string(), "Line", ResultsCursor::MessageLine(0)));
             }
             None
         }
@@ -5994,17 +6133,19 @@ fn draw_results(
                 false,
             );
         }
-        ResultsPane::Cancelled => {
+        pane @ (ResultsPane::Cancelled | ResultsPane::Skipped) => {
             let title_text = render_pos_title(state, "Result");
             let cursor = state.active_result().map(|t| t.cursor);
             let mut st = Style::default().fg(ui().results_cancelled);
             if matches!(cursor, Some(ResultsCursor::MessageLine(_))) {
                 st = st.bg(results_cursor_bg(focused));
             }
-            let body = vec![Line::from(Span::styled(
-                " Skipped (previous query failed)",
-                st,
-            ))];
+            let msg = if matches!(pane, ResultsPane::Cancelled) {
+                " Query cancelled (Ctrl-C)"
+            } else {
+                " Skipped (previous query failed)"
+            };
+            let body = vec![Line::from(Span::styled(msg, st))];
             let has_query = state
                 .active_result()
                 .map(|t| !t.query.trim().is_empty())
@@ -6256,7 +6397,7 @@ fn results_tab_bar(state: &AppState) -> Line<'static> {
     for (i, tab) in state.result_tabs.iter().enumerate() {
         let is_err = matches!(tab.kind, ResultsPane::Error(_));
         let is_loading = matches!(tab.kind, ResultsPane::Loading);
-        let is_cancelled = matches!(tab.kind, ResultsPane::Cancelled);
+        let is_cancelled = matches!(tab.kind, ResultsPane::Cancelled | ResultsPane::Skipped);
         let label = format!(" {} ", i + 1);
         let u = ui();
         let style = if i == state.active_result_tab {

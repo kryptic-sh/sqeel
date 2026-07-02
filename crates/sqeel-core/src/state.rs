@@ -234,7 +234,11 @@ pub enum ResultsPane {
     Loading,
     Results(QueryResult),
     Error(String),
+    /// The user cancelled this query mid-flight (Ctrl-C / `:cancel`).
     Cancelled,
+    /// This query never ran — an earlier statement in the batch failed
+    /// (with `stop_on_error`) or the batch was cancelled before reaching it.
+    Skipped,
     /// Statement that doesn't return a result set — INSERT/UPDATE/
     /// DELETE/CREATE/DROP/etc. `verb` is the leading SQL keyword
     /// (uppercase) so the renderer can distinguish DML ("3 rows
@@ -920,14 +924,14 @@ impl AppState {
                     ResultsCursor::MessageLine(i.min(n - 1))
                 }
             }
-            (ResultsPane::Cancelled, ResultsCursor::MessageLine(_)) => {
+            (ResultsPane::Cancelled | ResultsPane::Skipped, ResultsCursor::MessageLine(_)) => {
                 ResultsCursor::MessageLine(0)
             }
             (ResultsPane::Results(_), ResultsCursor::MessageLine(_))
             | (ResultsPane::Error(_), ResultsCursor::Header(_))
             | (ResultsPane::Error(_), ResultsCursor::Cell { .. })
-            | (ResultsPane::Cancelled, ResultsCursor::Header(_))
-            | (ResultsPane::Cancelled, ResultsCursor::Cell { .. })
+            | (ResultsPane::Cancelled | ResultsPane::Skipped, ResultsCursor::Header(_))
+            | (ResultsPane::Cancelled | ResultsPane::Skipped, ResultsCursor::Cell { .. })
             | (ResultsPane::Empty | ResultsPane::Loading, _) => ResultsCursor::Query,
             (_, c) => c,
         };
@@ -1001,7 +1005,9 @@ impl AppState {
                 {
                     ResultsCursor::MessageLine(i + 1)
                 }
-                (ResultsPane::Cancelled, ResultsCursor::Query) => ResultsCursor::MessageLine(0),
+                (ResultsPane::Cancelled | ResultsPane::Skipped, ResultsCursor::Query) => {
+                    ResultsCursor::MessageLine(0)
+                }
                 (_, c) => c,
             };
         });
@@ -1018,7 +1024,10 @@ impl AppState {
                     ResultsCursor::Cell { row: row - 1, col }
                 }
                 (ResultsPane::Error(_), ResultsCursor::MessageLine(0))
-                | (ResultsPane::Cancelled, ResultsCursor::MessageLine(_)) => ResultsCursor::Query,
+                | (
+                    ResultsPane::Cancelled | ResultsPane::Skipped,
+                    ResultsCursor::MessageLine(_),
+                ) => ResultsCursor::Query,
                 (ResultsPane::Error(_), ResultsCursor::MessageLine(i)) => {
                     ResultsCursor::MessageLine(i - 1)
                 }
@@ -1069,7 +1078,7 @@ impl AppState {
                 (ResultsPane::Results(r), ResultsCursor::Header(c)) if !r.rows.is_empty() => {
                     ResultsCursor::Cell { row: 0, col: c }
                 }
-                (ResultsPane::Error(_), _) | (ResultsPane::Cancelled, _) => {
+                (ResultsPane::Error(_) | ResultsPane::Cancelled | ResultsPane::Skipped, _) => {
                     ResultsCursor::MessageLine(0)
                 }
                 (_, c) => c,
@@ -1872,6 +1881,9 @@ impl AppState {
                 e.lines().nth(i).map(|s| (s.to_string(), "Line"))
             }
             (ResultsPane::Cancelled, ResultsCursor::MessageLine(_)) => {
+                Some(("Query cancelled".to_string(), "Line"))
+            }
+            (ResultsPane::Skipped, ResultsCursor::MessageLine(_)) => {
                 Some(("Skipped after earlier error".to_string(), "Line"))
             }
             _ => None,
