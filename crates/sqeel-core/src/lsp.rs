@@ -99,6 +99,13 @@ struct Inner {
 }
 
 impl Inner {
+    /// Full-text-sync the document at `uri`, attaching it first (didOpen)
+    /// when this is the first time the uri is seen.
+    fn sync_document(&self, uri: &Uri, text: &str) {
+        let doc = self.doc_for(uri, text);
+        self.manager.notify_change(doc, Arc::new(text.to_string()));
+    }
+
     /// Resolve (or lazily attach) the LSP document for `uri`. New documents
     /// are attached with `initial_text` so the server sees a proper didOpen.
     fn doc_for(&self, uri: &Uri, initial_text: &str) -> BufferId {
@@ -185,16 +192,8 @@ impl LspClient {
         Ok(())
     }
 
-    pub async fn change_document(
-        &mut self,
-        uri: Uri,
-        _version: i32,
-        text: &str,
-    ) -> anyhow::Result<()> {
-        let doc = self.inner.doc_for(&uri, text);
-        self.inner
-            .manager
-            .notify_change(doc, Arc::new(text.to_string()));
+    pub async fn change_document(&mut self, uri: Uri, text: &str) -> anyhow::Result<()> {
+        self.inner.sync_document(&uri, text);
         Ok(())
     }
 
@@ -226,11 +225,8 @@ pub struct LspWriter {
 }
 
 impl LspWriter {
-    pub async fn change_document(&self, uri: Uri, _version: i32, text: &str) -> anyhow::Result<()> {
-        let doc = self.inner.doc_for(&uri, text);
-        self.inner
-            .manager
-            .notify_change(doc, Arc::new(text.to_string()));
+    pub async fn change_document(&self, uri: Uri, text: &str) -> anyhow::Result<()> {
+        self.inner.sync_document(&uri, text);
         Ok(())
     }
 

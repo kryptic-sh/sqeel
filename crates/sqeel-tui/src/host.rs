@@ -1,103 +1,32 @@
-//! `SqeelHost` — host adapter for the planned `Editor<B, H>` trait
-//! extraction in `hjkl-engine`.
+//! `SqeelHost` — sqeel's [`hjkl_engine::Host`] implementation.
 //!
-//! Today the runtime [`hjkl_engine::Editor`] consumes its host
-//! state through inherent fields; the trait isn't wired in yet. This
-//! type sits ready so the migration over to `Editor<B, H>` is a
-//! single-callsite change once phase 5 proper lands on hjkl side.
-//!
-//! The intent fan-out covers the LSP requests sqeel-tui already routes
-//! out-of-band today (`gd` for goto-def, etc.), plus fold ops and
-//! buffer switching. Until the engine actually emits intents, the
-//! `intents` queue stays empty.
+//! Owns the runtime viewport (scroll offsets read/written by the engine,
+//! width/height published by the renderer each frame) and the clipboard
+//! outbox the engine pushes yanks/cuts into via [`Host::write_clipboard`].
+//! The event loop drains the outbox once per key
+//! ([`SqeelHost::take_clipboard_writes`]) to copy + toast.
 
-use crate::Clipboard;
-use hjkl_clipboard::{MimeType, Selection};
 use hjkl_engine::types::Viewport;
-use hjkl_engine::{CursorShape, Host, Pos};
+use hjkl_engine::{CursorShape, Host};
 use std::time::Instant;
 
-/// Buffer identifier in sqeel's tab manager. Opaque from the engine's
-/// side; sqeel owns generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SqeelBufferId(pub u64);
-
-/// Range within a buffer (line indexes) — used by `FormatRange` and
-/// fold operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LineRange {
-    pub start: u32,
-    pub end: u32,
-}
-
-/// Intents sqeel-tui drains from the engine each render pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqeelIntent {
-    // ── LSP-equivalents ──
-    /// `K` — request hover info at `pos`.
-    Hover(Pos),
-    /// Insert-mode autocomplete trigger.
-    Complete(Pos, char),
-    /// `gd` — goto-definition.
-    GotoDef(Pos),
-    /// Visual-mode rename (`gR`).
-    Rename(Pos, String),
-    /// Show diagnostic for `line`.
-    Diagnostic(u32),
-    /// Format the given line range.
-    FormatRange(LineRange),
-
-    // ── Fold ops ──
-    /// `zo` / `zc` / `za` etc. Host applies to its fold table.
-    FoldOp(FoldOp),
-
-    // ── Buffer list ops ──
-    /// `:b{n}` — switch to a known buffer.
-    SwitchBuffer(SqeelBufferId),
-    /// `:ls` — show buffer list.
-    ListBuffers,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FoldOp {
-    Open,
-    Close,
-    Toggle,
-    OpenAll,
-    CloseAll,
-    AtLine(u32),
-}
-
-/// Host adapter for the planned `Editor<B, H>` constructor.
+/// Host adapter wired into `Editor<Buffer, SqeelHost>`.
 pub struct SqeelHost {
-    last_cursor_shape: CursorShape,
-    clipboard: Clipboard,
-    /// Cached system clipboard value. Refreshed on focus events / OSC52
-    /// reply; reads return this slot directly (never block).
-    clipboard_cache: Option<String>,
-    /// Pending writes flushed by the host's tick loop. Engine never
-    /// awaits.
+    /// Pending clipboard writes queued by the engine. The event loop
+    /// drains them; the engine never blocks.
     clipboard_outbox: Vec<String>,
     started: Instant,
-    intents: Vec<SqeelIntent>,
-    cancel: bool,
-    /// Runtime viewport — relocated off `hjkl_buffer::Buffer` in
-    /// hjkl 0.0.34 (Patch C-δ.1). Host owns the (top_row, top_col,
-    /// width, height, text_width, wrap) tuple; the engine reads/writes
-    /// scroll offsets, the renderer publishes width/height per frame.
+    /// Runtime viewport — host-owned since hjkl 0.0.34. The engine
+    /// reads/writes scroll offsets; the renderer publishes width/height
+    /// per frame.
     viewport: Viewport,
 }
 
 impl SqeelHost {
-    pub fn new(clipboard: Clipboard) -> Self {
+    pub fn new() -> Self {
         Self {
-            last_cursor_shape: CursorShape::Block,
-            clipboard,
-            clipboard_cache: None,
             clipboard_outbox: Vec::new(),
             started: Instant::now(),
-            intents: Vec::new(),
-            cancel: false,
             // Sensible default — renderer overwrites width/height per
             // frame from the editor pane's chunk rect.
             viewport: Viewport {
@@ -110,79 +39,49 @@ impl SqeelHost {
         }
     }
 
-    /// Most recent cursor shape requested by the engine. Renderer reads.
-    pub fn cursor_shape(&self) -> CursorShape {
-        self.last_cursor_shape
-    }
-
-    /// Update the clipboard cache. Host calls this on focus events,
-    /// OSC52 replies, or explicit poll.
-    pub fn set_clipboard_cache(&mut self, text: Option<String>) {
-        self.clipboard_cache = text;
-    }
-
-    /// Flush queued clipboard writes to the platform backend. Drops
-    /// payloads that fail (logged via tracing in the future).
-    pub fn flush_clipboard(&mut self) {
-        let outbox = std::mem::take(&mut self.clipboard_outbox);
-        for text in outbox {
-            let _ = self
-                .clipboard
-                .set(Selection::Clipboard, MimeType::Text, text.as_bytes());
-        }
-    }
-
-    /// Drain queued clipboard writes without touching the platform
-    /// backend. The event loop uses this to copy + toast per yank
-    /// (the engine pushes every yank/cut here via `Host::write_clipboard`).
+    /// Drain queued clipboard writes. The event loop copies them to the
+    /// OS clipboard and toasts (the engine pushes every yank/cut here
+    /// via [`Host::write_clipboard`]).
     pub fn take_clipboard_writes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.clipboard_outbox)
     }
+}
 
-    /// Drain queued intents. Host calls this once per render frame.
-    pub fn drain_intents(&mut self) -> Vec<SqeelIntent> {
-        std::mem::take(&mut self.intents)
-    }
-
-    /// Set / clear the cancellation flag (`Ctrl-C` handler hooks here).
-    pub fn set_cancel(&mut self, cancel: bool) {
-        self.cancel = cancel;
+impl Default for SqeelHost {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Host for SqeelHost {
-    type Intent = SqeelIntent;
+    type Intent = ();
 
     fn write_clipboard(&mut self, text: String) {
         self.clipboard_outbox.push(text);
     }
 
     fn read_clipboard(&mut self) -> Option<String> {
-        self.clipboard_cache.clone()
+        // Paste paths read the OS clipboard directly in the event loop
+        // (`sync_clipboard_register`); the engine-side cache is unused.
+        None
     }
 
     fn now(&self) -> std::time::Duration {
         self.started.elapsed()
     }
 
-    fn should_cancel(&self) -> bool {
-        self.cancel
-    }
-
     fn prompt_search(&mut self) -> Option<String> {
-        // Search prompt overlay is part of sqeel-tui's render loop;
-        // when hjkl-engine starts driving search via Host, this hooks
-        // into the existing prompt path. Until then, abort the search.
+        // The `/` prompt is owned by the engine's search-prompt state;
+        // this host hook is never consulted.
         None
     }
 
-    fn emit_cursor_shape(&mut self, shape: CursorShape) {
-        self.last_cursor_shape = shape;
+    fn emit_cursor_shape(&mut self, _shape: CursorShape) {
+        // The renderer derives the terminal cursor shape from the vim
+        // mode each frame; the engine's emission is redundant here.
     }
 
-    fn emit_intent(&mut self, intent: Self::Intent) {
-        self.intents.push(intent);
-    }
+    fn emit_intent(&mut self, _intent: Self::Intent) {}
 
     fn viewport(&self) -> &Viewport {
         &self.viewport
@@ -205,30 +104,10 @@ mod tests {
 
     #[test]
     fn clipboard_outbox_drains() {
-        let mut host = SqeelHost::new(Clipboard::new().expect("clipboard init"));
+        let mut host = SqeelHost::new();
         host.write_clipboard("foo".into());
         host.write_clipboard("bar".into());
-        // Don't actually flush — would touch arboard. Just confirm
-        // queueing works.
-        assert_eq!(host.clipboard_outbox.len(), 2);
-        host.clipboard_outbox.clear();
-    }
-
-    #[test]
-    fn cursor_shape_recorded() {
-        let mut host = SqeelHost::new(Clipboard::new().expect("clipboard init"));
-        assert_eq!(host.cursor_shape(), CursorShape::Block);
-        host.emit_cursor_shape(CursorShape::Bar);
-        assert_eq!(host.cursor_shape(), CursorShape::Bar);
-    }
-
-    #[test]
-    fn intents_drain() {
-        let mut host = SqeelHost::new(Clipboard::new().expect("clipboard init"));
-        host.emit_intent(SqeelIntent::Hover(Pos::ORIGIN));
-        host.emit_intent(SqeelIntent::ListBuffers);
-        let drained = host.drain_intents();
-        assert_eq!(drained.len(), 2);
-        assert!(host.drain_intents().is_empty());
+        assert_eq!(host.take_clipboard_writes(), vec!["foo", "bar"]);
+        assert!(host.take_clipboard_writes().is_empty());
     }
 }

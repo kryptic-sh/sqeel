@@ -17,7 +17,7 @@ use syntax::*;
 // Re-export the engine crate so existing call sites like
 // `sqeel_tui::editor::VimMode` keep compiling.
 pub use hjkl_engine as editor;
-pub use host::{FoldOp, LineRange, SqeelBufferId, SqeelHost, SqeelIntent};
+pub use host::SqeelHost;
 
 pub use hjkl_clipboard::Clipboard;
 use hjkl_clipboard::{MimeType, Selection};
@@ -65,7 +65,7 @@ use ratatui::{
 };
 use sqeel_config::TlsVerifyMode;
 use sqeel_core::{
-    AppState, UiProvider,
+    AppState,
     completion_ctx::{self, CompletionCtx},
     config::load_main_config,
     highlight::{
@@ -276,15 +276,6 @@ fn text_field_paste(field: &mut TextFieldEditor, text: &str) {
     }
 }
 
-pub struct TuiProvider;
-
-impl UiProvider for TuiProvider {
-    fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async_run(state, true))
-    }
-}
-
 /// Launch the TUI. Pass `show_splash = false` to skip the startup animation.
 pub fn run(state: Arc<Mutex<AppState>>, show_splash: bool) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
@@ -388,7 +379,7 @@ async fn run_loop(
     let mut opt_cursorcolumn = main_config.editor.cursorcolumn;
     let mut editor = Editor::new(
         hjkl_buffer::Buffer::new(),
-        SqeelHost::new(Clipboard::new().expect("clipboard init")),
+        SqeelHost::new(),
         hjkl_engine::types::Options {
             // Preserve sqeel's pre-0.1.0 default (Settings::default()
             // shiftwidth=2). Without this we'd silently flip to vim's
@@ -534,7 +525,6 @@ async fn run_loop(
     // when diagnostics change, without re-parsing.
     let mut last_highlight_result: Option<HighlightResult> = None;
     let mut last_marker_diag_len: usize = usize::MAX;
-    let mut doc_version: i32 = 0;
     // Buffers larger than this are not streamed to the LSP — sqls (and most
     // SQL LSPs) re-parse the whole document on every `didChange` and balloon
     // to multi-GB RAM on huge dumps / seed files.  We still highlight +
@@ -793,14 +783,12 @@ async fn run_loop(
                     // send of a multi-MB buffer would otherwise freeze the
                     // UI for hundreds of ms the moment a large scratch
                     // loads.
-                    doc_version += 1;
                     let writer = client.writer();
                     let uri = active_lsp_uri.clone();
-                    let version = doc_version;
                     let text = std::sync::Arc::new(content.clone());
                     let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
                     tokio::spawn(async move {
-                        let _ = writer.change_document(uri, version, &text).await;
+                        let _ = writer.change_document(uri, &text).await;
                         if let Some(path) = debug_path {
                             use std::io::Write;
                             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -811,7 +799,7 @@ async fn run_loop(
                                 let preview: String = text.chars().take(80).collect();
                                 let _ = writeln!(
                                     f,
-                                    "### lsp didChange (tab-load) v{version} bytes={} preview={preview:?}",
+                                    "### lsp didChange (tab-load) bytes={} preview={preview:?}",
                                     text.len()
                                 );
                             }
@@ -1101,8 +1089,6 @@ async fn run_loop(
         // Gate on Insert mode — popping up completions while the user is in
         // Normal / Visual / any-visual mode is always a distraction.
         if let Some(ref content) = content {
-            doc_version += 1;
-
             let (row, col) = editor.cursor();
 
             // Suppress completions after `;` or on empty buffer. Whitespace
@@ -1149,9 +1135,7 @@ async fn run_loop(
                         // once so sqls can free whatever it parsed, then go
                         // silent until the buffer shrinks again.
                         if !lsp_suspended {
-                            let _ = client
-                                .change_document(active_lsp_uri.clone(), doc_version, "")
-                                .await;
+                            let _ = client.change_document(active_lsp_uri.clone(), "").await;
                             lsp_suspended = true;
                         }
                     } else {
@@ -1166,11 +1150,10 @@ async fn run_loop(
                         // on the other side.
                         let writer = client.writer();
                         let uri = active_lsp_uri.clone();
-                        let version = doc_version;
                         let text = Arc::clone(content);
                         let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
                         tokio::spawn(async move {
-                            let _ = writer.change_document(uri, version, &text).await;
+                            let _ = writer.change_document(uri, &text).await;
                             if let Some(path) = debug_path {
                                 use std::io::Write;
                                 if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1181,7 +1164,7 @@ async fn run_loop(
                                     let preview: String = text.chars().take(80).collect();
                                     let _ = writeln!(
                                         f,
-                                        "### lsp didChange v{version} bytes={} preview={preview:?}",
+                                        "### lsp didChange bytes={} preview={preview:?}",
                                         text.len()
                                     );
                                 }
@@ -1286,7 +1269,6 @@ async fn run_loop(
             if let Ok(mut client) = result {
                 let content = editor.content();
                 let _ = client.open_document(active_lsp_uri.clone(), &content).await;
-                doc_version = 1;
                 // Warm-up hover request right after opening the doc.
                 // sqls fetches the DB schema on its first
                 // symbol-resolution request, which would otherwise
