@@ -206,6 +206,40 @@ fn ctrl_c_cancels_running_query() {
     );
 }
 
+/// `:set wrap` must soft-wrap long lines: text past the pane width becomes
+/// visible on a continuation row instead of being clipped by `top_col`.
+#[test]
+fn set_wrap_renders_continuation_rows() {
+    let mut s = TerminalSession::spawn_sandbox();
+    assert!(
+        s.wait_for_text("CREATE TABLE", 5_000),
+        "editor never rendered\n{}",
+        s.screen_dump()
+    );
+    // One long line: the tail marker sits past the ~73-cell text width.
+    let filler = "x".repeat(80);
+    s.keys("ggVGc");
+    s.keys(&format!("-- {filler} WRAPTAIL<Esc>"));
+    assert!(
+        !s.screen_contains("WRAPTAIL"),
+        "tail visible before wrap — line too short?\n{}",
+        s.screen_dump()
+    );
+    s.keys(":set wrap<Enter>");
+    assert!(
+        s.wait_for_text("WRAPTAIL", 3_000),
+        "continuation row never rendered after :set wrap\n{}",
+        s.screen_dump()
+    );
+    // And back off again.
+    s.keys(":set nowrap<Enter>");
+    let gone = (0..150).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        !s.screen_contains("WRAPTAIL")
+    });
+    assert!(gone, ":set nowrap didn't unwrap\n{}", s.screen_dump());
+}
+
 /// `:q!` must exit the process cleanly — the graceful shutdown path (LSP
 /// shutdown, session persist, terminal restore, sandbox autoclean). A hang
 /// here means the event loop or an async worker is wedged on quit.

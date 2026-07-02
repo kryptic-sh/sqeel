@@ -198,6 +198,16 @@ impl LspClient {
         Ok(())
     }
 
+    /// Close the LSP document for `uri` — didClose on the server side —
+    /// and forget its id. No-op when the uri was never opened. Call when
+    /// the owning tab is renamed (old uri) or deleted, so the server
+    /// doesn't accumulate orphaned documents.
+    pub fn close_document(&self, uri: &Uri) {
+        if let Some(id) = self.inner.docs.lock().unwrap().remove(uri.as_str()) {
+            self.inner.manager.detach_buffer(id);
+        }
+    }
+
     pub async fn shutdown(&mut self) {
         // LspManager::Drop sends ShutdownAll; explicit shutdown requires ownership.
         // kill_on_drop equivalent: the Inner drop triggers ShutdownAll.

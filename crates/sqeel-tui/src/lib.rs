@@ -2757,10 +2757,17 @@ async fn run_loop(
                                         let mut s = state.lock().unwrap();
                                         s.editor_content = editor.content_arc();
                                         s.editor_content_synced = true;
-                                        s.rename_active_tab(&path)
+                                        let old_name =
+                                            s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                        s.rename_active_tab(&path).map(|()| old_name)
                                     };
                                     match renamed {
-                                        Ok(()) => {
+                                        Ok(old_name) => {
+                                            // Close the pre-rename uri's LSP doc;
+                                            // the new one didOpens next iteration.
+                                            if let (Some(client), Some(old)) = (&lsp, old_name) {
+                                                client.close_document(&tab_lsp_uri(&old));
+                                            }
                                             let prepared =
                                                 state.lock().unwrap().prepare_save_active_tab();
                                             match prepared {
@@ -2817,13 +2824,22 @@ async fn run_loop(
                             // `:file <name>` — rename the buffer in place
                             // without writing.
                             hjkl_ex::ExEffect::RenameBuffer { name } => {
-                                let renamed = state.lock().unwrap().rename_active_tab(&name);
+                                let renamed = {
+                                    let mut s = state.lock().unwrap();
+                                    let old_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                    s.rename_active_tab(&name).map(|()| old_name)
+                                };
                                 match renamed {
-                                    Ok(()) => toasts.push((
-                                        format!("Renamed to {name}"),
-                                        ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    )),
+                                    Ok(old_name) => {
+                                        if let (Some(client), Some(old)) = (&lsp, old_name) {
+                                            client.close_document(&tab_lsp_uri(&old));
+                                        }
+                                        toasts.push((
+                                            format!("Renamed to {name}"),
+                                            ToastKind::Info,
+                                            std::time::Instant::now(),
+                                        ));
+                                    }
                                     Err(e) => toasts.push((
                                         format!("Rename failed: {e}"),
                                         ToastKind::Error,
@@ -2952,13 +2968,27 @@ async fn run_loop(
                         }
                         (KeyModifiers::NONE, KeyCode::Enter) => {
                             let name_str = rename_input.take().unwrap_or_default().text;
-                            let mut s = state.lock().unwrap();
-                            if let Err(e) = s.rename_active_tab(&name_str) {
-                                toasts.push((
-                                    format!("Rename failed: {e}"),
-                                    ToastKind::Error,
-                                    std::time::Instant::now(),
-                                ));
+                            let renamed = {
+                                let mut s = state.lock().unwrap();
+                                let old_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                s.rename_active_tab(&name_str).map(|()| old_name)
+                            };
+                            match renamed {
+                                Ok(old_name) => {
+                                    // The old uri's LSP document is orphaned by
+                                    // the rename — close it server-side. The new
+                                    // uri didOpens on the next loop iteration.
+                                    if let (Some(client), Some(old)) = (&lsp, old_name) {
+                                        client.close_document(&tab_lsp_uri(&old));
+                                    }
+                                }
+                                Err(e) => {
+                                    toasts.push((
+                                        format!("Rename failed: {e}"),
+                                        ToastKind::Error,
+                                        std::time::Instant::now(),
+                                    ));
+                                }
                             }
                         }
                         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
@@ -2976,13 +3006,26 @@ async fn run_loop(
                         (KeyModifiers::NONE, KeyCode::Char('y'))
                         | (KeyModifiers::NONE, KeyCode::Enter) => {
                             delete_confirm = None;
-                            let mut s = state.lock().unwrap();
-                            if let Err(e) = s.delete_active_tab() {
-                                toasts.push((
-                                    format!("Delete failed: {e}"),
-                                    ToastKind::Error,
-                                    std::time::Instant::now(),
-                                ));
+                            let deleted = {
+                                let mut s = state.lock().unwrap();
+                                let old_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+                                s.delete_active_tab().map(|()| old_name)
+                            };
+                            match deleted {
+                                Ok(old_name) => {
+                                    // Close the deleted tab's LSP document so
+                                    // the server doesn't keep analysing it.
+                                    if let (Some(client), Some(old)) = (&lsp, old_name) {
+                                        client.close_document(&tab_lsp_uri(&old));
+                                    }
+                                }
+                                Err(e) => {
+                                    toasts.push((
+                                        format!("Delete failed: {e}"),
+                                        ToastKind::Error,
+                                        std::time::Instant::now(),
+                                    ));
+                                }
                             }
                         }
                         _ => {
@@ -4264,6 +4307,85 @@ mod tests {
         AppState,
         state::{Focus, QueryResult},
     };
+
+    use hjkl_engine::{Editor, Host as _};
+    use ratatui::layout::Rect;
+
+    // ── editor_cell_to_doc (wrap-aware mouse translation) ────────────────────
+
+    /// Editor over `content` with an explicit viewport `(text_width, wrap)`.
+    /// Default settings: number=true, numberwidth=4 → lnum_width 4; the
+    /// harness area is rooted at (0,0) so content_x = 1 (margin) + 1 (sign)
+    /// + 4 (numbers) = 6 and the first text row is screen row 1 (tab bar).
+    fn wrap_editor(
+        content: &str,
+        text_width: u16,
+        wrap: hjkl_buffer::Wrap,
+    ) -> Editor<hjkl_buffer::Buffer, hjkl_engine::types::DefaultHost> {
+        let mut ed = Editor::new(
+            hjkl_buffer::Buffer::from_str(content),
+            hjkl_engine::types::DefaultHost::new(),
+            hjkl_engine::types::Options::default(),
+        );
+        let v = ed.host_mut().viewport_mut();
+        v.top_row = 0;
+        v.top_col = 0;
+        v.width = text_width + 6;
+        v.height = 20;
+        v.text_width = text_width;
+        v.wrap = wrap;
+        ed
+    }
+
+    fn cell(
+        ed: &Editor<hjkl_buffer::Buffer, hjkl_engine::types::DefaultHost>,
+        col: u16,
+        row: u16,
+    ) -> (usize, usize) {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 20,
+        };
+        super::editor_cell_to_doc(ed, area, col, row)
+    }
+
+    #[test]
+    fn cell_to_doc_nowrap_maps_rows_one_to_one() {
+        let ed = wrap_editor("alpha\nbravo\ncharlie", 20, hjkl_buffer::Wrap::None);
+        assert_eq!(cell(&ed, 6, 1), (0, 0)); // first text cell
+        assert_eq!(cell(&ed, 8, 2), (1, 2)); // row 2 → doc row 1, col 2
+        assert_eq!(cell(&ed, 30, 3), (2, 6)); // past EOL clamps to last char
+    }
+
+    #[test]
+    fn cell_to_doc_wrap_char_maps_continuation_rows() {
+        // 25-char line, width 10 → segments [0,10), [10,20), [20,25).
+        let ed = wrap_editor(
+            "abcdefghijklmnopqrstuvwxy\nnext",
+            10,
+            hjkl_buffer::Wrap::Char,
+        );
+        // Screen row 1 = first segment.
+        assert_eq!(cell(&ed, 6, 1), (0, 0));
+        // Screen row 2 = continuation → char 10 onward.
+        assert_eq!(cell(&ed, 6, 2), (0, 10));
+        assert_eq!(cell(&ed, 9, 2), (0, 13));
+        // Screen row 3 = last segment (5 chars); col past its end clamps
+        // inside the segment.
+        assert_eq!(cell(&ed, 14, 3), (0, 24));
+        // Screen row 4 = the next doc row.
+        assert_eq!(cell(&ed, 6, 4), (1, 0));
+    }
+
+    #[test]
+    fn cell_to_doc_wrap_click_past_eof_clamps() {
+        let ed = wrap_editor("abcdefghijklmno", 10, hjkl_buffer::Wrap::Char);
+        // Doc row 0 spans screen rows 1..=2; a click far below clamps to
+        // the last char of the last doc row.
+        assert_eq!(cell(&ed, 6, 10), (0, 14));
+    }
 
     fn type_chars(field: &mut TextFieldEditor, s: &str) {
         for c in s.chars() {

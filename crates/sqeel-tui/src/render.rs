@@ -54,6 +54,12 @@ pub(crate) const EDITOR_SIGN_COL_WIDTH: u16 = 1;
 /// `[sign][number]` gutter before the text. Replaces the engine's removed
 /// `mouse_click_in_rect` (the mouse API takes doc coordinates since
 /// hjkl-engine 0.8).
+///
+/// Wrap-aware: with `:set wrap` / `:set linebreak` a doc row occupies
+/// several screen rows, so the screen row is resolved by walking doc rows
+/// through [`hjkl_buffer::wrap::wrap_segments`] with the same
+/// `(text_width, mode)` the renderer wraps with, and the column maps into
+/// the clicked segment's char range.
 pub(crate) fn editor_cell_to_doc<H: Host>(
     editor: &Editor<hjkl_buffer::Buffer, H>,
     area: Rect,
@@ -69,10 +75,47 @@ pub(crate) fn editor_cell_to_doc<H: Host>(
         .saturating_add(editor.lnum_width());
     let v = editor.host().viewport();
     let rel_row = row.saturating_sub(inner_top) as usize;
-    let doc_row = (v.top_row + rel_row).min(rope.len_lines().saturating_sub(1));
-    let rel_col = col.saturating_sub(content_x) as usize + v.top_col;
-    let line_chars = hjkl_buffer::rope_line_str(&rope, doc_row).chars().count();
-    (doc_row, rel_col.min(line_chars.saturating_sub(1)))
+    let rel_col = col.saturating_sub(content_x) as usize;
+    let last_row = rope.len_lines().saturating_sub(1);
+    let tab_width = editor.settings().tabstop;
+
+    if matches!(v.wrap, hjkl_buffer::Wrap::None) {
+        // One doc row per screen row; `top_col` clips the left edge.
+        let doc_row = (v.top_row + rel_row).min(last_row);
+        let line = hjkl_buffer::rope_line_str(&rope, doc_row);
+        let char_col = hjkl_buffer::visual_col_to_char_col(&line, rel_col + v.top_col, tab_width);
+        return (
+            doc_row,
+            char_col.min(line.chars().count().saturating_sub(1)),
+        );
+    }
+
+    // Soft wrap: walk doc rows from the viewport top, expanding each into
+    // its wrap segments, until the clicked screen row falls inside one.
+    let width = v.text_width.max(1);
+    let mut remaining = rel_row;
+    let mut doc_row = v.top_row.min(last_row);
+    loop {
+        let line = hjkl_buffer::rope_line_str(&rope, doc_row);
+        let segs = hjkl_buffer::wrap::wrap_segments(&line, width, v.wrap);
+        if remaining < segs.len() {
+            let (s, e) = segs[remaining];
+            let seg: String = line.chars().skip(s).take(e.saturating_sub(s)).collect();
+            let col_in_seg = hjkl_buffer::visual_col_to_char_col(&seg, rel_col, tab_width);
+            let char_col = s + col_in_seg.min(e.saturating_sub(s).saturating_sub(1));
+            return (
+                doc_row,
+                char_col.min(line.chars().count().saturating_sub(1)),
+            );
+        }
+        if doc_row >= last_row {
+            // Past EOF — clamp to the last cell of the last row.
+            let chars = line.chars().count();
+            return (last_row, chars.saturating_sub(1));
+        }
+        remaining -= segs.len();
+        doc_row += 1;
+    }
 }
 
 /// Status-bar block showing `/<pat> <i>/<n>` when an editor search is active.
