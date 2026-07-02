@@ -13,7 +13,6 @@ use lsp_types::*;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-const BUF: BufferId = 1;
 static ID: AtomicI64 = AtomicI64::new(1);
 fn next_id() -> i64 {
     ID.fetch_add(1, Ordering::SeqCst)
@@ -79,7 +78,10 @@ pub struct Diagnostic {
 
 #[derive(Debug)]
 pub enum LspEvent {
-    Diagnostics(Vec<Diagnostic>),
+    /// Diagnostics for the document at `uri` (as published by the server).
+    /// Consumers must match the uri against the document they're rendering —
+    /// a publish can arrive after the active document changed.
+    Diagnostics(String, Vec<Diagnostic>),
     Completion(i64, Vec<String>),
     Hover(i64, String),
     Definition(i64, String, u32, u32),
@@ -90,6 +92,28 @@ pub enum LspEvent {
 
 struct Inner {
     manager: LspManager,
+    /// One LSP document per distinct uri (per sqeel tab). Allocated on
+    /// first open/change so callers never juggle raw [`BufferId`]s.
+    docs: std::sync::Mutex<std::collections::HashMap<String, BufferId>>,
+    next_doc: std::sync::atomic::AtomicU64,
+}
+
+impl Inner {
+    /// Resolve (or lazily attach) the LSP document for `uri`. New documents
+    /// are attached with `initial_text` so the server sees a proper didOpen.
+    fn doc_for(&self, uri: &Uri, initial_text: &str) -> BufferId {
+        let mut docs = self.docs.lock().unwrap();
+        if let Some(id) = docs.get(uri.as_str()) {
+            return *id;
+        }
+        let id = self
+            .next_doc
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst) as BufferId;
+        self.manager
+            .attach_buffer(id, &uri_to_path(uri), "sql", initial_text);
+        docs.insert(uri.as_str().to_string(), id);
+        id
+    }
 }
 
 pub struct LspClient {
@@ -131,7 +155,11 @@ impl LspClient {
             servers,
         };
         let manager = LspManager::spawn(config);
-        let inner = Arc::new(Inner { manager });
+        let inner = Arc::new(Inner {
+            manager,
+            docs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_doc: std::sync::atomic::AtomicU64::new(1),
+        });
         let (evt_tx, evt_rx) = mpsc::channel::<LspEvent>(64);
         let mgr_ref = Arc::clone(&inner);
         std::thread::Builder::new()
@@ -144,22 +172,29 @@ impl LspClient {
         })
     }
 
+    /// Open (or re-sync) the document at `uri`. First call for a uri sends
+    /// a didOpen with `text`; subsequent calls full-text-sync it.
     pub async fn open_document(&mut self, uri: Uri, text: &str) -> anyhow::Result<()> {
-        self.inner
-            .manager
-            .attach_buffer(BUF, &uri_to_path(&uri), "sql", text);
+        let already_open = self.inner.docs.lock().unwrap().contains_key(uri.as_str());
+        let doc = self.inner.doc_for(&uri, text);
+        if already_open {
+            self.inner
+                .manager
+                .notify_change(doc, Arc::new(text.to_string()));
+        }
         Ok(())
     }
 
     pub async fn change_document(
         &mut self,
-        _uri: Uri,
+        uri: Uri,
         _version: i32,
         text: &str,
     ) -> anyhow::Result<()> {
+        let doc = self.inner.doc_for(&uri, text);
         self.inner
             .manager
-            .notify_change(BUF, Arc::new(text.to_string()));
+            .notify_change(doc, Arc::new(text.to_string()));
         Ok(())
     }
 
@@ -181,54 +216,43 @@ pub struct LspWriter {
 }
 
 impl LspWriter {
-    pub async fn change_document(
-        &self,
-        _uri: Uri,
-        _version: i32,
-        text: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn change_document(&self, uri: Uri, _version: i32, text: &str) -> anyhow::Result<()> {
+        let doc = self.inner.doc_for(&uri, text);
         self.inner
             .manager
-            .notify_change(BUF, Arc::new(text.to_string()));
+            .notify_change(doc, Arc::new(text.to_string()));
         Ok(())
     }
 
-    pub fn request_completion(&self, uri: Uri, line: u32, col: u32) -> i64 {
+    fn request(&self, uri: &Uri, method: &str, line: u32, col: u32) -> i64 {
         let id = next_id();
-        self.inner.manager.send_request(id, BUF, "textDocument/completion", serde_json::json!({
-            "textDocument": { "uri": uri.as_str() }, "position": { "line": line, "character": col }
-        }));
-        id
-    }
-
-    pub fn request_definition(&self, uri: Uri, line: u32, col: u32) -> i64 {
-        let id = next_id();
-        self.inner.manager.send_request(id, BUF, "textDocument/definition", serde_json::json!({
-            "textDocument": { "uri": uri.as_str() }, "position": { "line": line, "character": col }
-        }));
-        id
-    }
-
-    pub fn request_hover(&self, uri: Uri, line: u32, col: u32) -> i64 {
-        let id = next_id();
-        self.inner.manager.send_request(id, BUF, "textDocument/hover", serde_json::json!({
-            "textDocument": { "uri": uri.as_str() }, "position": { "line": line, "character": col }
-        }));
-        id
-    }
-
-    pub fn request_signature_help(&self, uri: Uri, line: u32, col: u32) -> i64 {
-        let id = next_id();
+        let doc = self.inner.doc_for(uri, "");
         self.inner.manager.send_request(
             id,
-            BUF,
-            "textDocument/signatureHelp",
+            doc,
+            method,
             serde_json::json!({
                 "textDocument": { "uri": uri.as_str() },
                 "position": { "line": line, "character": col }
             }),
         );
         id
+    }
+
+    pub fn request_completion(&self, uri: Uri, line: u32, col: u32) -> i64 {
+        self.request(&uri, "textDocument/completion", line, col)
+    }
+
+    pub fn request_definition(&self, uri: Uri, line: u32, col: u32) -> i64 {
+        self.request(&uri, "textDocument/definition", line, col)
+    }
+
+    pub fn request_hover(&self, uri: Uri, line: u32, col: u32) -> i64 {
+        self.request(&uri, "textDocument/hover", line, col)
+    }
+
+    pub fn request_signature_help(&self, uri: Uri, line: u32, col: u32) -> i64 {
+        self.request(&uri, "textDocument/signatureHelp", line, col)
     }
 }
 
@@ -259,6 +283,7 @@ fn translate_event(evt: HjklLspEvent) -> Option<LspEvent> {
         {
             let p: lsp_types::PublishDiagnosticsParams = serde_json::from_value(params).ok()?;
             Some(LspEvent::Diagnostics(
+                p.uri.to_string(),
                 p.diagnostics
                     .into_iter()
                     .map(|d| Diagnostic {

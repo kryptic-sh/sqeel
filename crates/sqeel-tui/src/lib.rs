@@ -409,21 +409,19 @@ async fn run_loop(
     let mut hl_parsed_dirty_gen: Option<u64> = None;
     let completion_thread = CompletionThread::spawn()?;
 
-    // Start LSP client if binary is configured and reachable
-    let scratch_path = std::env::temp_dir().join("sqeel-scratch.sql");
-    // Build a file:// URI from the OS temp path (works on Windows and Unix)
-    let scratch_uri_str = {
-        let p = scratch_path.to_string_lossy();
-        if p.starts_with('/') {
-            format!("file://{p}")
-        } else {
-            // Windows: C:\... → file:///C:/...
-            format!("file:///{}", p.replace('\\', "/"))
-        }
+    // Start LSP client if binary is configured and reachable.
+    // Each sqeel tab gets its own LSP document (uri derived from the tab
+    // name) so late-arriving diagnostics can be matched to the document
+    // they describe instead of blindly painting the active tab.
+    let mut active_lsp_uri: lsp_types::Uri = {
+        let s = state.lock().unwrap();
+        tab_lsp_uri(
+            s.tabs
+                .get(s.active_tab)
+                .map(|t| t.name.as_str())
+                .unwrap_or("scratch"),
+        )
     };
-    let scratch_uri: lsp_types::Uri = scratch_uri_str
-        .parse()
-        .unwrap_or_else(|_| "file:///tmp/sqeel-scratch.sql".parse().unwrap());
     let lsp_binary = main_config.editor.lsp_binary.clone();
     let lsp_auto_install = main_config.editor.lsp_auto_install;
     let confirm_destructive = main_config.editor.confirm_destructive;
@@ -466,7 +464,7 @@ async fn run_loop(
     }
     let mut lsp: Option<LspClient> = lsp_start_result.ok();
     if let Some(ref mut client) = lsp {
-        let _ = client.open_document(scratch_uri.clone(), "").await;
+        let _ = client.open_document(active_lsp_uri.clone(), "").await;
     }
     {
         let mut s = state.lock().unwrap();
@@ -709,7 +707,7 @@ async fn run_loop(
         // periodic maintenance, and take any pending tasks/content.
         // Dropping to ~1 lock cycle here instead of 5+ reduces per-event
         // contention with the highlight / executor worker threads.
-        let (pending_load, pending_tab_content) = {
+        let (pending_load, pending_tab_content, active_tab_name) = {
             let mut s = state.lock().unwrap();
             for (tab_index, content) in drained_tab_loads {
                 s.apply_loaded_tab_content(tab_index, content);
@@ -723,7 +721,8 @@ async fn run_loop(
             s.evict_cold_tabs();
             let pending_load = s.pending_tab_load.take();
             let pending_tab_content = s.tab_content_pending.take();
-            (pending_load, pending_tab_content)
+            let active_tab_name = s.tabs.get(s.active_tab).map(|t| t.name.clone());
+            (pending_load, pending_tab_content, active_tab_name)
         };
 
         // Kick off any pending cold-tab disk read on a blocking task
@@ -741,6 +740,27 @@ async fn run_loop(
                 };
                 let _ = tx.send((load.tab_index, content));
             });
+        }
+
+        // Track the active tab's LSP document. A tab switch (or rename)
+        // repoints the uri; `open_document` didOpens new docs lazily and
+        // full-text-syncs already-open ones. Diagnostics on screen belong
+        // to the previous document — drop them until this doc publishes.
+        if let Some(name) = &active_tab_name {
+            let uri = tab_lsp_uri(name);
+            if uri != active_lsp_uri {
+                active_lsp_uri = uri;
+                needs_redraw = true;
+                state.lock().unwrap().lsp_diagnostics.clear();
+                if let Some(ref mut client) = lsp {
+                    let text = pending_tab_content
+                        .clone()
+                        .unwrap_or_else(|| editor.content());
+                    if text.len() <= LSP_MAX_BYTES {
+                        let _ = client.open_document(active_lsp_uri.clone(), &text).await;
+                    }
+                }
+            }
         }
 
         // Apply pending tab content (set when connection loads or tab switches).
@@ -767,7 +787,7 @@ async fn run_loop(
                     // loads.
                     doc_version += 1;
                     let writer = client.writer();
-                    let uri = scratch_uri.clone();
+                    let uri = active_lsp_uri.clone();
                     let version = doc_version;
                     let text = std::sync::Arc::new(content.clone());
                     let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
@@ -1122,7 +1142,7 @@ async fn run_loop(
                         // silent until the buffer shrinks again.
                         if !lsp_suspended {
                             let _ = client
-                                .change_document(scratch_uri.clone(), doc_version, "")
+                                .change_document(active_lsp_uri.clone(), doc_version, "")
                                 .await;
                             lsp_suspended = true;
                         }
@@ -1137,7 +1157,7 @@ async fn run_loop(
                         // mpsc so latest-wins coalescing still happens
                         // on the other side.
                         let writer = client.writer();
-                        let uri = scratch_uri.clone();
+                        let uri = active_lsp_uri.clone();
                         let version = doc_version;
                         let text = Arc::clone(content);
                         let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
@@ -1164,7 +1184,7 @@ async fn run_loop(
                         // the shared counter, the serialize + send run
                         // in a spawned task.
                         let id = client.writer().request_completion(
-                            scratch_uri.clone(),
+                            active_lsp_uri.clone(),
                             row as u32,
                             col as u32,
                         );
@@ -1175,7 +1195,7 @@ async fn run_loop(
                         // the post-insertion column.
                         if matches!(char_left, Some('(' | ',')) {
                             last_sig_help_id = Some(client.writer().request_signature_help(
-                                scratch_uri.clone(),
+                                active_lsp_uri.clone(),
                                 row as u32,
                                 col as u32,
                             ));
@@ -1257,7 +1277,7 @@ async fn run_loop(
             lsp_restart_in_flight = false;
             if let Ok(mut client) = result {
                 let content = editor.content();
-                let _ = client.open_document(scratch_uri.clone(), &content).await;
+                let _ = client.open_document(active_lsp_uri.clone(), &content).await;
                 doc_version = 1;
                 // Warm-up hover request right after opening the doc.
                 // sqls fetches the DB schema on its first
@@ -1267,7 +1287,7 @@ async fn run_loop(
                 // the user interacts. Response is discarded — we
                 // don't set `last_hover_id`, so the TUI arm's id
                 // check drops the payload silently.
-                let _ = client.writer().request_hover(scratch_uri.clone(), 0, 0);
+                let _ = client.writer().request_hover(active_lsp_uri.clone(), 0, 0);
                 lsp = Some(client);
                 lsp_suspended = false;
                 needs_redraw = true;
@@ -1338,7 +1358,12 @@ async fn run_loop(
             while let Ok(event) = client.events.try_recv() {
                 needs_redraw = true;
                 match event {
-                    LspEvent::Diagnostics(diags) => {
+                    LspEvent::Diagnostics(diag_uri, diags) => {
+                        // A publish that raced a tab switch describes the
+                        // OLD document — don't paint it on the new tab.
+                        if diag_uri != active_lsp_uri.to_string() {
+                            continue;
+                        }
                         if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
                             use std::io::Write;
                             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1371,7 +1396,7 @@ async fn run_loop(
                             // buffer / schema jumps can't be resolved
                             // locally — surface the location as a
                             // toast so the user still has a pointer.
-                            if uri == scratch_uri.to_string() {
+                            if uri == active_lsp_uri.to_string() {
                                 // Push the pre-jump cursor onto the
                                 // jumplist so `Ctrl-o` returns to the
                                 // call site after the goto.
@@ -4088,7 +4113,7 @@ async fn run_loop(
                         }
                         if !handled && let Some(ref client) = lsp {
                             last_hover_id = Some(client.writer().request_hover(
-                                scratch_uri.clone(),
+                                active_lsp_uri.clone(),
                                 row as u32,
                                 col as u32,
                             ));
@@ -4131,7 +4156,7 @@ async fn run_loop(
                         {
                             let (row, col) = editor.cursor();
                             last_definition_id = Some(client.writer().request_definition(
-                                scratch_uri.clone(),
+                                active_lsp_uri.clone(),
                                 row as u32,
                                 col as u32,
                             ));
