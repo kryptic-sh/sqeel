@@ -152,10 +152,26 @@ impl TerminalSession {
     /// Accepted notation: bare characters, `<Esc>`, `<Enter>`, `<Tab>`,
     /// `<Backspace>`, `<Space>`, `<C-x>` (ctrl-x), arrows, and sequences
     /// thereof (`gg`, `:q!<Enter>`, `<Space><Tab>`).
+    ///
+    /// A bare Esc (`<Esc>` followed by more keys) is flushed in its own
+    /// write with a pacing gap: when an Esc and the byte after it land in
+    /// one `read()`, crossterm decodes them as a single Alt+key (dropped
+    /// by the app) instead of Esc-then-key. macOS ptys deliver a burst in
+    /// one read far more consistently than Linux, which is the mechanism
+    /// behind the "`:cmd\r` typed as literal text" flake class hjkl's
+    /// suite hit there. Escape SEQUENCES (arrows, `\x1b[A`) must stay in
+    /// one write — only a standalone Esc splits.
     pub fn keys(&mut self, seq: &str) {
         let bytes = vim_notation_to_bytes(seq);
-        self.writer.write_all(&bytes).expect("write to pty");
-        self.writer.flush().expect("flush pty");
+        for chunk in split_after_bare_esc(&bytes) {
+            self.writer.write_all(chunk).expect("write to pty");
+            self.writer.flush().expect("flush pty");
+            if chunk.last() == Some(&0x1b) {
+                // Give the app's ESC-disambiguation timer room to fire so
+                // the next byte can't fuse into an Alt+key.
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        }
         self.wait_ms(settle_ms());
     }
 
@@ -252,6 +268,31 @@ impl Drop for TerminalSession {
     }
 }
 
+/// Split `bytes` into chunks so every standalone Esc (`0x1b` NOT followed
+/// by `[` or `O`, i.e. not a CSI/SS3 escape sequence) ends its chunk. The
+/// caller writes chunks separately with a pacing gap after each Esc-final
+/// chunk.
+fn split_after_bare_esc(bytes: &[u8]) -> Vec<&[u8]> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            let next = bytes.get(i + 1);
+            let is_sequence = matches!(next, Some(b'[') | Some(b'O'));
+            if !is_sequence && i + 1 < bytes.len() {
+                chunks.push(&bytes[start..=i]);
+                start = i + 1;
+            }
+        }
+        i += 1;
+    }
+    if start < bytes.len() {
+        chunks.push(&bytes[start..]);
+    }
+    chunks
+}
+
 // ── Key translation ───────────────────────────────────────────────────────
 
 /// Translate a vim-style notation string to raw bytes suitable for pty input.
@@ -326,6 +367,32 @@ fn parse_modifier_tag(tag: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_esc_splits_chunk() {
+        // Esc mid-sequence ends its chunk; remainder is a new chunk.
+        let bytes = vim_notation_to_bytes("i-- x<Esc>:q!<Enter>");
+        let chunks = split_after_bare_esc(&bytes);
+        assert_eq!(chunks.len(), 2, "chunks: {chunks:?}");
+        assert_eq!(chunks[0].last(), Some(&0x1b));
+        assert_eq!(chunks[1], b":q!\r");
+    }
+
+    #[test]
+    fn escape_sequences_stay_whole() {
+        // Arrow keys are CSI sequences — must NOT split after their Esc.
+        let bytes = vim_notation_to_bytes("<Up><Down>x");
+        let chunks = split_after_bare_esc(&bytes);
+        assert_eq!(chunks.len(), 1, "chunks: {chunks:?}");
+    }
+
+    #[test]
+    fn trailing_esc_single_chunk() {
+        let bytes = vim_notation_to_bytes("ihello<Esc>");
+        let chunks = split_after_bare_esc(&bytes);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].last(), Some(&0x1b));
+    }
 
     #[test]
     fn notation_simple_keys() {
