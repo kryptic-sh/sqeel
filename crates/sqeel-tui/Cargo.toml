@@ -3,7 +3,7 @@ name = "sqeel-tui"
 description = "Ratatui TUI front-end for sqeel: vim-modal SQL editing with hjkl bindings."
 keywords = ["sql", "tui", "vim", "ratatui", "client"]
 categories = ["command-line-interface", "database"]
-version = "0.4.17"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/kryptic-sh/sqeel-tui"
@@ -13,8 +13,8 @@ rust-version = "1.95"
 readme = "README.md"
 
 [dependencies]
-sqeel-config = { version = "0.2", path = "../sqeel-config" }
-sqeel-core = { version = "0.4", path = "../sqeel-core" }
+sqeel-config = { version = "0.3", path = "../sqeel-config" }
+sqeel-core = { version = "0.5", path = "../sqeel-core" }
 hjkl-splash = "0.33"
 hjkl-engine = "0.33"
 hjkl-engine-tui = "0.33"

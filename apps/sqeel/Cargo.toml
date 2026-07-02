@@ -17,8 +17,8 @@ name = "sqeel"
 path = "src/bin/sqeel.rs"
 
 [dependencies]
-sqeel-core = { path = "../../crates/sqeel-core", version = "0.4" }
-sqeel-tui = { path = "../../crates/sqeel-tui", version = "0.4" }
+sqeel-core = { path = "../../crates/sqeel-core", version = "0.5" }
+sqeel-tui = { path = "../../crates/sqeel-tui", version = "0.5" }
 anyhow = "1"
 clap = { version = "4.6.1", features = ["derive"] }
 tokio = { version = "1.52.1", features = ["full"] }

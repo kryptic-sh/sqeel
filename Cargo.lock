@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel"
-version = "0.4.19"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3861,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-config"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-core"
-version = "0.4.13"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -3907,7 +3907,7 @@ dependencies = [
 
 [[package]]
 name = "sqeel-tui"
-version = "0.4.17"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",

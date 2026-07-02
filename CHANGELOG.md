@@ -8,6 +8,89 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-02
+
+### Added
+
+- **Per-tab connections.** Each editor tab can bind to a named connection
+  (`<leader>c` now binds the active tab); queries run on the tab's connection
+  and switching tabs activates it. Live connections are pooled in a registry —
+  switching between bound tabs swaps executor channels without reconnecting, and
+  in-flight queries on other connections run to completion. Bindings persist
+  across restarts via `TabCursor.connection` in `session.toml`. The schema
+  sidebar snapshots per connection: switching back restores the tree (nodes,
+  cursor, TTL timestamps) instantly instead of refetching; stale subtrees still
+  refresh on schedule.
+- **Headless mode** — `sqeel -e "SQL" [--format table|csv|json]` runs statements
+  without the TUI and prints results to stdout. `-e` is repeatable with
+  `;`-splitting; connection from `--url` / `--connection` / `$DATABASE_URL` (no
+  prompt); non-query summaries and errors go to stderr; exit `1` on the first
+  SQL error (remaining statements skipped), `2` when no connection source is
+  available. Honors the connection's TLS config.
+- **Destructive-statement guard.** `UPDATE`/`DELETE` with no top-level `WHERE`,
+  `DROP`, and `TRUNCATE` park behind a y/N confirm modal before dispatch
+  (`sqeel_core::safety::destructive_kind`: comment/string/paren aware, subquery
+  `WHERE` doesn't mask). Run-all batches confirm as a whole. Only an explicit
+  `y` confirms — Enter deliberately doesn't, since the run chord ends in Enter.
+  Config: `editor.confirm_destructive` (default `true`).
+- **Ex commands**: `:w <path>` (filesystem export), `:saveas <name>` (rename +
+  save in the queries dir), `:file <name>` (rename in place), `:put [reg]`,
+  `:redraw[!]`, `:cd`, and `:e <name>` now opens saved queries. `:reg` /
+  `:marks` / other listings surface as toasts. The full hjkl-ex registry
+  (`:s///` ranges, `:set` options, `:g//`, shell filters) backs the command
+  line.
+- **`:set wrap` / `:set linebreak`** now work end to end — soft-wrapped
+  rendering, wrap-aware terminal-cursor placement, and wrap-aware mouse
+  click/drag mapping (continuation rows resolve through the renderer's own wrap
+  segments).
+- **PTY e2e suite** (`apps/sqeel/tests/e2e.rs`): drives the real binary in
+  `--sandbox` mode under a pseudo-terminal and asserts on rendered frames —
+  launch, render-sync, query round-trip against SQLite, guard confirm (single +
+  batch), Ctrl-C cancel, `:set wrap`, `:w` export, clean quit. Runs on Linux and
+  macOS in CI. Headless mode has its own cross-platform integration suite (6
+  tests, temp SQLite).
+- `SQEEL_SANDBOX_AUTOCLEAN=1` deletes the sandbox dir on exit without the y/N
+  prompt (used by the e2e harness; also handy for scripted runs).
+- Result tabs distinguish **`Cancelled`** (user Ctrl-C — "Query cancelled") from
+  **`Skipped`** (batch aborted before the statement ran — "Skipped (previous
+  query failed)"); previously both rendered the skip message.
+
+### Changed
+
+- **Migrated to the hjkl 0.33 lockstep stack** (from 0.7-era pins): ex commands
+  via `hjkl-ex` registry dispatch, vim input via `hjkl_vim::dispatch_input`,
+  rope-only buffer reads, doc-coordinate mouse API with sqeel-side rect→doc
+  translation, engine-native syntax-span styles, render widgets from the
+  per-component `-tui` crates, yanks/cuts to the OS clipboard through
+  `Host::write_clipboard`, LSP full-text sync via `Arc<String>`.
+- **LSP documents are per tab and per connection** (previously one shared
+  scratch document): each tab didOpens its own virtual document keyed by
+  `(connection, tab name)`; diagnostics publishes carry their uri and are
+  dropped when they describe a non-active document. Renaming or deleting a tab
+  didCloses its document (`LspClient::close_document`) so `sqls` holds no
+  orphans. `sqeel_core::lsp::LspEvent::Diagnostics` now carries the publishing
+  uri — breaking for library consumers, hence `sqeel-core 0.5.0`.
+- Editor gutter width now comes from the engine's `lnum_width()` so the
+  renderer, terminal cursor, and mouse translation stay aligned under
+  `:set nonumber`; a dedicated diagnostic sign column (`signcolumn=yes`) is
+  shared by all three.
+- `sqeel-tui` internals split out of the 10k-line `lib.rs` into `render` /
+  `syntax` / `ex` / `exec` / `picker` modules (no behavior change).
+
+### Fixed
+
+- Diagnostics computed for the previous tab no longer paint the new tab after a
+  fast tab switch (uri-tagged publishes).
+- Per-tab cursor positions now actually restore across restarts — session
+  `tab_cursors` were saved but never read back.
+- `:s///c` no longer Debug-dumps the entire match list into a toast.
+- Windows CI: `duckdb` 1.10502 → 1.10504 (bundled C++ failed to compile under
+  the runner's MSVC 14.51); `anyhow` 1.0.102 → 1.0.103 (RUSTSEC-2026-0190
+  unsound advisory tripped cargo-deny).
+- pty test harness: writes are split after every bare Esc so crossterm can't
+  coalesce Esc+key into Alt+key — root cause of the macOS "`:cmd\r` typed as
+  literal text" e2e flake class (fix backported to hjkl).
+
 ## [0.4.19] - 2026-05-15
 
 ### Added
@@ -502,6 +585,7 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
   reference tag for the pre-split monorepo state.
 
 [Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.19...HEAD
+[0.5.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.5.0
 [0.4.19]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.19
 [0.4.18]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.18
 [0.4.17]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.17
