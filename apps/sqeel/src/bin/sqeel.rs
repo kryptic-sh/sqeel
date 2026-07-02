@@ -187,6 +187,29 @@ struct Args {
     /// Skip the splash screen on startup.
     #[arg(long)]
     no_splash: bool,
+
+    /// Headless mode: execute the given SQL and print results to stdout
+    /// (no TUI). Repeatable; each occurrence may hold multiple
+    /// `;`-separated statements, run in order. Errors go to stderr and
+    /// exit non-zero. Connection comes from --url / --connection /
+    /// $DATABASE_URL (used without prompting in this mode).
+    #[arg(short = 'e', long = "execute")]
+    execute: Vec<String>,
+
+    /// Output format for headless `-e` results.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table, requires = "execute")]
+    format: OutputFormat,
+}
+
+/// Headless `-e` output formats.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    /// Space-aligned columns with a header row (human-friendly).
+    Table,
+    /// RFC 4180 CSV with a header row (pipe-friendly).
+    Csv,
+    /// JSON array of row objects keyed by column name.
+    Json,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -213,6 +236,40 @@ fn main() -> anyhow::Result<()> {
     // exit with the field-named diagnostic from `hjkl-config`.
     let main_config = load_main_config()?;
     let conns = load_connections().unwrap_or_default();
+
+    // ── Headless mode ────────────────────────────────────────────────────
+    // `-e` runs the given SQL and exits without ever starting the TUI.
+    // $DATABASE_URL is used without prompting here — headless runs are
+    // scripts/pipes, not interactive sessions.
+    if !args.execute.is_empty() {
+        let url = args
+            .url
+            .clone()
+            .or_else(|| {
+                args.connection
+                    .as_ref()
+                    .and_then(|n| conns.iter().find(|c| c.name == *n).map(|c| c.url.clone()))
+            })
+            .or_else(|| std::env::var("DATABASE_URL").ok().filter(|v| !v.is_empty()));
+        let Some(url) = url else {
+            eprintln!("sqeel -e: no connection — pass --url, --connection, or set $DATABASE_URL");
+            std::process::exit(2);
+        };
+        let tls = args
+            .connection
+            .as_ref()
+            .and_then(|n| conns.iter().find(|c| c.name == *n))
+            .or_else(|| conns.iter().find(|c| c.url == url))
+            .and_then(|c| c.tls.clone());
+        let rt = tokio::runtime::Runtime::new()?;
+        let code = rt.block_on(run_headless(&url, tls.as_ref(), &args.execute, args.format));
+        // Headless sandbox runs (used by the integration tests) always
+        // clean up — there's no terminal to prompt on.
+        if let Some(root) = &sandbox_root {
+            cleanup_sandbox(root);
+        }
+        std::process::exit(code);
+    }
 
     // DATABASE_URL auto-pickup: prompt before the TUI enters its main loop so
     // the user is back at a normal terminal cursor (not inside alternate screen).
@@ -501,6 +558,145 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+// ── Headless execution ───────────────────────────────────────────────────
+
+/// Connect, run every statement in `chunks` (each chunk may hold several
+/// `;`-separated statements), print results to stdout in `format`, and
+/// return the process exit code: 0 on success, 1 on the first SQL /
+/// connection error (remaining statements are skipped).
+async fn run_headless(
+    url: &str,
+    tls: Option<&sqeel_core::config::TlsConfig>,
+    chunks: &[String],
+    format: OutputFormat,
+) -> i32 {
+    let conn = match DbConnection::connect(url, tls).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("sqeel -e: connection failed: {e}");
+            return 1;
+        }
+    };
+    for chunk in chunks {
+        let stmts: Vec<String> = sqeel_core::highlight::statement_ranges(chunk)
+            .into_iter()
+            .map(|(s, e)| chunk[s..e].trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| {
+                !sqeel_core::highlight::strip_sql_comments(s)
+                    .trim()
+                    .is_empty()
+            })
+            .collect();
+        for stmt in stmts {
+            match conn.execute(&stmt).await {
+                Ok(sqeel_core::db::ExecOutcome::Rows(r)) => print_result(&r, format),
+                Ok(sqeel_core::db::ExecOutcome::NonQuery {
+                    verb,
+                    rows_affected,
+                }) => {
+                    // Summaries go to stderr so stdout stays pure data
+                    // for pipes.
+                    eprintln!("{verb}: {rows_affected} rows affected");
+                }
+                // Future ExecOutcome variants — nothing to print.
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("sqeel -e: {e}");
+                    return 1;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Print one result set to stdout in the requested format.
+fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
+    match format {
+        OutputFormat::Table => {
+            let widths: Vec<usize> = r
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(i, col)| {
+                    r.rows
+                        .iter()
+                        .map(|row| row.get(i).map(|s| s.chars().count()).unwrap_or(0))
+                        .max()
+                        .unwrap_or(0)
+                        .max(col.chars().count())
+                })
+                .collect();
+            let fmt_row = |cells: &[String]| -> String {
+                cells
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{:<w$}", c, w = widths.get(i).copied().unwrap_or(0)))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+                    .trim_end()
+                    .to_string()
+            };
+            println!("{}", fmt_row(&r.columns));
+            println!(
+                "{}",
+                widths
+                    .iter()
+                    .map(|w| "-".repeat(*w))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            );
+            for row in &r.rows {
+                println!("{}", fmt_row(row));
+            }
+        }
+        OutputFormat::Csv => {
+            let esc = |s: &str| -> String {
+                if s.contains([',', '"', '\n', '\r']) {
+                    format!("\"{}\"", s.replace('"', "\"\""))
+                } else {
+                    s.to_string()
+                }
+            };
+            println!(
+                "{}",
+                r.columns
+                    .iter()
+                    .map(|c| esc(c))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            for row in &r.rows {
+                println!(
+                    "{}",
+                    row.iter().map(|c| esc(c)).collect::<Vec<_>>().join(",")
+                );
+            }
+        }
+        OutputFormat::Json => {
+            let objs: Vec<serde_json::Value> = r
+                .rows
+                .iter()
+                .map(|row| {
+                    let map: serde_json::Map<String, serde_json::Value> = r
+                        .columns
+                        .iter()
+                        .zip(row.iter())
+                        .map(|(c, v)| (c.clone(), serde_json::Value::String(v.clone())))
+                        .collect();
+                    serde_json::Value::Object(map)
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::Value::Array(objs))
+                    .unwrap_or_else(|_| "[]".to_string())
+            );
+        }
+    }
 }
 
 fn saved_ref_from_tab(t: &ResultsTab) -> Option<sqeel_core::config::SavedResultRef> {
