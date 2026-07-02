@@ -2905,6 +2905,17 @@ async fn run_loop(
                                     }
                                 }
                             }
+                            // `:s///c` interactive confirm — matched
+                            // separately from the wildcard so the toast
+                            // doesn't Debug-dump the whole match list.
+                            hjkl_ex::ExEffect::SubstituteConfirm { .. } => {
+                                toasts.push((
+                                    ":s///c confirm mode not supported in sqeel — use :s///g"
+                                        .to_string(),
+                                    ToastKind::Error,
+                                    std::time::Instant::now(),
+                                ));
+                            }
                             // Quickfix / location lists, buffer ops, cwd, …
                             // — hjkl-app machinery sqeel doesn't model.
                             other => {
@@ -5557,15 +5568,12 @@ fn draw_editor<H: Host>(
     // its content + cursor + viewport + spans on every step, so the
     // render is byte-for-byte derived from the buffer state.
     editor.set_viewport_height(chunks[1].height);
-    // Gutter width must mirror `Editor::cursor_screen_pos`'s
-    // `lnum_width = max(digits + 1, numberwidth)` or the terminal cursor
-    // lands off by one column (vim's `numberwidth=4` floor matters for
-    // buffers with <10 lines). Track hjkl#96 to replace with
-    // `editor.lnum_width()` once the engine helper ships.
-    let line_count = editor.buffer().row_count().max(1);
-    let digits = line_count.to_string().len() as u16;
-    let numberwidth = editor.settings().numberwidth as u16;
-    let gutter_width = digits.saturating_add(1).max(numberwidth);
+    // Gutter width must mirror `Editor::cursor_screen_pos`'s reserved
+    // number column or the terminal cursor lands off by one column.
+    // `lnum_width()` is the engine's own calculation (hjkl#96), so the
+    // renderer, the cursor placement, and the mouse translation all
+    // agree — including `:set nonumber`, where it collapses to 0.
+    let gutter_width = editor.lnum_width();
     let wrap_mode = editor.settings().wrap;
     {
         let v = editor.host_mut().viewport_mut();
