@@ -206,6 +206,76 @@ fn ctrl_c_cancels_running_query() {
     );
 }
 
+/// A run-all batch (`<leader><Tab>`) containing a destructive statement
+/// must hit the guard as a whole: `n` cancels the ENTIRE batch (safe
+/// statements included), `y` runs it in order.
+#[test]
+fn destructive_guard_covers_run_all_batch() {
+    let mut s = TerminalSession::spawn_sandbox();
+    assert!(
+        s.wait_for_text("CREATE TABLE", 5_000),
+        "editor never rendered\n{}",
+        s.screen_dump()
+    );
+    // Seed the table + two rows.
+    s.keys("<Space><Tab>");
+    assert!(
+        s.wait_for_text("alice@example.com", 10_000),
+        "seed run never produced results\n{}",
+        s.screen_dump()
+    );
+    // Mixed batch: a safe INSERT followed by a guarded DELETE.
+    s.keys("ggVGc");
+    s.keys("INSERT INTO users (email, display_name) VALUES ('carol@example.com', 'Carol'); DELETE FROM users;<Esc>");
+    s.keys("<Space><Tab>");
+    assert!(
+        s.wait_for_text("Run DELETE without WHERE?", 5_000),
+        "batch guard modal never appeared\n{}",
+        s.screen_dump()
+    );
+    // `n` cancels the whole batch — the safe INSERT must not have run
+    // either (all-or-nothing keeps statement order intact).
+    s.keys("n");
+    s.keys("ggVGc");
+    s.keys("SELECT email FROM users ORDER BY id;<Esc>");
+    s.keys("<Space><CR>");
+    assert!(
+        s.wait_for_text("alice@example.com", 10_000),
+        "verify SELECT never rendered\n{}",
+        s.screen_dump()
+    );
+    assert!(
+        !s.screen_contains("carol@example.com"),
+        "cancelled batch still ran its INSERT\n{}",
+        s.screen_dump()
+    );
+    // Re-enter the batch and confirm with `y`: INSERT then DELETE run in
+    // order, leaving the table empty.
+    s.keys("ggVGc");
+    s.keys("INSERT INTO users (email, display_name) VALUES ('carol@example.com', 'Carol'); DELETE FROM users;<Esc>");
+    s.keys("<Space><Tab>");
+    assert!(
+        s.wait_for_text("Run DELETE without WHERE?", 5_000),
+        "batch guard modal never re-appeared\n{}",
+        s.screen_dump()
+    );
+    s.keys("y");
+    s.keys("ggVGc");
+    s.keys("SELECT count(*) AS remaining FROM users;<Esc>");
+    s.keys("<Space><CR>");
+    assert!(
+        s.wait_for_text("remaining", 10_000),
+        "post-batch SELECT never rendered\n{}",
+        s.screen_dump()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        !s.screen_contains("alice@example.com"),
+        "confirmed batch DELETE didn't run\n{}",
+        s.screen_dump()
+    );
+}
+
 /// `:set wrap` must soft-wrap long lines: text past the pane width becomes
 /// visible on a continuation row instead of being clipped by `top_col`.
 #[test]
