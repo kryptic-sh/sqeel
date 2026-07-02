@@ -178,3 +178,35 @@ fn error_stops_remaining_statements() {
         "statements after the error still ran:\n{stdout}"
     );
 }
+
+#[test]
+fn completions_flag_emits_shell_script() {
+    for shell in ["bash", "zsh", "fish"] {
+        let out = sqeel()
+            .args(["--completions", shell])
+            .output()
+            .expect("spawn sqeel");
+        assert!(out.status.success(), "--completions {shell} failed");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("sqeel") && stdout.contains("format"),
+            "{shell} completions missing expected tokens:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn man_flag_emits_troff() {
+    let out = sqeel().arg("--man").output().expect("spawn sqeel");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(".TH sqeel 1"),
+        "man output missing .TH header:\n{}",
+        &stdout[..stdout.len().min(200)]
+    );
+    assert!(
+        stdout.contains("headless") || stdout.contains("execute"),
+        "man output missing option docs"
+    );
+}

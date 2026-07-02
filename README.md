@@ -125,6 +125,20 @@ Download the tarball for your platform from the
 cargo install --git https://github.com/kryptic-sh/sqeel --bin sqeel
 ```
 
+### Shell completions + man page
+
+The binary embeds its own packaging helpers:
+
+```sh
+sqeel --completions bash > /usr/share/bash-completion/completions/sqeel
+sqeel --completions zsh  > /usr/share/zsh/site-functions/_sqeel
+sqeel --completions fish > ~/.config/fish/completions/sqeel.fish
+sqeel --man | gzip > /usr/share/man/man1/sqeel.1.gz
+```
+
+`bash`, `zsh`, `fish`, `powershell`, and `elvish` are supported. Releases also
+ship a `sqeel-<tag>-completions-man.tar.gz` asset with everything pre-generated.
+
 ### Sandbox mode
 
 Run `sqeel --sandbox` to launch in a fresh tempdir-backed environment that won't

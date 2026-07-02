@@ -21,6 +21,8 @@ sqeel-core = { path = "../../crates/sqeel-core", version = "0.5" }
 sqeel-tui = { path = "../../crates/sqeel-tui", version = "0.5" }
 anyhow = "1"
 clap = { version = "4.6.1", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.3"
 tokio = { version = "1.52.1", features = ["full"] }
 tempfile = "3.27.0"
 tracing = "0.1"

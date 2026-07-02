@@ -200,6 +200,22 @@ jobs:
             shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
 
+      - name: Generate completions + man page
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          BIN=target/${{ matrix.target }}/release/sqeel
+          mkdir -p pkgext/completions
+          for shell in bash zsh fish powershell elvish; do
+            "$BIN" --completions "$shell" > "pkgext/completions/sqeel.$shell"
+          done
+          "$BIN" --man > pkgext/sqeel.1
+          # Matches the `sqeel-*.tar.gz` upload glob on this matrix leg, so
+          # it ships as a release asset alongside the binary tarball.
+          ARCHIVE="sqeel-${TAG}-completions-man.tar.gz"
+          tar -C pkgext -czf "$ARCHIVE" .
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh

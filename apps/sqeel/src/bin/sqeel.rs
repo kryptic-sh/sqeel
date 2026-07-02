@@ -199,6 +199,14 @@ struct Args {
     /// Output format for headless `-e` results.
     #[arg(long, value_enum, default_value_t = OutputFormat::Table, requires = "execute")]
     format: OutputFormat,
+
+    /// Print shell completions to stdout and exit (packaging helper).
+    #[arg(long, value_enum, value_name = "SHELL", hide = true)]
+    completions: Option<clap_complete::Shell>,
+
+    /// Print the man page (troff) to stdout and exit (packaging helper).
+    #[arg(long, hide = true)]
+    man: bool,
 }
 
 /// Headless `-e` output formats.
@@ -214,6 +222,18 @@ enum OutputFormat {
 
 fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
+    // Packaging helpers: emit completions / man page and exit before any
+    // config, sandbox, or connection work happens.
+    if let Some(shell) = args.completions {
+        use clap::CommandFactory;
+        clap_complete::generate(shell, &mut Args::command(), "sqeel", &mut std::io::stdout());
+        return Ok(());
+    }
+    if args.man {
+        use clap::CommandFactory;
+        clap_mangen::Man::new(Args::command()).render(&mut std::io::stdout())?;
+        return Ok(());
+    }
     let sandbox_root: Option<PathBuf> = if args.sandbox {
         let root = bootstrap_sandbox(args.empty)?;
         // Auto-select the seeded connection so first launch lands on
