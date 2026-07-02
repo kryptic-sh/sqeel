@@ -13,9 +13,10 @@ bindings powered by [hjkl-engine](https://crates.io/crates/hjkl-engine).
 
 ## Status
 
-`0.4.5` — active development. MySQL, SQLite, and PostgreSQL support; full vim
+`0.4.x` — active development. MySQL, SQLite, and PostgreSQL support; full vim
 modal engine; LSP integration (`sqls`) with completions, hover, and
-goto-definition; tree-sitter SQL syntax highlighting; schema browser; splash
+goto-definition; tree-sitter SQL syntax highlighting; schema browser; per-tab
+connections; headless `-e` mode for scripts; destructive-statement guard; splash
 screen; tmux/SSH-friendly leader bindings. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Supported platforms
@@ -48,7 +49,17 @@ Each release publishes binary artifacts for:
 - Editor tabs with lazy loading and 5-min RAM eviction
 - Auto-save SQL buffers, result history, query history
 - tmux/SSH-aware leader bindings (no modifier+key required)
-- Vim-style status bar + command mode (`:`)
+- Vim-style status bar + command mode (`:`) — `:w [path]`, `:saveas`, `:file`,
+  `:e`, `:put`, `:s///`, `:set`, `:redraw`, `:cd`, and more
+- Per-tab connections — bind tabs to different databases; switching tabs swaps
+  warm connection pools without reconnecting, and in-flight queries on other
+  connections keep running
+- Destructive-statement guard — `UPDATE`/`DELETE` without `WHERE`, `DROP`, and
+  `TRUNCATE` ask for a y/N confirm before running (config:
+  `confirm_destructive`)
+- Headless mode — `sqeel -e "SELECT 1" --format table|csv|json` runs statements
+  and prints to stdout, no TUI (scripts, pipes, CI)
+- Ctrl+C cancels the running query / batch mid-flight
 - Vim-style results pane — cell cursor, visual-line / visual-block selection
   with TSV yank, `/` search, count prefix nav, mouse drag select
 - Focus-stealing hover popup — markdown rendered with pulldown-cmark, GFM tables
@@ -125,7 +136,27 @@ auto-seeds:
   inserts + a select.
 
 The temp dir path is printed to stderr at startup. It survives the process
-(under `/tmp/sqeel-sandbox-*`) — clean it up with `rm -rf` when done.
+(under `/tmp/sqeel-sandbox-*`) — a y/N prompt on exit offers to delete it, and
+`SQEEL_SANDBOX_AUTOCLEAN=1` skips the prompt and always deletes (used by the e2e
+suite).
+
+### Headless mode
+
+`-e/--execute` runs SQL without the TUI and prints results to stdout:
+
+```sh
+sqeel --url sqlite://app.db -e "SELECT id, email FROM users;"            # aligned table
+sqeel -c prod -e "SELECT * FROM orders;" --format csv > orders.csv      # RFC 4180 CSV
+sqeel -e "SELECT * FROM t;" --format json | jq '.[0]'                    # JSON row objects
+```
+
+- `-e` is repeatable and each occurrence may hold multiple `;`-separated
+  statements, run in order
+- connection comes from `--url`, `--connection`, or `$DATABASE_URL` (used
+  without prompting in this mode); exit `2` when none is available
+- non-query summaries (`INSERT: 2 rows affected`) go to stderr so stdout stays
+  pure data for pipes; the first SQL error goes to stderr and exits `1`,
+  skipping the remaining statements
 
 ## Build
 
@@ -157,6 +188,10 @@ leader_key = " "
 
 # Stop a Ctrl+Shift+Enter batch on the first query error.
 stop_on_error = true
+
+# Ask y/N before running a destructive statement: UPDATE/DELETE with no
+# top-level WHERE, DROP, TRUNCATE. Only an explicit `y` confirms.
+confirm_destructive = true
 ```
 
 ### Connections — `~/.config/sqeel/conns/<name>.toml`
@@ -296,14 +331,19 @@ render as a navigable grid; plain markdown is styled in-place.
 
 ### Connection Switcher
 
-| Key       | Action            |
-| --------- | ----------------- |
-| `j` / `k` | Navigate          |
-| `Enter`   | Connect           |
-| `n`       | New connection    |
-| `e`       | Edit connection   |
-| `d`       | Delete connection |
-| `Esc`     | Close             |
+Connections are **per tab**: `Enter` binds the active tab to the chosen
+connection. Tabs remember their binding (persisted across restarts), and
+switching to a bound tab activates its connection — warm pools swap in
+instantly, and queries still running on other connections finish normally.
+
+| Key       | Action                         |
+| --------- | ------------------------------ |
+| `j` / `k` | Navigate                       |
+| `Enter`   | Connect (binds the active tab) |
+| `n`       | New connection                 |
+| `e`       | Edit connection                |
+| `d`       | Delete connection              |
+| `Esc`     | Close                          |
 
 ### Add / Edit Connection
 
