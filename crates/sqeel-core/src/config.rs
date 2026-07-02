@@ -17,6 +17,10 @@ pub struct TabCursor {
     pub name: String,
     pub row: usize,
     pub col: usize,
+    /// Named connection this tab is bound to (per-tab connections).
+    /// Absent in pre-binding session files — defaults to unbound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
 }
 
 /// Lightweight pointer persisted in session.toml for a single results tab.

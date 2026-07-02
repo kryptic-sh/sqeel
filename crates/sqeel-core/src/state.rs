@@ -118,6 +118,15 @@ impl PendingSave {
     }
 }
 
+/// Channel handles for one live connection: the query executor's inbox
+/// and its lazy schema loader's inbox. Held in
+/// `AppState::connection_registry`; dropping them ends the tasks.
+#[derive(Clone)]
+pub struct ConnHandles {
+    pub query_tx: tokio::sync::mpsc::Sender<QueryRequest>,
+    pub schema_load_tx: tokio::sync::mpsc::Sender<SchemaLoadRequest>,
+}
+
 /// One open editor tab. Content is lazily loaded and evicted after 5 min of inactivity.
 #[derive(Debug, Clone)]
 pub struct TabEntry {
@@ -129,6 +138,11 @@ pub struct TabEntry {
     pub cursor: Option<(usize, usize)>,
     /// True when the in-memory content differs from the on-disk file.
     pub dirty: bool,
+    /// Named connection this tab is bound to. `None` = follow whatever
+    /// connection is currently active (legacy behaviour). Running a query
+    /// from a bound tab uses that connection's executor; switching to a
+    /// bound tab makes its connection active.
+    pub connection: Option<String>,
 }
 
 impl TabEntry {
@@ -139,6 +153,7 @@ impl TabEntry {
             last_accessed: None,
             cursor: None,
             dirty: false,
+            connection: None,
         }
     }
     fn open(name: String, content: String) -> Self {
@@ -148,6 +163,7 @@ impl TabEntry {
             last_accessed: Some(Instant::now()),
             cursor: None,
             dirty: false,
+            connection: None,
         }
     }
 }
@@ -492,6 +508,11 @@ pub struct AppState {
     /// "Connection failed" placeholder. The render layer paints a
     /// modal with the full `schema_connect_error` text; Esc closes.
     pub show_connect_error_popup: bool,
+    /// Live-connection registry: one executor + schema-loader pair per
+    /// named connection, kept alive for the whole session so switching
+    /// tabs between connections is a channel swap, not a reconnect, and
+    /// in-flight queries on other connections keep running.
+    pub connection_registry: std::collections::HashMap<String, ConnHandles>,
     /// Set by the executor when a query finishes; cleared by the run loop after redraw.
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
@@ -2899,22 +2920,18 @@ impl AppState {
             let _ = self.delete_selected_connection();
             return None;
         }
-        let url = self
+        let picked = self
             .available_connections
             .get(self.connection_switcher_cursor)
-            .map(|c| c.url.clone());
-        if let Some(ref u) = url {
-            self.pending_reconnect = Some(u.clone());
-            // Flip the sidebar to "Connecting…" synchronously so the
-            // user doesn't see a stale schema tree (or the previous
-            // connection's error) during the ~100ms before the
-            // watcher loop picks up `pending_reconnect`.
-            self.schema_connecting = true;
-            self.schema_connect_error = None;
-            self.schema_connect_error_kind = None;
-            self.show_connect_error_popup = false;
-            self.schema_nodes.clear();
-            self.mark_schema_cache_dirty();
+            .map(|c| (c.name.clone(), c.url.clone()));
+        let url = picked.as_ref().map(|(_, u)| u.clone());
+        if let Some((name, _)) = picked {
+            // Bind the ACTIVE TAB (if any) to the chosen connection, then
+            // activate by name so the switch also works before any tab
+            // exists: warm (registered) connections swap channels
+            // instantly; cold ones queue a reconnect.
+            self.bind_active_tab_connection(&name);
+            self.activate_connection_by_name(&name);
         }
         self.show_connection_switcher = false;
         self.disarm_connection_delete();
@@ -2969,6 +2986,81 @@ impl AppState {
     ///
     /// Returns `true` when a refresh was queued (active connection exists);
     /// `false` when there is nothing to refresh (no connection / no channel).
+    /// Bind the active tab to the named connection. New queries from this
+    /// tab run there; switching back to this tab re-activates it.
+    pub fn bind_active_tab_connection(&mut self, name: &str) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.connection = Some(name.to_string());
+        }
+    }
+
+    /// Make the active tab's bound connection the active one.
+    ///
+    /// - Unbound tab (or already active): no-op.
+    /// - Bound + registered: swap the executor / schema-loader channels in
+    ///   from [`AppState::connection_registry`], reset the schema sidebar to
+    ///   the new connection, and regenerate the sqls config so the LSP
+    ///   follows. No reconnect — the pool stays warm and in-flight queries
+    ///   on the previous connection keep running.
+    /// - Bound + NOT registered: fall back to the reconnect path
+    ///   (`pending_reconnect`), which registers the connection when the
+    ///   handshake lands.
+    pub fn activate_tab_connection(&mut self) {
+        let Some(name) = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|t| t.connection.clone())
+        else {
+            return;
+        };
+        if self.active_connection.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        self.activate_connection_by_name(&name);
+    }
+
+    /// Activate the named connection: warm (registered) connections swap
+    /// executor / schema-loader channels in from the registry with no
+    /// reconnect; cold ones queue a handshake via `pending_reconnect`.
+    pub fn activate_connection_by_name(&mut self, name: &str) {
+        let url = self
+            .available_connections
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.url.clone());
+        if let Some(handles) = self.connection_registry.get(name).cloned() {
+            self.query_tx = Some(handles.query_tx);
+            self.schema_load_tx = Some(handles.schema_load_tx);
+            self.active_connection = Some(name.to_string());
+            if let Some(ref u) = url {
+                self.active_dialect = crate::highlight::Dialect::from_url(u);
+                if let Ok(cfg) = crate::lsp::write_sqls_config(u) {
+                    self.pending_sqls_config = Some(cfg);
+                }
+            }
+            // The sidebar shows the previous connection's schema — reset
+            // and reload through the (warm) loader.
+            self.schema_nodes.clear();
+            self.mark_schema_cache_dirty();
+            self.databases_loaded_at = None;
+            self.schema_loads_inflight.clear();
+            self.request_schema_load(SchemaLoadRequest::Databases);
+            self.set_status(format!("Connection: {name}"));
+        } else if let Some(u) = url {
+            // Never connected this session — full handshake via the
+            // watcher loop, same as the switcher's cold path.
+            self.schema_connecting = true;
+            self.schema_connect_error = None;
+            self.schema_connect_error_kind = None;
+            self.show_connect_error_popup = false;
+            self.schema_nodes.clear();
+            self.mark_schema_cache_dirty();
+            self.pending_reconnect = Some(u);
+        } else {
+            self.set_status(format!("Unknown connection: {name}"));
+        }
+    }
+
     pub fn refresh_schema(&mut self) -> bool {
         // No connection open yet → nothing to refresh.
         if self.active_connection.is_none() || self.schema_load_tx.is_none() {
@@ -3548,6 +3640,7 @@ impl AppState {
             tab.content = Some((*self.editor_content).clone());
         }
         self.active_tab = idx;
+        self.activate_tab_connection();
         let (content, cursor, needs_load) = if let Some(tab) = self.tabs.get_mut(idx) {
             tab.last_accessed = Some(Instant::now());
             if let Some(ref c) = tab.content {
@@ -3594,22 +3687,28 @@ impl AppState {
         }
     }
 
-    /// Snapshot of `(tab_name, row, col)` for every tab with a known cursor.
-    /// Used by the session writer.
-    pub fn tab_cursor_snapshot(&self) -> Vec<(String, usize, usize)> {
+    /// Snapshot of `(tab_name, row, col, connection)` for every tab with a
+    /// known cursor or a connection binding. Used by the session writer.
+    #[allow(clippy::type_complexity)]
+    pub fn tab_cursor_snapshot(&self) -> Vec<(String, usize, usize, Option<String>)> {
         self.tabs
             .iter()
-            .filter_map(|t| t.cursor.map(|(r, c)| (t.name.clone(), r, c)))
+            .filter(|t| t.cursor.is_some() || t.connection.is_some())
+            .map(|t| {
+                let (r, c) = t.cursor.unwrap_or((0, 0));
+                (t.name.clone(), r, c, t.connection.clone())
+            })
             .collect()
     }
 
     /// Apply persisted cursors (from session.toml) onto matching tabs by name.
     /// Also seeds `tab_cursor_pending` for the active tab so the editor jumps
     /// to the saved position on startup.
-    pub fn apply_tab_cursors(&mut self, cursors: &[(String, usize, usize)]) {
-        for (name, r, c) in cursors {
+    pub fn apply_tab_cursors(&mut self, cursors: &[(String, usize, usize, Option<String>)]) {
+        for (name, r, c, conn) in cursors {
             if let Some(tab) = self.tabs.iter_mut().find(|t| &t.name == name) {
                 tab.cursor = Some((*r, *c));
+                tab.connection = conn.clone();
             }
         }
         if let Some(tab) = self.tabs.get(self.active_tab)
@@ -3702,7 +3801,9 @@ impl AppState {
         match persistence::next_scratch_name() {
             Ok(name) => {
                 let _ = persistence::save_query(&name, &content);
-                self.tabs.push(TabEntry::open(name, content.clone()));
+                let mut tab = TabEntry::open(name, content.clone());
+                tab.connection = self.active_connection.clone();
+                self.tabs.push(tab);
                 self.active_tab = self.tabs.len() - 1;
                 self.tab_content_pending = Some(content);
             }
@@ -4037,6 +4138,140 @@ fn build_pgpass_auto_name(database: &str, host: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── per-tab connections ───────────────────────────────────────────────
+
+    fn conn_cfg(name: &str, url: &str) -> crate::config::ConnectionConfig {
+        toml::from_str::<crate::config::ConnectionConfig>(&format!("url = \"{url}\""))
+            .map(|mut c| {
+                c.name = name.to_string();
+                c
+            })
+            .unwrap()
+    }
+
+    fn registry_handles() -> (
+        ConnHandles,
+        tokio::sync::mpsc::Receiver<QueryRequest>,
+        tokio::sync::mpsc::Receiver<SchemaLoadRequest>,
+    ) {
+        let (qtx, qrx) = tokio::sync::mpsc::channel(4);
+        let (ltx, lrx) = tokio::sync::mpsc::channel(4);
+        (
+            ConnHandles {
+                query_tx: qtx,
+                schema_load_tx: ltx,
+            },
+            qrx,
+            lrx,
+        )
+    }
+
+    #[test]
+    fn activate_tab_connection_swaps_registered_handles() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.available_connections = vec![
+            conn_cfg("a", "sqlite:///tmp/a.db"),
+            conn_cfg("b", "sqlite:///tmp/b.db"),
+        ];
+        let (handles_b, mut qrx_b, mut lrx_b) = registry_handles();
+        s.connection_registry.insert("b".into(), handles_b);
+        s.active_connection = Some("a".into());
+        s.tabs.push(TabEntry::new("t1.sql".into()));
+        s.tabs[0].connection = Some("b".into());
+        s.active_tab = 0;
+
+        s.activate_tab_connection();
+
+        assert_eq!(s.active_connection.as_deref(), Some("b"));
+        assert!(
+            s.pending_reconnect.is_none(),
+            "warm swap must not reconnect"
+        );
+        // The swapped-in query channel routes to b's executor.
+        s.send_query("SELECT 1".into(), 0);
+        assert!(qrx_b.try_recv().is_ok(), "query did not reach b's executor");
+        // The schema reload request went to b's loader.
+        assert!(matches!(lrx_b.try_recv(), Ok(SchemaLoadRequest::Databases)));
+    }
+
+    #[test]
+    fn activate_tab_connection_cold_falls_back_to_reconnect() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.available_connections = vec![conn_cfg("cold", "sqlite:///tmp/cold.db")];
+        s.active_connection = Some("warm".into());
+        s.tabs.push(TabEntry::new("t1.sql".into()));
+        s.tabs[0].connection = Some("cold".into());
+        s.active_tab = 0;
+
+        s.activate_tab_connection();
+
+        assert_eq!(
+            s.pending_reconnect.as_deref(),
+            Some("sqlite:///tmp/cold.db")
+        );
+        assert!(s.schema_connecting);
+    }
+
+    #[test]
+    fn activate_tab_connection_unbound_or_same_is_noop() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.active_connection = Some("a".into());
+        s.tabs.push(TabEntry::new("t1.sql".into()));
+        s.active_tab = 0;
+        s.activate_tab_connection();
+        assert_eq!(s.active_connection.as_deref(), Some("a"));
+        assert!(s.pending_reconnect.is_none());
+
+        s.tabs[0].connection = Some("a".into());
+        s.activate_tab_connection();
+        assert!(s.pending_reconnect.is_none(), "same conn must be a no-op");
+    }
+
+    #[test]
+    fn confirm_connection_switch_binds_active_tab() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.available_connections = vec![conn_cfg("prod", "sqlite:///tmp/p.db")];
+        s.tabs.push(TabEntry::new("t1.sql".into()));
+        s.active_tab = 0;
+        s.open_connection_switcher();
+        let url = s.confirm_connection_switch();
+        assert_eq!(url.as_deref(), Some("sqlite:///tmp/p.db"));
+        assert_eq!(s.tabs[0].connection.as_deref(), Some("prod"));
+        // Cold connection → reconnect queued.
+        assert_eq!(s.pending_reconnect.as_deref(), Some("sqlite:///tmp/p.db"));
+    }
+
+    #[test]
+    fn tab_cursor_snapshot_carries_connection_binding() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.tabs.push(TabEntry::new("bound.sql".into()));
+        s.tabs[0].connection = Some("prod".into());
+        s.tabs.push(TabEntry::new("plain.sql".into()));
+        s.tabs[1].cursor = Some((3, 7));
+
+        let snap = s.tab_cursor_snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(
+            snap[0],
+            ("bound.sql".into(), 0, 0, Some("prod".to_string()))
+        );
+        assert_eq!(snap[1], ("plain.sql".into(), 3, 7, None));
+
+        // Round-trip through apply.
+        let state2 = AppState::new();
+        let mut s2 = state2.lock().unwrap();
+        s2.tabs.push(TabEntry::new("bound.sql".into()));
+        s2.tabs.push(TabEntry::new("plain.sql".into()));
+        s2.apply_tab_cursors(&snap);
+        assert_eq!(s2.tabs[0].connection.as_deref(), Some("prod"));
+        assert_eq!(s2.tabs[1].cursor, Some((3, 7)));
+    }
 
     #[test]
     fn default_state() {

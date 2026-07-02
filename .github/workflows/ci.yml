@@ -574,4 +574,30 @@ jobs:
             echo "::notice::sqeel@${VERSION} already on crates.io, skipping"
             exit 0
           fi
-          cargo publish -p sqeel --locked
+          # Publish with hjkl-style 429 retries: parse crates.io's
+          # "try again after" timestamp (11-min fallback), 3 attempts;
+          # non-rate-limit failures fail fast.
+          attempt=0
+          while [ $attempt -lt 3 ]; do
+            if cargo publish -p sqeel --locked 2>&1 | tee /tmp/publish.log; then
+              exit 0
+            fi
+            if grep -qiE "429|Too Many Requests" /tmp/publish.log; then
+              wait_until=$(grep -oE 'try again after [^.]+' /tmp/publish.log | sed 's/try again after //' || true)
+              if [ -n "$wait_until" ]; then
+                wait_secs=$(( $(date -d "$wait_until" +%s) - $(date +%s) + 30 ))
+                [ "$wait_secs" -lt 30 ] && wait_secs=30
+                echo "::warning::rate limited, sleeping ${wait_secs}s until $wait_until"
+              else
+                wait_secs=660
+                echo "::warning::rate limited, sleeping ${wait_secs}s (11 min fallback)"
+              fi
+              sleep "$wait_secs"
+              attempt=$(( attempt + 1 ))
+            else
+              echo "::error::publish failed (non-rate-limit error)"
+              exit 1
+            fi
+          done
+          echo "::error::publish failed after 3 rate-limit retries"
+          exit 1

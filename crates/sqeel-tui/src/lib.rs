@@ -2915,12 +2915,14 @@ async fn run_loop(
                                     } else if let Ok(content) =
                                         sqeel_core::persistence::load_query(&name)
                                     {
+                                        let conn_bind = s.active_connection.clone();
                                         s.tabs.push(sqeel_core::state::TabEntry {
                                             name,
                                             content: Some(content),
                                             last_accessed: Some(Instant::now()),
                                             cursor: None,
                                             dirty: false,
+                                            connection: conn_bind,
                                         });
                                         let idx = s.tabs.len() - 1;
                                         s.switch_to_tab(idx);
@@ -3065,12 +3067,14 @@ async fn run_loop(
                                         } else if let Ok(content) =
                                             sqeel_core::persistence::load_query(&name)
                                         {
+                                            let conn_bind = s.active_connection.clone();
                                             s.tabs.push(sqeel_core::state::TabEntry {
                                                 name,
                                                 content: Some(content),
                                                 last_accessed: Some(Instant::now()),
                                                 cursor: None,
                                                 dirty: false,
+                                                connection: conn_bind,
                                             });
                                             let idx = s.tabs.len() - 1;
                                             s.switch_to_tab(idx);

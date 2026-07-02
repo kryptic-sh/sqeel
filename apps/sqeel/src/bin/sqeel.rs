@@ -381,6 +381,15 @@ fn main() -> anyhow::Result<()> {
             s.active_connection = Some(name.clone());
         }
         s.load_tabs();
+        // Restore per-tab cursor positions + connection bindings from the
+        // session file (bindings drive per-tab connections; the cursor
+        // seed also fixes the previously write-only tab_cursors field).
+        let saved: Vec<(String, usize, usize, Option<String>)> = session
+            .tab_cursors
+            .iter()
+            .map(|t| (t.name.clone(), t.row, t.col, t.connection.clone()))
+            .collect();
+        s.apply_tab_cursors(&saved);
         if session_active_tab < s.tabs.len() {
             s.switch_to_tab(session_active_tab);
         }
@@ -456,7 +465,14 @@ fn main() -> anyhow::Result<()> {
             let tab_cursors: Vec<sqeel_core::config::TabCursor> = s
                 .tab_cursor_snapshot()
                 .into_iter()
-                .map(|(name, row, col)| sqeel_core::config::TabCursor { name, row, col })
+                .map(
+                    |(name, row, col, connection)| sqeel_core::config::TabCursor {
+                        name,
+                        row,
+                        col,
+                        connection,
+                    },
+                )
                 .collect();
             let active_tab = s.active_tab;
             let result_tabs: Vec<sqeel_core::config::SavedResultRef> = s
@@ -795,9 +811,14 @@ async fn connect_and_spawn(
                 // chance to restore them from the session file.
                 s.schema_loading = true;
             }
+            let conn_name = {
+                let s = state.lock().unwrap();
+                s.active_connection.clone().unwrap_or_default()
+            };
             spawn_executor(
                 state.clone(),
                 conn,
+                conn_name,
                 session_schema_cursor,
                 session_schema_cursor_path,
                 session_schema_expanded_paths,
@@ -826,19 +847,21 @@ async fn connect_and_spawn(
 fn spawn_executor(
     state: Arc<std::sync::Mutex<AppState>>,
     conn: DbConnection,
+    conn_name: String,
     session_schema_cursor: usize,
     session_schema_cursor_path: Option<String>,
     session_schema_expanded_paths: Vec<String>,
 ) {
     let conn = Arc::new(conn);
     let (tx, mut rx) = tokio::sync::mpsc::channel::<QueryRequest>(8);
-    state.lock().unwrap().query_tx = Some(tx);
+    state.lock().unwrap().query_tx = Some(tx.clone());
 
-    let conn_slug = {
-        let s = state.lock().unwrap();
-        let conn_name = s.active_connection.as_deref().unwrap_or("default");
-        sanitize_conn_slug(conn_name)
+    let conn_slug = if conn_name.is_empty() {
+        sanitize_conn_slug("default")
+    } else {
+        sanitize_conn_slug(&conn_name)
     };
+    let query_tx_for_registry = tx;
 
     // ── Lazy schema loader ───────────────────────────────────────────────────
     // Bounded-concurrency worker that handles one SchemaLoadRequest at a time:
@@ -851,6 +874,19 @@ fn spawn_executor(
     {
         let mut s = state.lock().unwrap();
         s.schema_load_tx = Some(load_tx.clone());
+        // Register this connection's live handles so tab switches back to
+        // it are a channel swap instead of a reconnect. Keyed by name; a
+        // reconnect of the same name replaces the entry and the orphaned
+        // executor/loader wind down when their senders drop.
+        if !conn_name.is_empty() {
+            s.connection_registry.insert(
+                conn_name.clone(),
+                sqeel_core::state::ConnHandles {
+                    query_tx: query_tx_for_registry.clone(),
+                    schema_load_tx: load_tx.clone(),
+                },
+            );
+        }
         // Kick off the initial db list; toggles after that drive further loads.
         s.request_schema_load(SchemaLoadRequest::Databases);
 
@@ -868,6 +904,7 @@ fn spawn_executor(
     tokio::spawn(schema_loader_task(
         schema_conn,
         schema_state,
+        conn_name.clone(),
         load_rx,
         load_tx,
         session_schema_cursor,
@@ -1105,6 +1142,7 @@ fn collect_expanded_load_requests(nodes: &[SchemaNode]) -> Vec<SchemaLoadRequest
 async fn schema_loader_task(
     conn: Arc<DbConnection>,
     state: Arc<std::sync::Mutex<AppState>>,
+    conn_name: String,
     mut rx: tokio::sync::mpsc::Receiver<SchemaLoadRequest>,
     tx: tokio::sync::mpsc::Sender<SchemaLoadRequest>,
     session_schema_cursor: usize,
@@ -1133,9 +1171,24 @@ async fn schema_loader_task(
         }
         let session_expanded = session_schema_expanded_paths.clone();
         let session_cursor_path = session_schema_cursor_path.clone();
+        let conn_name = conn_name.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let finish_req = req.clone();
+            // Per-tab connections: this loader serves ONE named connection.
+            // If another connection became active (tab switch) the fetched
+            // data must not be spliced into the sidebar — it describes a
+            // different database. Bookkeeping still runs so the spinner
+            // counters stay sane.
+            let still_active = || {
+                conn_name.is_empty()
+                    || state.lock().unwrap().active_connection.as_deref()
+                        == Some(conn_name.as_str())
+            };
+            if !still_active() {
+                state.lock().unwrap().finish_schema_load(&finish_req);
+                return;
+            }
             match req {
                 SchemaLoadRequest::Databases => {
                     match retry_once(|| conn.load_schema_databases()).await {
@@ -1147,7 +1200,7 @@ async fn schema_loader_task(
                                     _ => None,
                                 })
                                 .collect();
-                            {
+                            if still_active() {
                                 let mut s = state.lock().unwrap();
                                 s.merge_db_list(&names);
                                 if apply_saved_expansion {
@@ -1187,7 +1240,7 @@ async fn schema_loader_task(
                             // set_db_tables may reuse existing Table nodes; we
                             // then need to queue Columns for any of those that
                             // the user already had expanded.
-                            let follow_ups: Vec<SchemaLoadRequest> = {
+                            let follow_ups: Vec<SchemaLoadRequest> = if still_active() {
                                 let mut s = state.lock().unwrap();
                                 s.set_db_tables(&db, &table_names);
                                 collect_expanded_load_requests(&s.schema_nodes)
@@ -1197,6 +1250,8 @@ async fn schema_loader_task(
                                         _ => false,
                                     })
                                     .collect()
+                            } else {
+                                Vec::new()
                             };
                             for f in follow_ups {
                                 if let Err(e) = req_tx.try_send(f) {
@@ -1244,10 +1299,12 @@ async fn schema_loader_task(
                             ref_cols: f.ref_cols,
                         })
                         .collect();
-                    state
-                        .lock()
-                        .unwrap()
-                        .set_table_relations(&db, &table, col_nodes, idx_nodes, fk_nodes);
+                    if still_active() {
+                        state
+                            .lock()
+                            .unwrap()
+                            .set_table_relations(&db, &table, col_nodes, idx_nodes, fk_nodes);
+                    }
                 }
             }
             state.lock().unwrap().finish_schema_load(&finish_req);
