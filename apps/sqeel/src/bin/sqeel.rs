@@ -596,16 +596,7 @@ async fn run_headless(
         }
     };
     for chunk in chunks {
-        let stmts: Vec<String> = sqeel_core::highlight::statement_ranges(chunk)
-            .into_iter()
-            .map(|(s, e)| chunk[s..e].trim().to_string())
-            .filter(|s| !s.is_empty())
-            .filter(|s| {
-                !sqeel_core::highlight::strip_sql_comments(s)
-                    .trim()
-                    .is_empty()
-            })
-            .collect();
+        let stmts: Vec<String> = sqeel_core::highlight::split_statements(chunk);
         for stmt in stmts {
             match conn.execute(&stmt).await {
                 Ok(sqeel_core::db::ExecOutcome::Rows(r)) => print_result(&r, format),
@@ -931,46 +922,7 @@ fn spawn_executor(
                     };
                     let mut s = state.lock().unwrap();
                     s.batch_in_progress = false;
-                    match outcome {
-                        Some(Ok(sqeel_core::db::ExecOutcome::Rows(mut r))) => {
-                            let filename = s.persist_result(&query, &r);
-                            s.push_history(&query);
-                            r.compute_col_widths();
-                            s.finish_result_tab(tab_idx, ResultsPane::Results(r));
-                            if let Some(tab) = s.result_tabs.get_mut(tab_idx) {
-                                tab.saved_filename = filename;
-                            }
-                            if let Some(effect) = parse_ddl(&query) {
-                                s.invalidate_for_ddl(&effect);
-                            }
-                        }
-                        Some(Ok(sqeel_core::db::ExecOutcome::NonQuery {
-                            verb,
-                            rows_affected,
-                        })) => {
-                            s.push_history(&query);
-                            s.finish_result_tab(
-                                tab_idx,
-                                ResultsPane::NonQuery {
-                                    verb,
-                                    rows_affected,
-                                },
-                            );
-                            if let Some(effect) = parse_ddl(&query) {
-                                s.invalidate_for_ddl(&effect);
-                            }
-                        }
-                        Some(Err(e)) => {
-                            s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
-                        }
-                        None => {
-                            // Cancelled before the query completed.
-                            s.finish_result_tab(tab_idx, ResultsPane::Cancelled);
-                        }
-                        // Future ExecOutcome variants — treat as no-op for now.
-                        Some(Ok(_)) => {}
-                    }
-                    s.results_dirty = true;
+                    let _ = apply_exec_outcome(&mut s, tab_idx, &query, outcome);
                 }
                 QueryRequest::Batch(queries, start_idx) => {
                     let cleanup_slug = conn_slug.clone();
@@ -993,58 +945,17 @@ fn spawn_executor(
                             r = conn.execute(&query) => Some(r),
                             _ = cancel.cancelled() => None,
                         };
-                        let (is_err, stop) = {
+                        let stop = {
                             let mut s = state.lock().unwrap();
-                            let (is_err, stop) = match outcome {
-                                Some(Ok(sqeel_core::db::ExecOutcome::Rows(mut r))) => {
-                                    let filename = s.persist_result(&query, &r);
-                                    s.push_history(&query);
-                                    r.compute_col_widths();
-                                    s.finish_result_tab(tab_idx, ResultsPane::Results(r));
-                                    if let Some(tab) = s.result_tabs.get_mut(tab_idx) {
-                                        tab.saved_filename = filename;
-                                    }
-                                    if let Some(effect) = parse_ddl(&query) {
-                                        s.invalidate_for_ddl(&effect);
-                                    }
-                                    (false, false)
-                                }
-                                Some(Ok(sqeel_core::db::ExecOutcome::NonQuery {
-                                    verb,
-                                    rows_affected,
-                                })) => {
-                                    s.push_history(&query);
-                                    s.finish_result_tab(
-                                        tab_idx,
-                                        ResultsPane::NonQuery {
-                                            verb,
-                                            rows_affected,
-                                        },
-                                    );
-                                    if let Some(effect) = parse_ddl(&query) {
-                                        s.invalidate_for_ddl(&effect);
-                                    }
-                                    (false, false)
-                                }
-                                Some(Err(e)) => {
-                                    s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
-                                    (true, stop_on_error)
-                                }
-                                None => {
-                                    // User cancelled this query — mark it and
-                                    // break out so the rest of the batch doesn't
-                                    // run.
-                                    s.finish_result_tab(tab_idx, ResultsPane::Cancelled);
+                            match apply_exec_outcome(&mut s, tab_idx, &query, outcome) {
+                                ExecDisposition::Ok => false,
+                                ExecDisposition::Err => stop_on_error,
+                                ExecDisposition::Cancelled => {
                                     cancelled = true;
-                                    (false, true)
+                                    true
                                 }
-                                // Future ExecOutcome variants — treat as no-op for now.
-                                Some(Ok(_)) => (false, false),
-                            };
-                            s.results_dirty = true;
-                            (is_err, stop)
+                            }
                         };
-                        let _ = is_err;
                         if stop {
                             // Mark remaining loading tabs as skipped so the
                             // UI stops showing them as pending. `Skipped`
@@ -1069,6 +980,74 @@ fn spawn_executor(
             cancel.reset();
         }
     });
+}
+
+/// How a finished (or aborted) statement should steer the batch loop.
+enum ExecDisposition {
+    /// Applied normally — keep going.
+    Ok,
+    /// SQL error — stop the batch when `stop_on_error` is set.
+    Err,
+    /// User cancelled mid-flight — always stop the batch.
+    Cancelled,
+}
+
+/// Apply one statement's execution outcome to the results tab at
+/// `tab_idx`. Shared by the Single and Batch executor arms so the two
+/// can't drift (persist + history + widths + DDL invalidation + the
+/// Cancelled marker all live here). `None` = the select! lost to the
+/// cancel token.
+fn apply_exec_outcome(
+    s: &mut AppState,
+    tab_idx: usize,
+    query: &str,
+    outcome: Option<anyhow::Result<sqeel_core::db::ExecOutcome>>,
+) -> ExecDisposition {
+    let disposition = match outcome {
+        Some(Ok(sqeel_core::db::ExecOutcome::Rows(mut r))) => {
+            let filename = s.persist_result(query, &r);
+            s.push_history(query);
+            r.compute_col_widths();
+            s.finish_result_tab(tab_idx, ResultsPane::Results(r));
+            if let Some(tab) = s.result_tabs.get_mut(tab_idx) {
+                tab.saved_filename = filename;
+            }
+            if let Some(effect) = parse_ddl(query) {
+                s.invalidate_for_ddl(&effect);
+            }
+            ExecDisposition::Ok
+        }
+        Some(Ok(sqeel_core::db::ExecOutcome::NonQuery {
+            verb,
+            rows_affected,
+        })) => {
+            s.push_history(query);
+            s.finish_result_tab(
+                tab_idx,
+                ResultsPane::NonQuery {
+                    verb,
+                    rows_affected,
+                },
+            );
+            if let Some(effect) = parse_ddl(query) {
+                s.invalidate_for_ddl(&effect);
+            }
+            ExecDisposition::Ok
+        }
+        Some(Err(e)) => {
+            s.finish_result_tab(tab_idx, ResultsPane::Error(e.to_string()));
+            ExecDisposition::Err
+        }
+        None => {
+            // Cancelled before the query completed.
+            s.finish_result_tab(tab_idx, ResultsPane::Cancelled);
+            ExecDisposition::Cancelled
+        }
+        // Future ExecOutcome variants — treat as no-op for now.
+        Some(Ok(_)) => ExecDisposition::Ok,
+    };
+    s.results_dirty = true;
+    disposition
 }
 
 /// Retry an async DB call once after a short delay on failure. Covers transient

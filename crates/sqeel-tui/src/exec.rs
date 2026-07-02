@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// Error surfaced when a run is attempted with no live connection.
+const NO_DB_MSG: &str = "No DB connected. Use --url / --connection or <leader>c to switch.";
+
 /// A run the destructive-statement guard intercepted, parked while the y/N
 /// confirm modal is up. `y` dispatches it via [`dispatch_pending_run`];
 /// anything else drops it.
@@ -54,9 +57,7 @@ pub(crate) fn dispatch_pending_run(state: &Arc<Mutex<AppState>>, pending: Pendin
             if !sent {
                 s.push_history(&stmt);
                 s.dismiss_results();
-                s.set_error(
-                    "No DB connected. Use --url / --connection or <leader>c to switch.".into(),
-                );
+                s.set_error(NO_DB_MSG.into());
             }
         }
         PendingRun::Batch(stmts) => {
@@ -65,9 +66,7 @@ pub(crate) fn dispatch_pending_run(state: &Arc<Mutex<AppState>>, pending: Pendin
             }
             if !s.send_batch(stmts, 0) {
                 s.dismiss_results();
-                s.set_error(
-                    "No DB connected. Use --url / --connection or <leader>c to switch.".into(),
-                );
+                s.set_error(NO_DB_MSG.into());
             }
         }
     }
@@ -149,12 +148,7 @@ pub(crate) fn run_all_statements(
     guard: bool,
 ) -> Option<PendingRun> {
     let content = editor.content();
-    let stmts: Vec<String> = statement_ranges(&content)
-        .into_iter()
-        .map(|(s, e)| content[s..e].trim().to_string())
-        .filter(|s| !s.is_empty())
-        .filter(|s| !strip_sql_comments(s).trim().is_empty())
-        .collect();
+    let stmts: Vec<String> = sqeel_core::highlight::split_statements(&content);
     {
         let mut s = state.lock().unwrap();
         s.dismiss_completions();

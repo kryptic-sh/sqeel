@@ -70,7 +70,7 @@ use sqeel_core::{
     config::load_main_config,
     highlight::{
         Dialect, Highlighter, first_syntax_error, is_show_create, statement_at_byte,
-        statement_ranges, strip_sql_comments,
+        strip_sql_comments,
     },
     lsp::{LspClient, LspEvent},
     schema::{self, SchemaItemKind, SchemaTreeItem, SubGroup},
@@ -565,7 +565,7 @@ async fn run_loop(
 
     let mut toasts: Vec<(String, ToastKind, std::time::Instant)> = Vec::new();
     if let Some(msg) = theme_error {
-        toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
+        toast(&mut toasts, ToastKind::Error, msg);
     }
     // If sqls is missing and auto-install is enabled, open the y/N modal instead
     // of the v1 toast-with-instruction. When lsp_auto_install is false, fall back
@@ -574,11 +574,11 @@ async fn run_loop(
         if lsp_auto_install {
             true // modal will be shown; no toast here
         } else {
-            toasts.push((
-                format!("LSP: {lsp_binary} missing (lsp_auto_install = false)"),
+            toast(
+                &mut toasts,
                 ToastKind::Info,
-                std::time::Instant::now(),
-            ));
+                format!("LSP: {lsp_binary} missing (lsp_auto_install = false)"),
+            );
             false
         }
     } else {
@@ -665,11 +665,11 @@ async fn run_loop(
                 let handle = install_pool.install("sqls".to_string(), spec);
                 active_install = Some(handle);
                 install_installing_announced = false;
-                toasts.push((
-                    "Anvil: installing sqls via go install…".to_string(),
+                toast(
+                    &mut toasts,
                     ToastKind::Info,
-                    std::time::Instant::now(),
-                ));
+                    "Anvil: installing sqls via go install…".to_string(),
+                );
                 needs_redraw = true;
             }
         }
@@ -1294,11 +1294,11 @@ async fn run_loop(
                 match status {
                     hjkl_anvil::InstallStatus::Done { ref bin_path } => {
                         let bin_str = bin_path.to_string_lossy().into_owned();
-                        toasts.push((
-                            "sqls installed. Starting LSP…".to_string(),
+                        toast(
+                            &mut toasts,
                             ToastKind::Info,
-                            std::time::Instant::now(),
-                        ));
+                            "sqls installed. Starting LSP…".to_string(),
+                        );
                         lsp_resolved_binary = Some(bin_str.clone());
                         lsp_source = LspSource::Anvil;
                         let binary = bin_str.clone();
@@ -1312,21 +1312,17 @@ async fn run_loop(
                         needs_redraw = true;
                     }
                     hjkl_anvil::InstallStatus::Failed(ref msg) => {
-                        toasts.push((
-                            format!("sqls install failed: {msg}"),
+                        toast(
+                            &mut toasts,
                             ToastKind::Error,
-                            std::time::Instant::now(),
-                        ));
+                            format!("sqls install failed: {msg}"),
+                        );
                         install_terminal = true;
                         needs_redraw = true;
                     }
                     hjkl_anvil::InstallStatus::Installing => {
                         if !install_announced {
-                            toasts.push((
-                                "Installing sqls…".to_string(),
-                                ToastKind::Info,
-                                std::time::Instant::now(),
-                            ));
+                            toast(&mut toasts, ToastKind::Info, "Installing sqls…".to_string());
                             install_announced = true;
                             needs_redraw = true;
                         }
@@ -1396,11 +1392,11 @@ async fn run_loop(
                                     editor.record_jump(pre);
                                 }
                             } else {
-                                toasts.push((
-                                    format!("Defined at: {uri} line {}:{}", line + 1, col + 1),
+                                toast(
+                                    &mut toasts,
                                     ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                    format!("Defined at: {uri} line {}:{}", line + 1, col + 1),
+                                );
                             }
                             needs_redraw = true;
                         }
@@ -1912,19 +1908,19 @@ async fn run_loop(
                                 let ok = clipboard
                                     .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
                                     .is_ok();
-                                toasts.push((
-                                    if ok {
-                                        format!("{label} copied to clipboard")
-                                    } else {
-                                        format!("{label}: clipboard copy failed (too large)")
-                                    },
+                                toast(
+                                    &mut toasts,
                                     if ok {
                                         ToastKind::Info
                                     } else {
                                         ToastKind::Error
                                     },
-                                    std::time::Instant::now(),
-                                ));
+                                    if ok {
+                                        format!("{label} copied to clipboard")
+                                    } else {
+                                        format!("{label}: clipboard copy failed (too large)")
+                                    },
+                                );
                             }
                         }
                         mouse_drag_pane = None;
@@ -1945,19 +1941,19 @@ async fn run_loop(
                                 let ok = clipboard
                                     .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
                                     .is_ok();
-                                toasts.push((
-                                    if ok {
-                                        "Row copied to clipboard".to_string()
-                                    } else {
-                                        "Row: clipboard copy failed (too large)".to_string()
-                                    },
+                                toast(
+                                    &mut toasts,
                                     if ok {
                                         ToastKind::Info
                                     } else {
                                         ToastKind::Error
                                     },
-                                    std::time::Instant::now(),
-                                ));
+                                    if ok {
+                                        "Row copied to clipboard".to_string()
+                                    } else {
+                                        "Row: clipboard copy failed (too large)".to_string()
+                                    },
+                                );
                             }
                         }
                     }
@@ -2056,11 +2052,7 @@ async fn run_loop(
                     let in_flight = state.lock().unwrap().query_in_flight();
                     if in_flight {
                         state.lock().unwrap().cancel_current_query();
-                        toasts.push((
-                            "Query cancelled".into(),
-                            ToastKind::Info,
-                            std::time::Instant::now(),
-                        ));
+                        toast(&mut toasts, ToastKind::Info, "Query cancelled");
                         continue;
                     }
                 }
@@ -2139,17 +2131,17 @@ async fn run_loop(
                                 .unwrap_or_else(|| "database".into());
                             let triggered = state.lock().unwrap().refresh_schema();
                             if triggered {
-                                toasts.push((
-                                    format!("Refreshing schema for {conn_name}…"),
+                                toast(
+                                    &mut toasts,
                                     ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                    format!("Refreshing schema for {conn_name}…"),
+                                );
                             } else {
-                                toasts.push((
-                                    "No active connection to refresh".to_string(),
+                                toast(
+                                    &mut toasts,
                                     ToastKind::Error,
-                                    std::time::Instant::now(),
-                                ));
+                                    "No active connection to refresh".to_string(),
+                                );
                             }
                             continue;
                         }
@@ -2258,11 +2250,11 @@ async fn run_loop(
                             if failed.is_empty() {
                                 break;
                             }
-                            toasts.push((
-                                format!("Save failed for: {}", failed.join(", ")),
+                            toast(
+                                &mut toasts,
                                 ToastKind::Error,
-                                std::time::Instant::now(),
-                            ));
+                                format!("Save failed for: {}", failed.join(", ")),
+                            );
                         }
                         (KeyModifiers::NONE, KeyCode::Char('n')) => {
                             break;
@@ -2329,13 +2321,13 @@ async fn run_loop(
                                 "not running"
                             };
                             let bin_label = lsp_resolved_binary.as_deref().unwrap_or(&lsp_binary);
-                            toasts.push((
+                            toast(
+                                &mut toasts,
+                                ToastKind::Info,
                                 format!(
                                     "LSP {lsp_binary}: {state_label} (source: {source_label}) binary={bin_label}"
                                 ),
-                                ToastKind::Info,
-                                std::time::Instant::now(),
-                            ));
+                            );
                             continue;
                         }
                         // ── :Anvil … ─────────────────────────────────────────────
@@ -2343,25 +2335,23 @@ async fn run_loop(
                             match parse_anvil_cmd(rest) {
                                 AnvilCmd::Usage => {
                                     // Bare :Anvil — usage hint (no picker UI yet).
-                                    toasts.push((
-                                        "Anvil: usage — :Anvil install <name>  |  :Anvil update [name]  |  :Anvil uninstall <name>".to_string(),
-                                        ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    ));
+                                    toast(&mut toasts, ToastKind::Info, "Anvil: usage — :Anvil install <name>  |  :Anvil update [name]  |  :Anvil uninstall <name>".to_string());
                                 }
                                 AnvilCmd::Install(name) => {
                                     if name != "sqls" {
-                                        toasts.push((
-                                            format!("Anvil: unknown tool {name:?} (only 'sqls' supported)"),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        ));
+                                            format!(
+                                                "Anvil: unknown tool {name:?} (only 'sqls' supported)"
+                                            ),
+                                        );
                                     } else if active_install.is_some() {
-                                        toasts.push((
-                                            "Anvil: install already in progress".to_string(),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Info,
-                                            std::time::Instant::now(),
-                                        ));
+                                            "Anvil: install already in progress".to_string(),
+                                        );
                                     } else {
                                         let spec = hjkl_anvil::ToolSpec {
                                             category: hjkl_anvil::ToolCategory::Lsp,
@@ -2377,28 +2367,30 @@ async fn run_loop(
                                         };
                                         let handle = install_pool.install("sqls".to_string(), spec);
                                         active_install = Some(handle);
-                                        toasts.push((
-                                            "Anvil: installing sqls via go install…".to_string(),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Info,
-                                            std::time::Instant::now(),
-                                        ));
+                                            "Anvil: installing sqls via go install…".to_string(),
+                                        );
                                     }
                                 }
                                 AnvilCmd::Update(name_opt) => {
                                     // Re-install at latest; only sqls supported for now.
                                     let name = name_opt.unwrap_or("sqls");
                                     if name != "sqls" {
-                                        toasts.push((
-                                            format!("Anvil: unknown tool {name:?} (only 'sqls' supported)"),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        ));
+                                            format!(
+                                                "Anvil: unknown tool {name:?} (only 'sqls' supported)"
+                                            ),
+                                        );
                                     } else if active_install.is_some() {
-                                        toasts.push((
-                                            "Anvil: install already in progress".to_string(),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Info,
-                                            std::time::Instant::now(),
-                                        ));
+                                            "Anvil: install already in progress".to_string(),
+                                        );
                                     } else {
                                         let spec = hjkl_anvil::ToolSpec {
                                             category: hjkl_anvil::ToolCategory::Lsp,
@@ -2414,20 +2406,22 @@ async fn run_loop(
                                         };
                                         let handle = install_pool.install("sqls".to_string(), spec);
                                         active_install = Some(handle);
-                                        toasts.push((
-                                            "Anvil: updating sqls via go install…".to_string(),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Info,
-                                            std::time::Instant::now(),
-                                        ));
+                                            "Anvil: updating sqls via go install…".to_string(),
+                                        );
                                     }
                                 }
                                 AnvilCmd::Uninstall(name) => {
                                     if name != "sqls" {
-                                        toasts.push((
-                                            format!("Anvil: unknown tool {name:?} (only 'sqls' supported)"),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        ));
+                                            format!(
+                                                "Anvil: unknown tool {name:?} (only 'sqls' supported)"
+                                            ),
+                                        );
                                     } else {
                                         // Remove the anvil-managed store dir for sqls.
                                         match hjkl_anvil::store::package_dir("sqls") {
@@ -2436,49 +2430,49 @@ async fn run_loop(
                                                     if let Err(e) =
                                                         std::fs::remove_dir_all(&pkg_dir)
                                                     {
-                                                        toasts.push((
-                                                            format!("Anvil: uninstall failed: {e}"),
+                                                        toast(
+                                                            &mut toasts,
                                                             ToastKind::Error,
-                                                            std::time::Instant::now(),
-                                                        ));
+                                                            format!("Anvil: uninstall failed: {e}"),
+                                                        );
                                                     } else {
                                                         // If the LSP was anvil-managed, clear the
                                                         // resolved binary so it won't restart.
                                                         if lsp_source == LspSource::Anvil {
                                                             lsp_resolved_binary = None;
                                                         }
-                                                        toasts.push((
-                                                            "Anvil: sqls uninstalled".to_string(),
+                                                        toast(
+                                                            &mut toasts,
                                                             ToastKind::Info,
-                                                            std::time::Instant::now(),
-                                                        ));
+                                                            "Anvil: sqls uninstalled".to_string(),
+                                                        );
                                                     }
                                                 } else {
-                                                    toasts.push((
+                                                    toast(
+                                                        &mut toasts,
+                                                        ToastKind::Info,
                                                         "Anvil: sqls is not installed by anvil"
                                                             .to_string(),
-                                                        ToastKind::Info,
-                                                        std::time::Instant::now(),
-                                                    ));
+                                                    );
                                                 }
                                             }
                                             Err(e) => {
-                                                toasts.push((
-                                                    format!("Anvil: store error: {e}"),
+                                                toast(
+                                                    &mut toasts,
                                                     ToastKind::Error,
-                                                    std::time::Instant::now(),
-                                                ));
+                                                    format!("Anvil: store error: {e}"),
+                                                );
                                             }
                                         }
                                     }
                                 }
                                 AnvilCmd::Unknown => {
-                                    toasts.push((
+                                    toast(
+                                        &mut toasts,
+                                        ToastKind::Error,
                                         "Anvil: unknown subcommand — try :Anvil install sqls"
                                             .to_string(),
-                                        ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                    );
                                 }
                             }
                             continue;
@@ -2490,7 +2484,7 @@ async fn run_loop(
                             apply_cursor_opts(trimmed, &mut opt_cursorline, &mut opt_cursorcolumn);
                         let suppress_engine_info = opts_result.info.is_some();
                         if let Some(msg) = opts_result.info {
-                            toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
+                            toast(&mut toasts, ToastKind::Info, msg);
                         }
                         let ex_effect =
                             hjkl_ex::try_dispatch(&ex_registry, &mut editor, &opts_result.forward)
@@ -2519,11 +2513,11 @@ async fn run_loop(
                                     if failed.is_empty() {
                                         break;
                                     }
-                                    toasts.push((
-                                        format!("Save failed for: {}", failed.join(", ")),
+                                    toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                        format!("Save failed for: {}", failed.join(", ")),
+                                    );
                                 } else if any_dirty {
                                     quit_prompt = Some(());
                                 } else {
@@ -2531,58 +2525,19 @@ async fn run_loop(
                                 }
                             }
                             hjkl_ex::ExEffect::Save => {
-                                let prepared = {
+                                {
                                     let mut s = state.lock().unwrap();
-                                    // The heavy content pipeline is
-                                    // gated off for buffers over
-                                    // 2 MB, which otherwise leaves
-                                    // `editor_content_synced = false`
-                                    // and the save falls back to
-                                    // stale `tab.content`.
+                                    // The heavy content pipeline is gated
+                                    // off for buffers over 2 MB, which
+                                    // otherwise leaves
+                                    // `editor_content_synced = false` and
+                                    // the save falls back to stale
+                                    // `tab.content`.
                                     s.editor_content = editor.content_arc();
                                     s.editor_content_synced = true;
-                                    s.prepare_save_active_tab()
-                                };
-                                match prepared {
-                                    Ok(pending) => {
-                                        // Run the disk write on a
-                                        // blocking task so multi-MB
-                                        // saves don't freeze the
-                                        // render loop.
-                                        let name = pending.name.clone();
-                                        let idx = pending.tab_index;
-                                        let commit =
-                                            tokio::task::spawn_blocking(move || pending.commit())
-                                                .await
-                                                .unwrap_or_else(|e| {
-                                                    Err(std::io::Error::other(format!(
-                                                        "spawn_blocking join error: {e}"
-                                                    )))
-                                                });
-                                        match commit {
-                                            Ok(()) => {
-                                                if let Some(i) = idx {
-                                                    state.lock().unwrap().mark_tab_saved(i);
-                                                }
-                                                editor_dirty = false;
-                                                toasts.push((
-                                                    format!("Saved {name}"),
-                                                    ToastKind::Info,
-                                                    std::time::Instant::now(),
-                                                ));
-                                            }
-                                            Err(e) => toasts.push((
-                                                format!("Save failed: {e}"),
-                                                ToastKind::Error,
-                                                std::time::Instant::now(),
-                                            )),
-                                        }
-                                    }
-                                    Err(e) => toasts.push((
-                                        format!("Save failed: {e}"),
-                                        ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    )),
+                                }
+                                if save_active_tab(&state, &mut toasts).await {
+                                    editor_dirty = false;
                                 }
                             }
                             hjkl_ex::ExEffect::Substituted {
@@ -2597,11 +2552,11 @@ async fn run_loop(
                                     "substitutions"
                                 };
                                 let line_word = if lines_changed == 1 { "line" } else { "lines" };
-                                toasts.push((
-                                    format!("{count} {sub_word} on {lines_changed} {line_word}"),
+                                toast(
+                                    &mut toasts,
                                     ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                    format!("{count} {sub_word} on {lines_changed} {line_word}"),
+                                );
                             }
                             hjkl_ex::ExEffect::Ok => {
                                 state.lock().unwrap().focus = Focus::Editor;
@@ -2611,19 +2566,19 @@ async fn run_loop(
                                 // when we already surfaced a query result for
                                 // a cursor-opt token (`?` form).
                                 if !suppress_engine_info {
-                                    toasts.push((msg, ToastKind::Info, std::time::Instant::now()));
+                                    toast(&mut toasts, ToastKind::Info, msg);
                                 }
                             }
                             hjkl_ex::ExEffect::Error(msg) => {
-                                toasts.push((msg, ToastKind::Error, std::time::Instant::now()));
+                                toast(&mut toasts, ToastKind::Error, msg);
                             }
                             hjkl_ex::ExEffect::Unknown(c) => {
                                 if c == "colorscheme" {
-                                    toasts.push((
-                                        format!("Available: {}", theme::available_colorschemes()),
+                                    toast(
+                                        &mut toasts,
                                         ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    ));
+                                        format!("Available: {}", theme::available_colorschemes()),
+                                    );
                                 } else if let Some(name) =
                                     c.strip_prefix("colorscheme").and_then(|rest| {
                                         let rest = rest.trim();
@@ -2632,25 +2587,21 @@ async fn run_loop(
                                 {
                                     match theme::switch_colorscheme(name) {
                                         Ok(()) => {
-                                            toasts.push((
-                                                format!("colorscheme: {name}"),
+                                            toast(
+                                                &mut toasts,
                                                 ToastKind::Info,
-                                                std::time::Instant::now(),
-                                            ));
+                                                format!("colorscheme: {name}"),
+                                            );
                                         }
                                         Err(msg) => {
-                                            toasts.push((
-                                                msg,
-                                                ToastKind::Error,
-                                                std::time::Instant::now(),
-                                            ));
+                                            toast(&mut toasts, ToastKind::Error, msg);
                                         }
                                     }
                                 } else if c.starts_with("export") {
                                     let msg =
                                         handle_export_cmd(&c, &state.lock().unwrap(), &mut toasts);
                                     if let Some((text, kind)) = msg {
-                                        toasts.push((text, kind, std::time::Instant::now()));
+                                        toast(&mut toasts, kind, text);
                                     }
                                 } else if c == "refreshschema" || c == "refresh" {
                                     let conn_name = state
@@ -2661,17 +2612,17 @@ async fn run_loop(
                                         .unwrap_or_else(|| "database".into());
                                     let triggered = state.lock().unwrap().refresh_schema();
                                     if triggered {
-                                        toasts.push((
-                                            format!("Refreshing schema for {conn_name}…"),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Info,
-                                            std::time::Instant::now(),
-                                        ));
+                                            format!("Refreshing schema for {conn_name}…"),
+                                        );
                                     } else {
-                                        toasts.push((
-                                            "No active connection to refresh".to_string(),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        ));
+                                            "No active connection to refresh".to_string(),
+                                        );
                                     }
                                 } else if c.starts_with("describe")
                                     || c.starts_with("desc ")
@@ -2679,10 +2630,11 @@ async fn run_loop(
                                 {
                                     let s = state.lock().unwrap();
                                     let tab_idx = s.active_result_tab;
-                                    let (toast, sent) = handle_describe_cmd(&c, &s, tab_idx);
+                                    let (describe_toast, sent) =
+                                        handle_describe_cmd(&c, &s, tab_idx);
                                     drop(s);
-                                    if let Some((text, kind)) = toast {
-                                        toasts.push((text, kind, std::time::Instant::now()));
+                                    if let Some((text, kind)) = describe_toast {
+                                        toast(&mut toasts, kind, text);
                                     }
                                     if sent {
                                         // query dispatched — results pane is the feedback
@@ -2690,14 +2642,14 @@ async fn run_loop(
                                 } else if c == "migrate-secrets" {
                                     let msgs = run_migrate_secrets();
                                     for (text, kind) in msgs {
-                                        toasts.push((text, kind, std::time::Instant::now()));
+                                        toast(&mut toasts, kind, text);
                                     }
                                 } else {
-                                    toasts.push((
-                                        format!("Unknown command: :{c}"),
+                                    toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                        format!("Unknown command: :{c}"),
+                                    );
                                 }
                             }
                             hjkl_ex::ExEffect::None => {}
@@ -2718,16 +2670,16 @@ async fn run_loop(
                                     )))
                                 });
                                 match write {
-                                    Ok(path) => toasts.push((
-                                        format!("Written {}", path.display()),
+                                    Ok(path) => toast(
+                                        &mut toasts,
                                         ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    )),
-                                    Err(e) => toasts.push((
-                                        format!("Write failed: {e}"),
+                                        format!("Written {}", path.display()),
+                                    ),
+                                    Err(e) => toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    )),
+                                        format!("Write failed: {e}"),
+                                    ),
                                 }
                             }
                             // `:saveas <name>` — rename the active tab and
@@ -2737,11 +2689,7 @@ async fn run_loop(
                             // (use `:w <path>` for a filesystem export).
                             hjkl_ex::ExEffect::SaveAndRename { path } => {
                                 if std::path::Path::new(&path).components().count() > 1 {
-                                    toasts.push((
-                                        ":saveas takes a buffer name, not a path — use :w <path> to export".to_string(),
-                                        ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                    toast(&mut toasts, ToastKind::Error, ":saveas takes a buffer name, not a path — use :w <path> to export".to_string());
                                 } else {
                                     let renamed = {
                                         let mut s = state.lock().unwrap();
@@ -2757,64 +2705,16 @@ async fn run_loop(
                                         Ok(old_name) => {
                                             // Close the pre-rename uri's LSP doc;
                                             // the new one didOpens next iteration.
-                                            if let (Some(client), Some((old_conn, old))) =
-                                                (&lsp, old_name)
-                                            {
-                                                client.close_document(&tab_lsp_uri(
-                                                    old_conn.as_deref(),
-                                                    &old,
-                                                ));
-                                            }
-                                            let prepared =
-                                                state.lock().unwrap().prepare_save_active_tab();
-                                            match prepared {
-                                                Ok(pending) => {
-                                                    let name = pending.name.clone();
-                                                    let idx = pending.tab_index;
-                                                    let commit =
-                                                        tokio::task::spawn_blocking(move || {
-                                                            pending.commit()
-                                                        })
-                                                        .await
-                                                        .unwrap_or_else(|e| {
-                                                            Err(std::io::Error::other(format!(
-                                                                "spawn_blocking join error: {e}"
-                                                            )))
-                                                        });
-                                                    match commit {
-                                                        Ok(()) => {
-                                                            if let Some(i) = idx {
-                                                                state
-                                                                    .lock()
-                                                                    .unwrap()
-                                                                    .mark_tab_saved(i);
-                                                            }
-                                                            editor_dirty = false;
-                                                            toasts.push((
-                                                                format!("Saved {name}"),
-                                                                ToastKind::Info,
-                                                                std::time::Instant::now(),
-                                                            ));
-                                                        }
-                                                        Err(e) => toasts.push((
-                                                            format!("Save failed: {e}"),
-                                                            ToastKind::Error,
-                                                            std::time::Instant::now(),
-                                                        )),
-                                                    }
-                                                }
-                                                Err(e) => toasts.push((
-                                                    format!("Save failed: {e}"),
-                                                    ToastKind::Error,
-                                                    std::time::Instant::now(),
-                                                )),
+                                            close_tab_lsp_doc(&lsp, old_name);
+                                            if save_active_tab(&state, &mut toasts).await {
+                                                editor_dirty = false;
                                             }
                                         }
-                                        Err(e) => toasts.push((
-                                            format!("Rename failed: {e}"),
+                                        Err(e) => toast(
+                                            &mut toasts,
                                             ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        )),
+                                            format!("Rename failed: {e}"),
+                                        ),
                                     }
                                 }
                             }
@@ -2831,25 +2731,18 @@ async fn run_loop(
                                 };
                                 match renamed {
                                     Ok(old_name) => {
-                                        if let (Some(client), Some((old_conn, old))) =
-                                            (&lsp, old_name)
-                                        {
-                                            client.close_document(&tab_lsp_uri(
-                                                old_conn.as_deref(),
-                                                &old,
-                                            ));
-                                        }
-                                        toasts.push((
-                                            format!("Renamed to {name}"),
+                                        close_tab_lsp_doc(&lsp, old_name);
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Info,
-                                            std::time::Instant::now(),
-                                        ));
+                                            format!("Renamed to {name}"),
+                                        );
                                     }
-                                    Err(e) => toasts.push((
-                                        format!("Rename failed: {e}"),
+                                    Err(e) => toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    )),
+                                        format!("Rename failed: {e}"),
+                                    ),
                                 }
                             }
                             // `:put [{reg}]` — paste register contents as new
@@ -2868,11 +2761,11 @@ async fn run_loop(
                                         }
                                         editor_dirty = true;
                                     }
-                                    _ => toasts.push((
-                                        format!("Nothing in register {reg}"),
+                                    _ => toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    )),
+                                        format!("Nothing in register {reg}"),
+                                    ),
                                 }
                             }
                             // `:redraw[!]` — repaint next frame; `!` clears
@@ -2886,14 +2779,10 @@ async fn run_loop(
                             // `:cd [{path}]` — hjkl-ex already chdir'd; just
                             // surface the new working directory.
                             hjkl_ex::ExEffect::Cwd(path) => {
-                                toasts.push((
-                                    format!("cwd: {path}"),
-                                    ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                toast(&mut toasts, ToastKind::Info, format!("cwd: {path}"));
                             }
                             hjkl_ex::ExEffect::InfoTitled { content, .. } => {
-                                toasts.push((content, ToastKind::Info, std::time::Instant::now()));
+                                toast(&mut toasts, ToastKind::Info, content);
                             }
                             // `:e <name>` — open a saved query from sqeel's
                             // queries dir, mirroring the file-picker path.
@@ -2903,11 +2792,11 @@ async fn run_loop(
                                     .map(|s| s.to_string_lossy().into_owned())
                                     .unwrap_or_default();
                                 if name.is_empty() {
-                                    toasts.push((
-                                        ":e needs a file name".to_string(),
+                                    toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                        ":e needs a file name".to_string(),
+                                    );
                                 } else {
                                     let mut s = state.lock().unwrap();
                                     if editor_dirty {
@@ -2932,11 +2821,11 @@ async fn run_loop(
                                         let idx = s.tabs.len() - 1;
                                         s.switch_to_tab(idx);
                                     } else {
-                                        toasts.push((
-                                            format!("no saved query named {name}"),
+                                        toast(
+                                            &mut toasts,
                                             ToastKind::Error,
-                                            std::time::Instant::now(),
-                                        ));
+                                            format!("no saved query named {name}"),
+                                        );
                                     }
                                 }
                             }
@@ -2944,21 +2833,21 @@ async fn run_loop(
                             // separately from the wildcard so the toast
                             // doesn't Debug-dump the whole match list.
                             hjkl_ex::ExEffect::SubstituteConfirm { .. } => {
-                                toasts.push((
+                                toast(
+                                    &mut toasts,
+                                    ToastKind::Error,
                                     ":s///c confirm mode not supported in sqeel — use :s///g"
                                         .to_string(),
-                                    ToastKind::Error,
-                                    std::time::Instant::now(),
-                                ));
+                                );
                             }
                             // Quickfix / location lists, buffer ops, cwd, …
                             // — hjkl-app machinery sqeel doesn't model.
                             other => {
-                                toasts.push((
-                                    format!("unsupported in sqeel: {other:?}"),
+                                toast(
+                                    &mut toasts,
                                     ToastKind::Error,
-                                    std::time::Instant::now(),
-                                ));
+                                    format!("unsupported in sqeel: {other:?}"),
+                                );
                             }
                         }
                         continue;
@@ -2988,20 +2877,14 @@ async fn run_loop(
                                     // The old uri's LSP document is orphaned by
                                     // the rename — close it server-side. The new
                                     // uri didOpens on the next loop iteration.
-                                    if let (Some(client), Some((old_conn, old))) = (&lsp, old_name)
-                                    {
-                                        client.close_document(&tab_lsp_uri(
-                                            old_conn.as_deref(),
-                                            &old,
-                                        ));
-                                    }
+                                    close_tab_lsp_doc(&lsp, old_name);
                                 }
                                 Err(e) => {
-                                    toasts.push((
-                                        format!("Rename failed: {e}"),
+                                    toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                        format!("Rename failed: {e}"),
+                                    );
                                 }
                             }
                         }
@@ -3032,20 +2915,14 @@ async fn run_loop(
                                 Ok(old_name) => {
                                     // Close the deleted tab's LSP document so
                                     // the server doesn't keep analysing it.
-                                    if let (Some(client), Some((old_conn, old))) = (&lsp, old_name)
-                                    {
-                                        client.close_document(&tab_lsp_uri(
-                                            old_conn.as_deref(),
-                                            &old,
-                                        ));
-                                    }
+                                    close_tab_lsp_doc(&lsp, old_name);
                                 }
                                 Err(e) => {
-                                    toasts.push((
-                                        format!("Delete failed: {e}"),
+                                    toast(
+                                        &mut toasts,
                                         ToastKind::Error,
-                                        std::time::Instant::now(),
-                                    ));
+                                        format!("Delete failed: {e}"),
+                                    );
                                 }
                             }
                         }
@@ -3140,11 +3017,7 @@ async fn run_loop(
                                 hover_search_pattern = Some(text);
                                 drop(s);
                                 if !found {
-                                    toasts.push((
-                                        "Pattern not found".into(),
-                                        ToastKind::Info,
-                                        std::time::Instant::now(),
-                                    ));
+                                    toast(&mut toasts, ToastKind::Info, "Pattern not found");
                                 }
                             }
                         }
@@ -3179,11 +3052,7 @@ async fn run_loop(
                             results_search_pattern = Some(text);
                             drop(s);
                             if !found {
-                                toasts.push((
-                                    "Pattern not found".into(),
-                                    ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                toast(&mut toasts, ToastKind::Info, "Pattern not found");
                             }
                         }
                         continue;
@@ -3307,11 +3176,11 @@ async fn run_loop(
                         }
                         KeyCode::Esc => {
                             sqls_prompt_open = false;
-                            toasts.push((
-                                format!("LSP: {} missing", lsp_binary),
+                            toast(
+                                &mut toasts,
                                 ToastKind::Info,
-                                std::time::Instant::now(),
-                            ));
+                                format!("LSP: {} missing", lsp_binary),
+                            );
                         }
                         KeyCode::Char('y') | KeyCode::Char('Y') if mods_letter_ok => {
                             sqls_prompt_open = false;
@@ -3319,11 +3188,11 @@ async fn run_loop(
                         }
                         KeyCode::Char('n') | KeyCode::Char('N') if mods_letter_ok => {
                             sqls_prompt_open = false;
-                            toasts.push((
-                                format!("LSP: {} missing", lsp_binary),
+                            toast(
+                                &mut toasts,
                                 ToastKind::Info,
-                                std::time::Instant::now(),
-                            ));
+                                format!("LSP: {} missing", lsp_binary),
+                            );
                         }
                         _ => {}
                     }
@@ -3786,11 +3655,7 @@ async fn run_loop(
                             let mut s = state.lock().unwrap();
                             if !s.hover_find(&pat, true, true) {
                                 drop(s);
-                                toasts.push((
-                                    "Pattern not found".into(),
-                                    ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                toast(&mut toasts, ToastKind::Info, "Pattern not found");
                             }
                         }
                     }
@@ -3802,11 +3667,7 @@ async fn run_loop(
                             let mut s = state.lock().unwrap();
                             if !s.hover_find(&pat, false, true) {
                                 drop(s);
-                                toasts.push((
-                                    "Pattern not found".into(),
-                                    ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                toast(&mut toasts, ToastKind::Info, "Pattern not found");
                             }
                         }
                     }
@@ -3816,19 +3677,19 @@ async fn run_loop(
                             let ok = clipboard
                                 .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
                                 .is_ok();
-                            toasts.push((
-                                if ok {
-                                    format!("{label} copied to clipboard")
-                                } else {
-                                    format!("{label}: clipboard copy failed (too large)")
-                                },
+                            toast(
+                                &mut toasts,
                                 if ok {
                                     ToastKind::Info
                                 } else {
                                     ToastKind::Error
                                 },
-                                std::time::Instant::now(),
-                            ));
+                                if ok {
+                                    format!("{label} copied to clipboard")
+                                } else {
+                                    format!("{label}: clipboard copy failed (too large)")
+                                },
+                            );
                         }
                     }
                     // Results pane navigation. Arrow keys mirror hjkl.
@@ -3939,11 +3800,7 @@ async fn run_loop(
                             let mut s = state.lock().unwrap();
                             if !s.results_find(&pat, true, true) {
                                 drop(s);
-                                toasts.push((
-                                    "Pattern not found".into(),
-                                    ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                toast(&mut toasts, ToastKind::Info, "Pattern not found");
                             }
                         }
                     }
@@ -3955,11 +3812,7 @@ async fn run_loop(
                             let mut s = state.lock().unwrap();
                             if !s.results_find(&pat, false, true) {
                                 drop(s);
-                                toasts.push((
-                                    "Pattern not found".into(),
-                                    ToastKind::Info,
-                                    std::time::Instant::now(),
-                                ));
+                                toast(&mut toasts, ToastKind::Info, "Pattern not found");
                             }
                         }
                     }
@@ -4050,19 +3903,19 @@ async fn run_loop(
                             let ok = clipboard
                                 .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
                                 .is_ok();
-                            toasts.push((
-                                if ok {
-                                    format!("{label} copied to clipboard")
-                                } else {
-                                    format!("{label}: clipboard copy failed (too large)")
-                                },
+                            toast(
+                                &mut toasts,
                                 if ok {
                                     ToastKind::Info
                                 } else {
                                     ToastKind::Error
                                 },
-                                now,
-                            ));
+                                if ok {
+                                    format!("{label} copied to clipboard")
+                                } else {
+                                    format!("{label}: clipboard copy failed (too large)")
+                                },
+                            );
                         }
                     }
                     // On error tab: Enter jumps editor cursor to the reported line:col
@@ -4231,19 +4084,19 @@ async fn run_loop(
                             let ok = clipboard
                                 .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
                                 .is_ok();
-                            toasts.push((
-                                if ok {
-                                    "Yanked to clipboard".to_string()
-                                } else {
-                                    "Yank: clipboard copy failed (too large)".to_string()
-                                },
+                            toast(
+                                &mut toasts,
                                 if ok {
                                     ToastKind::Info
                                 } else {
                                     ToastKind::Error
                                 },
-                                std::time::Instant::now(),
-                            ));
+                                if ok {
+                                    "Yanked to clipboard".to_string()
+                                } else {
+                                    "Yank: clipboard copy failed (too large)".to_string()
+                                },
+                            );
                         }
                     }
                     _ => {}
@@ -4287,6 +4140,54 @@ async fn run_loop(
         client.shutdown().await;
     }
     Ok(())
+}
+
+/// Prepare + commit the ACTIVE tab's save on a blocking task (multi-MB
+/// writes must not freeze the render loop), mark it saved, and toast the
+/// result. Returns `true` when the write landed so callers can clear
+/// their local dirty flag. Callers sync `editor_content` into state
+/// first.
+async fn save_active_tab(state: &Arc<Mutex<AppState>>, toasts: &mut Vec<Toast>) -> bool {
+    let prepared = state.lock().unwrap().prepare_save_active_tab();
+    match prepared {
+        Ok(pending) => {
+            let name = pending.name.clone();
+            let idx = pending.tab_index;
+            let commit = tokio::task::spawn_blocking(move || pending.commit())
+                .await
+                .unwrap_or_else(|e| {
+                    Err(std::io::Error::other(format!(
+                        "spawn_blocking join error: {e}"
+                    )))
+                });
+            match commit {
+                Ok(()) => {
+                    if let Some(i) = idx {
+                        state.lock().unwrap().mark_tab_saved(i);
+                    }
+                    toast(toasts, ToastKind::Info, format!("Saved {name}"));
+                    true
+                }
+                Err(e) => {
+                    toast(toasts, ToastKind::Error, format!("Save failed: {e}"));
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            toast(toasts, ToastKind::Error, format!("Save failed: {e}"));
+            false
+        }
+    }
+}
+
+/// didClose the LSP document identified by a captured
+/// `(connection, tab name)` pair — the shape every rename/delete site
+/// grabs before mutating the tab. No-op without a client or identity.
+fn close_tab_lsp_doc(lsp: &Option<LspClient>, identity: Option<(Option<String>, String)>) {
+    if let (Some(client), Some((conn, name))) = (lsp, identity) {
+        client.close_document(&tab_lsp_uri(conn.as_deref(), &name));
+    }
 }
 
 /// Commit each [`PendingSave`] on a blocking task so multi-MB writes

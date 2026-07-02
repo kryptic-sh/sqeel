@@ -987,6 +987,20 @@ fn scan_gap_for_keywords(
     }
 }
 
+/// Split `source` into the runnable statements, in order: top-level
+/// statement ranges, trimmed, with empty and comment-only entries
+/// dropped. This is THE definition of "what runs" for a buffer — shared
+/// by the TUI's run-all and the headless `-e` runner so they can't
+/// disagree.
+pub fn split_statements(source: &str) -> Vec<String> {
+    statement_ranges(source)
+        .into_iter()
+        .map(|(s, e)| source[s..e].trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| !strip_sql_comments(s).trim().is_empty())
+        .collect()
+}
+
 /// Parse `source` and return the byte ranges of each top-level statement.
 pub fn statement_ranges(source: &str) -> Vec<(usize, usize)> {
     let mut parser = Parser::new();

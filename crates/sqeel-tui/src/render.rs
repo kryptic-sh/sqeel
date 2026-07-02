@@ -268,6 +268,15 @@ pub(crate) enum ToastKind {
     Info,
 }
 
+/// One entry in the event loop's toast queue: message, severity, and the
+/// arrival instant the 5s expiry runs against.
+pub(crate) type Toast = (String, ToastKind, std::time::Instant);
+
+/// Queue a toast. The single place that knows the tuple shape.
+pub(crate) fn toast(toasts: &mut Vec<Toast>, kind: ToastKind, msg: impl Into<String>) {
+    toasts.push((msg.into(), kind, std::time::Instant::now()));
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum CursorShape {
     #[default]
