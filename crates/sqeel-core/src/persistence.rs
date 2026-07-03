@@ -248,7 +248,11 @@ pub fn export_csv(result: &QueryResult) -> String {
     let mut out = String::new();
     out.push_str(&csv_row(&result.columns));
     for row in &result.rows {
-        out.push_str(&csv_row(row));
+        let display: Vec<String> = row
+            .iter()
+            .map(|c| crate::state::cell_display(c).to_string())
+            .collect();
+        out.push_str(&csv_row(&display));
     }
     out
 }
@@ -318,7 +322,7 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         let result = QueryResult {
             columns: vec!["id".into()],
-            rows: vec![vec!["1".into()]],
+            rows: vec![vec![Some("1".into())]],
             col_widths: vec![],
             limited: false,
         };
@@ -352,7 +356,7 @@ mod tests {
         // Test that QueryResult (success) serializes and deserializes correctly.
         let result = QueryResult {
             columns: vec!["col".into()],
-            rows: vec![vec!["val".into()]],
+            rows: vec![vec![Some("val".into())]],
             col_widths: vec![],
             limited: false,
         };
@@ -382,8 +386,8 @@ mod tests {
         let result = QueryResult {
             columns: vec!["id".into(), "name".into()],
             rows: vec![
-                vec!["1".into(), "Alice".into()],
-                vec!["2".into(), "Bob".into()],
+                vec![Some("1".into()), Some("Alice".into())],
+                vec![Some("2".into()), Some("Bob".into())],
             ],
             col_widths: vec![],
             limited: false,
@@ -396,7 +400,10 @@ mod tests {
     fn export_csv_escapes_commas_and_quotes() {
         let result = QueryResult {
             columns: vec!["val".into()],
-            rows: vec![vec!["hello, world".into()], vec!["say \"hi\"".into()]],
+            rows: vec![
+                vec![Some("hello, world".into())],
+                vec![Some("say \"hi\"".into())],
+            ],
             col_widths: vec![],
             limited: false,
         };
@@ -409,7 +416,7 @@ mod tests {
     fn export_json_round_trip() {
         let result = QueryResult {
             columns: vec!["x".into()],
-            rows: vec![vec!["42".into()]],
+            rows: vec![vec![Some("42".into())]],
             col_widths: vec![],
             limited: false,
         };

@@ -229,7 +229,9 @@ pub enum Focus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    /// Row cells; `None` is SQL NULL (serializes as JSON `null`).
+    /// Use [`cell_display`] for the user-facing string.
+    pub rows: Vec<Vec<Option<String>>>,
     #[serde(skip)]
     pub col_widths: Vec<u16>,
     /// True when the auto-LIMIT rewrite was applied AND the row count hit
@@ -237,6 +239,12 @@ pub struct QueryResult {
     /// rows" marker in the results title.
     #[serde(default)]
     pub limited: bool,
+}
+
+/// User-facing text for a result cell: the value, or the `NULL`
+/// sentinel for SQL NULL. The single place that decides how NULL reads.
+pub fn cell_display(cell: &Option<String>) -> &str {
+    cell.as_deref().unwrap_or("NULL")
 }
 
 impl QueryResult {
@@ -249,7 +257,7 @@ impl QueryResult {
                 let max_data = self
                     .rows
                     .iter()
-                    .map(|row| row.get(i).map(|s| s.len()).unwrap_or(0))
+                    .map(|row| row.get(i).map(|s| cell_display(s).len()).unwrap_or(0))
                     .max()
                     .unwrap_or(0);
                 (col.len().max(max_data) + 2).min(u16::MAX as usize) as u16
@@ -771,7 +779,7 @@ impl AppState {
         }
         match &tab.kind {
             ResultsPane::Results(r) if r.rows.len() == 1 && r.columns.len() >= 2 => {
-                r.rows[0].last().map(|s| s.as_str())
+                r.rows[0].last().map(cell_display)
             }
             _ => None,
         }
@@ -1267,6 +1275,11 @@ impl AppState {
                 }
             }
         }
+        // Markdown-sourced tables have no SQL NULLs — every cell is text.
+        let rows = rows
+            .into_iter()
+            .map(|r| r.into_iter().map(Some).collect())
+            .collect();
         Some(QueryResult {
             columns: header,
             rows,
@@ -1378,6 +1391,11 @@ impl AppState {
                         }
                     }
                 }
+                // Markdown-sourced tables have no SQL NULLs.
+                let rows = rows
+                    .into_iter()
+                    .map(|r| r.into_iter().map(Some).collect())
+                    .collect();
                 return Some(QueryResult {
                     columns: header,
                     rows,
@@ -1756,7 +1774,7 @@ impl AppState {
                     if c > left {
                         out.push('\t');
                     }
-                    out.push_str(row.get(c).map(|s| s.as_str()).unwrap_or(""));
+                    out.push_str(row.get(c).map(cell_display).unwrap_or(""));
                 }
                 if r < bot.min(t.rows.len() - 1) {
                     out.push('\n');
@@ -1770,8 +1788,9 @@ impl AppState {
                 .rows
                 .get(row)
                 .and_then(|r| r.get(col))
-                .cloned()
-                .unwrap_or_default();
+                .map(cell_display)
+                .unwrap_or_default()
+                .to_string();
             return Some((v, "Cell"));
         }
         None
@@ -1815,7 +1834,7 @@ impl AppState {
             let col = probe % total_cols;
             let cell = r.rows.get(row).and_then(|r| r.get(col));
             if let Some(v) = cell
-                && v.to_lowercase().contains(&needle_lc)
+                && cell_display(v).to_lowercase().contains(&needle_lc)
             {
                 tab.cursor = ResultsCursor::Cell { row, col };
                 return true;
@@ -1857,7 +1876,7 @@ impl AppState {
                 let col = probe % total_cols;
                 let cell = t.rows.get(row).and_then(|r| r.get(col));
                 if let Some(v) = cell
-                    && v.to_lowercase().contains(&needle_lc)
+                    && cell_display(v).to_lowercase().contains(&needle_lc)
                 {
                     found = Some((row, col));
                     break;
@@ -1908,7 +1927,8 @@ impl AppState {
             _ => return None,
         };
         let row = r.rows.get(row_idx)?;
-        Some((row.join("\t"), "Row"))
+        let text = row.iter().map(cell_display).collect::<Vec<_>>().join("\t");
+        Some((text, "Row"))
     }
 
     /// Return the text currently under the results cursor + a short label used
@@ -1924,7 +1944,7 @@ impl AppState {
                 .rows
                 .get(row)
                 .and_then(|r| r.get(col))
-                .map(|s| (s.clone(), "Value")),
+                .map(|s| (cell_display(s).to_string(), "Value")),
             (ResultsPane::Error(e), ResultsCursor::MessageLine(i)) => {
                 e.lines().nth(i).map(|s| (s.to_string(), "Line"))
             }
@@ -2021,7 +2041,7 @@ impl AppState {
                 }
                 first = false;
                 if let Some(cell) = row.get(col_idx) {
-                    out.push_str(cell);
+                    out.push_str(cell_display(cell));
                 }
             }
             if row_idx < bot {
@@ -4386,7 +4406,7 @@ mod tests {
         let mut s = state.lock().unwrap();
         s.set_results(QueryResult {
             columns: vec!["id".into()],
-            rows: vec![vec!["1".into()]],
+            rows: vec![vec![Some("1".into())]],
             col_widths: vec![],
             limited: false,
         });
@@ -4409,7 +4429,11 @@ mod tests {
         let mut s = state.lock().unwrap();
         s.set_results(QueryResult {
             columns: vec!["id".into()],
-            rows: vec![vec!["1".into()], vec!["2".into()], vec!["3".into()]],
+            rows: vec![
+                vec![Some("1".into())],
+                vec![Some("2".into())],
+                vec![Some("3".into())],
+            ],
             col_widths: vec![],
             limited: false,
         });
@@ -4432,9 +4456,9 @@ mod tests {
         s.set_results(QueryResult {
             columns: vec!["a".into(), "b".into(), "c".into()],
             rows: vec![
-                vec!["1".into(), "2".into(), "3".into()],
-                vec!["4".into(), "5".into(), "6".into()],
-                vec!["7".into(), "8".into(), "9".into()],
+                vec![Some("1".into()), Some("2".into()), Some("3".into())],
+                vec![Some("4".into()), Some("5".into()), Some("6".into())],
+                vec![Some("7".into()), Some("8".into()), Some("9".into())],
             ],
             col_widths: vec![],
             limited: false,
@@ -4454,9 +4478,9 @@ mod tests {
         s.set_results(QueryResult {
             columns: vec!["a".into(), "b".into(), "c".into()],
             rows: vec![
-                vec!["1".into(), "2".into(), "3".into()],
-                vec!["4".into(), "5".into(), "6".into()],
-                vec!["7".into(), "8".into(), "9".into()],
+                vec![Some("1".into()), Some("2".into()), Some("3".into())],
+                vec![Some("4".into()), Some("5".into()), Some("6".into())],
+                vec![Some("7".into()), Some("8".into()), Some("9".into())],
             ],
             col_widths: vec![],
             limited: false,
@@ -4476,8 +4500,8 @@ mod tests {
         s.set_results(QueryResult {
             columns: vec!["a".into(), "b".into(), "c".into()],
             rows: vec![
-                vec!["1".into(), "2".into(), "3".into()],
-                vec!["4".into(), "5".into(), "6".into()],
+                vec![Some("1".into()), Some("2".into()), Some("3".into())],
+                vec![Some("4".into()), Some("5".into()), Some("6".into())],
             ],
             col_widths: vec![],
             limited: false,
@@ -4496,7 +4520,7 @@ mod tests {
         let mut s = state.lock().unwrap();
         s.set_results(QueryResult {
             columns: vec!["x".into()],
-            rows: vec![vec!["1".into()]],
+            rows: vec![vec![Some("1".into())]],
             col_widths: vec![],
             limited: false,
         });
@@ -4514,7 +4538,13 @@ mod tests {
             s.set_results(QueryResult {
                 columns: vec!["a".into(), "b".into(), "c".into()],
                 rows: (0..5)
-                    .map(|i| vec![format!("{i}a"), format!("{i}b"), format!("{i}c")])
+                    .map(|i| {
+                        vec![
+                            Some(format!("{i}a")),
+                            Some(format!("{i}b")),
+                            Some(format!("{i}c")),
+                        ]
+                    })
                     .collect(),
                 col_widths: vec![],
                 limited: false,
@@ -4602,7 +4632,7 @@ mod tests {
         let mut s = state.lock().unwrap();
         s.set_results(QueryResult {
             columns: vec!["x".into()],
-            rows: vec![vec!["Alpha".into()], vec!["beta".into()]],
+            rows: vec![vec![Some("Alpha".into())], vec![Some("beta".into())]],
             col_widths: vec![],
             limited: false,
         });
@@ -4628,16 +4658,16 @@ trailing prose ignored";
         let t = AppState::parse_hover_table(text).expect("table parsed");
         assert_eq!(t.columns, vec!["name", "type"]);
         assert_eq!(t.rows.len(), 2);
-        assert_eq!(t.rows[0], vec!["id", "int"]);
-        assert_eq!(t.rows[1], vec!["name", "text"]);
+        assert_eq!(t.rows[0], vec![Some("id".into()), Some("int".into())]);
+        assert_eq!(t.rows[1], vec![Some("name".into()), Some("text".into())]);
     }
 
     #[test]
     fn parse_hover_table_strips_inline_backticks() {
         let text = "| name | type |\n| ---- | ---- |\n| `id` | `int` |\n| **pk** | _bool_ |";
         let t = AppState::parse_hover_table(text).expect("table parsed");
-        assert_eq!(t.rows[0], vec!["id", "int"]);
-        assert_eq!(t.rows[1], vec!["pk", "bool"]);
+        assert_eq!(t.rows[0], vec![Some("id".into()), Some("int".into())]);
+        assert_eq!(t.rows[1], vec![Some("pk".into()), Some("bool".into())]);
     }
 
     #[test]
@@ -4653,7 +4683,7 @@ trailing prose ignored";
         s.focus = Focus::Editor;
         let t = QueryResult {
             columns: vec!["a".into()],
-            rows: vec![vec!["x".into()]],
+            rows: vec![vec![Some("x".into())]],
             col_widths: vec![3],
             limited: false,
         };
@@ -4670,7 +4700,7 @@ trailing prose ignored";
         s.focus = Focus::Editor;
         let t = QueryResult {
             columns: vec!["a".into()],
-            rows: vec![vec!["x".into()]],
+            rows: vec![vec![Some("x".into())]],
             col_widths: vec![3],
             limited: false,
         };
@@ -4686,7 +4716,10 @@ trailing prose ignored";
         let mut s = state.lock().unwrap();
         let t = QueryResult {
             columns: vec!["a".into(), "b".into()],
-            rows: vec![vec!["1".into(), "2".into()], vec!["3".into(), "4".into()]],
+            rows: vec![
+                vec![Some("1".into()), Some("2".into())],
+                vec![Some("3".into()), Some("4".into())],
+            ],
             col_widths: vec![3, 3],
             limited: false,
         };
@@ -4703,7 +4736,7 @@ trailing prose ignored";
         let mut s = state.lock().unwrap();
         let t = QueryResult {
             columns: vec!["a".into(), "b".into()],
-            rows: vec![vec!["x".into(), "y".into()]],
+            rows: vec![vec![Some("x".into()), Some("y".into())]],
             col_widths: vec![3, 3],
             limited: false,
         };

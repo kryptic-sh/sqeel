@@ -9,6 +9,7 @@ use sqeel_core::{
     ddl::parse_ddl,
     persistence::{evict_old_results, load_result_for, sanitize_conn_slug},
     schema::SchemaNode,
+    state::cell_display,
     state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest},
 };
 
@@ -698,7 +699,11 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
                 .map(|(i, col)| {
                     r.rows
                         .iter()
-                        .map(|row| row.get(i).map(|s| s.chars().count()).unwrap_or(0))
+                        .map(|row| {
+                            row.get(i)
+                                .map(|s| cell_display(s).chars().count())
+                                .unwrap_or(0)
+                        })
                         .max()
                         .unwrap_or(0)
                         .max(col.chars().count())
@@ -724,7 +729,9 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
                     .join("  ")
             );
             for row in &r.rows {
-                println!("{}", fmt_row(row));
+                let display: Vec<String> =
+                    row.iter().map(|c| cell_display(c).to_string()).collect();
+                println!("{}", fmt_row(&display));
             }
         }
         OutputFormat::Csv => {
@@ -746,7 +753,10 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
             for row in &r.rows {
                 println!(
                     "{}",
-                    row.iter().map(|c| esc(c)).collect::<Vec<_>>().join(",")
+                    row.iter()
+                        .map(|c| esc(cell_display(c)))
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
             }
         }
@@ -759,7 +769,15 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
                         .columns
                         .iter()
                         .zip(row.iter())
-                        .map(|(c, v)| (c.clone(), serde_json::Value::String(v.clone())))
+                        .map(|(c, v)| {
+                            // SQL NULL → real JSON null (the whole point of
+                            // typed cells for machine consumers).
+                            let value = match v {
+                                Some(text) => serde_json::Value::String(text.clone()),
+                                None => serde_json::Value::Null,
+                            };
+                            (c.clone(), value)
+                        })
                         .collect();
                     serde_json::Value::Object(map)
                 })

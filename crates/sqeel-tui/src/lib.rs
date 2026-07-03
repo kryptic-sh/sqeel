@@ -4385,7 +4385,7 @@ mod tests {
         let mut s = state.lock().unwrap();
         s.set_results(QueryResult {
             columns: vec!["col".into()],
-            rows: vec![vec!["val".into()]],
+            rows: vec![vec![Some("val".into())]],
             col_widths: vec![],
             limited: false,
         });
@@ -5265,7 +5265,7 @@ mod tests {
 
     // ── :export command tests ────────────────────────────────────────────────
 
-    fn make_state_with_result(rows: Vec<Vec<String>>) -> AppState {
+    fn make_state_with_result(rows: Vec<Vec<Option<String>>>) -> AppState {
         let mut s = AppState::default();
         s.set_results(QueryResult {
             columns: vec!["a".to_string(), "b".to_string()],
@@ -5304,8 +5304,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("out.csv");
         let s = make_state_with_result(vec![
-            vec!["1".to_string(), "alpha".to_string()],
-            vec!["2".to_string(), "beta".to_string()],
+            vec![Some("1".to_string()), Some("alpha".to_string())],
+            vec![Some("2".to_string()), Some("beta".to_string())],
         ]);
         let mut toasts = vec![];
         let cmd = format!("export csv {}", path.display());
@@ -5325,7 +5325,7 @@ mod tests {
     fn export_json_explicit_path_writes_file() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("out.json");
-        let s = make_state_with_result(vec![vec!["x".to_string(), "y".to_string()]]);
+        let s = make_state_with_result(vec![vec![Some("x".to_string()), Some("y".to_string())]]);
         let mut toasts = vec![];
         let cmd = format!("export json {}", path.display());
         let result = super::handle_export_cmd(&cmd, &s, &mut toasts);

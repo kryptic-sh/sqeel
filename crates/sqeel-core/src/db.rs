@@ -440,7 +440,7 @@ impl DbConnection {
                 let conn = Arc::clone(c);
                 let q = query.to_string();
                 tokio::task::spawn_blocking(
-                    move || -> anyhow::Result<(Vec<String>, Vec<Vec<String>>)> {
+                    move || -> anyhow::Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
                         let conn = conn
                             .lock()
                             .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
@@ -453,7 +453,7 @@ impl DbConnection {
                         let cols: Vec<String> =
                             rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
                         let col_count = cols.len();
-                        let mut data: Vec<Vec<String>> = Vec::new();
+                        let mut data: Vec<Vec<Option<String>>> = Vec::new();
                         while let Some(row) = rows.next()? {
                             let mut cells = Vec::with_capacity(col_count);
                             for i in 0..col_count {
@@ -1025,74 +1025,74 @@ fn bytes_to_display(v: &[u8]) -> String {
     }
 }
 
-fn decode_mysql(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
+fn decode_mysql(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<String> {
     if raw_is_null!(row, idx) {
-        return "NULL".into();
+        return None;
     }
     let ty = row.columns()[idx].type_info().name().to_ascii_uppercase();
     match ty.as_str() {
         "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" => {
             if let Ok(v) = row.try_get::<i64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TINYINT UNSIGNED" | "SMALLINT UNSIGNED" | "MEDIUMINT UNSIGNED" | "INT UNSIGNED"
         | "BIGINT UNSIGNED" => {
             if let Ok(v) = row.try_get::<u64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "BOOLEAN" => {
             if let Ok(v) = row.try_get::<bool, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "FLOAT" | "DOUBLE" => {
             if let Ok(v) = row.try_get::<f64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "DECIMAL" | "NUMERIC" => {
             if let Ok(v) = row.try_get::<bigdecimal::BigDecimal, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "DATE" => {
             if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TIME" => {
             if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "DATETIME" => {
             if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TIMESTAMP" => {
             if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx) {
-                return v.to_rfc3339();
+                return Some(v.to_rfc3339());
             }
             if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "JSON" => {
             if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" => {
             if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
-                return bytes_to_display(&v);
+                return Some(bytes_to_display(&v));
             }
         }
         "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
             if let Ok(v) = row.try_get::<String, _>(idx) {
-                return v;
+                return Some(v);
             }
         }
         _ => {}
@@ -1100,232 +1100,232 @@ fn decode_mysql(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
     // Fallback probe ladder — bool moved after numerics so integer columns
     // with unknown type names don't get stringified as true/false.
     if let Ok(v) = row.try_get::<String, _>(idx) {
-        return v;
+        return Some(v);
     }
     if let Ok(v) = row.try_get::<i64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<u64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<f64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<bigdecimal::BigDecimal, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx) {
-        return v.to_rfc3339();
+        return Some(v.to_rfc3339());
     }
     if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<bool, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
-        return bytes_to_display(&v);
+        return Some(bytes_to_display(&v));
     }
-    "?".into()
+    Some("?".into())
 }
 
-fn decode_pg(row: &sqlx::postgres::PgRow, idx: usize) -> String {
+fn decode_pg(row: &sqlx::postgres::PgRow, idx: usize) -> Option<String> {
     if raw_is_null!(row, idx) {
-        return "NULL".into();
+        return None;
     }
     let ty = row.columns()[idx].type_info().name().to_ascii_uppercase();
     match ty.as_str() {
         "BOOL" => {
             if let Ok(v) = row.try_get::<bool, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "INT2" => {
             if let Ok(v) = row.try_get::<i16, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "INT4" => {
             if let Ok(v) = row.try_get::<i32, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "INT8" => {
             if let Ok(v) = row.try_get::<i64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "FLOAT4" => {
             if let Ok(v) = row.try_get::<f32, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "FLOAT8" => {
             if let Ok(v) = row.try_get::<f64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "NUMERIC" => {
             if let Ok(v) = row.try_get::<bigdecimal::BigDecimal, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "UUID" => {
             if let Ok(v) = row.try_get::<uuid::Uuid, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "DATE" => {
             if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TIME" => {
             if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TIMESTAMP" => {
             if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TIMESTAMPTZ" => {
             if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx) {
-                return v.to_rfc3339();
+                return Some(v.to_rfc3339());
             }
         }
         "JSON" | "JSONB" => {
             if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "BYTEA" => {
             if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
-                return bytes_to_display(&v);
+                return Some(bytes_to_display(&v));
             }
         }
         "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "CITEXT" => {
             if let Ok(v) = row.try_get::<String, _>(idx) {
-                return v;
+                return Some(v);
             }
         }
         _ => {}
     }
     // Fallback probe ladder — bool moved after numerics.
     if let Ok(v) = row.try_get::<String, _>(idx) {
-        return v;
+        return Some(v);
     }
     if let Ok(v) = row.try_get::<i64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<i32, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<i16, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<f64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<f32, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<bigdecimal::BigDecimal, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<uuid::Uuid, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx) {
-        return v.to_rfc3339();
+        return Some(v.to_rfc3339());
     }
     if let Ok(v) = row.try_get::<serde_json::Value, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<bool, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
-        return bytes_to_display(&v);
+        return Some(bytes_to_display(&v));
     }
-    "?".into()
+    Some("?".into())
 }
 
-fn decode_sqlite(row: &sqlx::sqlite::SqliteRow, idx: usize) -> String {
+fn decode_sqlite(row: &sqlx::sqlite::SqliteRow, idx: usize) -> Option<String> {
     if raw_is_null!(row, idx) {
-        return "NULL".into();
+        return None;
     }
     let ty = row.columns()[idx].type_info().name().to_ascii_uppercase();
     match ty.as_str() {
         "INTEGER" => {
             if let Ok(v) = row.try_get::<i64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "REAL" => {
             if let Ok(v) = row.try_get::<f64, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         "TEXT" => {
             if let Ok(v) = row.try_get::<String, _>(idx) {
-                return v;
+                return Some(v);
             }
         }
         "BLOB" => {
             if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
-                return bytes_to_display(&v);
+                return Some(bytes_to_display(&v));
             }
         }
         "BOOLEAN" => {
             if let Ok(v) = row.try_get::<bool, _>(idx) {
-                return v.to_string();
+                return Some(v.to_string());
             }
         }
         _ => {}
     }
     if let Ok(v) = row.try_get::<String, _>(idx) {
-        return v;
+        return Some(v);
     }
     if let Ok(v) = row.try_get::<i64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<f64, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<bool, _>(idx) {
-        return v.to_string();
+        return Some(v.to_string());
     }
     if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
-        return bytes_to_display(&v);
+        return Some(bytes_to_display(&v));
     }
-    "?".into()
+    Some("?".into())
 }
 
 #[cfg(feature = "duckdb")]
-fn duck_value_to_string(v: duckdb::types::Value) -> String {
+fn duck_value_to_string(v: duckdb::types::Value) -> Option<String> {
     use duckdb::types::Value;
-    match v {
-        Value::Null => "NULL".to_string(),
+    Some(match v {
+        Value::Null => return None,
         Value::Boolean(b) => b.to_string(),
         Value::TinyInt(n) => n.to_string(),
         Value::SmallInt(n) => n.to_string(),
@@ -1342,7 +1342,7 @@ fn duck_value_to_string(v: duckdb::types::Value) -> String {
         Value::Text(s) => s,
         Value::Blob(b) => b.iter().map(|byte| format!("{byte:02x}")).collect(),
         other => format!("{other:?}"),
-    }
+    })
 }
 
 /// Rows added automatically when a SELECT/WITH query has no LIMIT clause.
@@ -1680,8 +1680,8 @@ mod duckdb_tests {
         };
         assert_eq!(qr.columns, vec!["id", "name"]);
         assert_eq!(qr.rows.len(), 2);
-        assert_eq!(qr.rows[0], vec!["1", "alpha"]);
-        assert_eq!(qr.rows[1], vec!["2", "beta"]);
+        assert_eq!(qr.rows[0], vec![Some("1".into()), Some("alpha".into())]);
+        assert_eq!(qr.rows[1], vec![Some("2".into()), Some("beta".into())]);
     }
 
     #[tokio::test]
@@ -1750,7 +1750,7 @@ mod duckdb_tests {
         let ExecOutcome::Rows(qr) = result else {
             panic!("expected rows")
         };
-        assert_eq!(qr.rows[0][0], "NULL");
+        assert_eq!(qr.rows[0][0], None, "SQL NULL must decode to None");
     }
 
     #[tokio::test]

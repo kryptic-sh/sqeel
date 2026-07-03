@@ -769,7 +769,9 @@ pub(crate) fn extract_results_left_click(
                 return None;
             }
             let row_idx = (y - body_y) as usize + state.results_scroll();
-            let value = r.rows.get(row_idx)?.get(col_idx)?.trim().to_string();
+            let value = sqeel_core::state::cell_display(r.rows.get(row_idx)?.get(col_idx)?)
+                .trim()
+                .to_string();
             Some((
                 value,
                 "Value",
@@ -898,7 +900,12 @@ pub(crate) fn extract_results_row(
         return None;
     }
     let row_idx = (y - body_y) as usize + state.results_scroll();
-    r.rows.get(row_idx).map(|row| row.join("\t"))
+    r.rows.get(row_idx).map(|row| {
+        row.iter()
+            .map(sqeel_core::state::cell_display)
+            .collect::<Vec<_>>()
+            .join("\t")
+    })
 }
 
 pub(crate) fn draw_status_bar<H: Host>(
@@ -1557,7 +1564,7 @@ pub(crate) fn draw_results(
             if is_show_create(&query_text)
                 && r.rows.len() == 1
                 && r.columns.len() >= 2
-                && let Some(ddl) = r.rows[0].last()
+                && let Some(Some(ddl)) = r.rows[0].last()
             {
                 let sep_style = Style::default().fg(ui().results_sep);
                 let title = if state.result_tabs.len() > 1 {
@@ -1867,7 +1874,7 @@ pub(crate) fn results_cursor_bg(focused: bool) -> Color {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_grid_lines(
     columns: &[String],
-    rows: &[Vec<String>],
+    rows: &[Vec<Option<String>>],
     col_widths: &[u16],
     cursor_row: Option<usize>,
     active_col: Option<usize>,
@@ -1904,15 +1911,15 @@ pub(crate) fn render_grid_lines(
             for i in 0..col_count {
                 let w = col_widths.get(i).copied().unwrap_or(0) as usize;
                 let inner = w.saturating_sub(1);
-                let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+                let cell_opt = row.get(i);
+                let is_null = matches!(cell_opt, Some(None));
+                let cell = cell_opt.map(sqeel_core::state::cell_display).unwrap_or("");
                 let text = format!(" {:<inner$}", cell, inner = inner);
                 let is_cursor = cursor_row == Some(row_idx) && active_col == Some(i);
                 let is_selected = selection_bounds
                     .is_some_and(|(t, b, l, rr)| row_idx >= t && row_idx <= b && i >= l && i <= rr);
-                // SQL NULLs arrive as the "NULL" sentinel from the decode
-                // layer (all four backends); render them dim so they read
-                // as absent-value rather than the four-letter string.
-                let is_null = cell == "NULL";
+                // SQL NULL (typed as None) renders dim so it reads as
+                // absent-value; a literal 'NULL' text value stays normal.
                 let style = if is_cursor {
                     Some(cursor_style)
                 } else if is_selected {

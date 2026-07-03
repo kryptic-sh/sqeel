@@ -210,3 +210,32 @@ fn man_flag_emits_troff() {
         "man output missing option docs"
     );
 }
+
+#[test]
+fn json_format_emits_real_null_for_sql_null() {
+    let (_dir, url) = db_url("nulls");
+    let out = sqeel()
+        .args([
+            "--url",
+            &url,
+            "-e",
+            "SELECT NULL AS n, 'NULL' AS text_null, '' AS empty;",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn sqeel");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout not JSON");
+    assert!(v[0]["n"].is_null(), "SQL NULL must be JSON null: {v}");
+    assert_eq!(
+        v[0]["text_null"], "NULL",
+        "literal 'NULL' text must stay a string: {v}"
+    );
+    assert_eq!(v[0]["empty"], "", "empty string must stay a string: {v}");
+}
