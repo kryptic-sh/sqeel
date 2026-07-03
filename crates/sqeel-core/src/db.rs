@@ -11,6 +11,10 @@ use std::str::FromStr;
 #[cfg(feature = "duckdb")]
 use std::sync::{Arc, Mutex};
 
+/// Column names + typed row cells, as produced by a row-returning query.
+/// `None` cells are SQL NULL.
+type ColumnsAndRows = (Vec<String>, Vec<Vec<Option<String>>>);
+
 /// Outcome of `DbConnection::execute`. Row-returning queries (SELECT,
 /// SHOW, EXPLAIN, …) produce a `Rows` result; statements that don't
 /// produce a result set (INSERT/UPDATE/DELETE, CREATE/DROP/ALTER, …)
@@ -439,32 +443,30 @@ impl DbConnection {
             Pool::DuckDb(c) => {
                 let conn = Arc::clone(c);
                 let q = query.to_string();
-                tokio::task::spawn_blocking(
-                    move || -> anyhow::Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
-                        let conn = conn
-                            .lock()
-                            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-                        let mut stmt = conn.prepare(&q)?;
-                        // `query([])` executes the statement and returns Rows.
-                        // Column metadata is only available after execution, so we
-                        // read column names through `rows.as_ref()` rather than
-                        // calling `stmt.column_count()` before the query runs.
-                        let mut rows = stmt.query([])?;
-                        let cols: Vec<String> =
-                            rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
-                        let col_count = cols.len();
-                        let mut data: Vec<Vec<Option<String>>> = Vec::new();
-                        while let Some(row) = rows.next()? {
-                            let mut cells = Vec::with_capacity(col_count);
-                            for i in 0..col_count {
-                                let v: duckdb::types::Value = row.get(i)?;
-                                cells.push(duck_value_to_string(v));
-                            }
-                            data.push(cells);
+                tokio::task::spawn_blocking(move || -> anyhow::Result<ColumnsAndRows> {
+                    let conn = conn
+                        .lock()
+                        .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+                    let mut stmt = conn.prepare(&q)?;
+                    // `query([])` executes the statement and returns Rows.
+                    // Column metadata is only available after execution, so we
+                    // read column names through `rows.as_ref()` rather than
+                    // calling `stmt.column_count()` before the query runs.
+                    let mut rows = stmt.query([])?;
+                    let cols: Vec<String> =
+                        rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
+                    let col_count = cols.len();
+                    let mut data: Vec<Vec<Option<String>>> = Vec::new();
+                    while let Some(row) = rows.next()? {
+                        let mut cells = Vec::with_capacity(col_count);
+                        for i in 0..col_count {
+                            let v: duckdb::types::Value = row.get(i)?;
+                            cells.push(duck_value_to_string(v));
                         }
-                        Ok((cols, data))
-                    },
-                )
+                        data.push(cells);
+                    }
+                    Ok((cols, data))
+                })
                 .await??
             }
         };
