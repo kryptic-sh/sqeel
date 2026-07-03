@@ -2177,7 +2177,16 @@ async fn run_loop(
                                     continue;
                                 }
                                 KeyCode::Char('h') => {
-                                    let snapshot = state.lock().unwrap().query_history.clone();
+                                    // Per-connection history: the picker only
+                                    // lists what ran on the active connection.
+                                    let snapshot = {
+                                        let s = state.lock().unwrap();
+                                        s.query_history
+                                            .iter()
+                                            .filter(|e| e.connection == s.active_connection)
+                                            .cloned()
+                                            .collect()
+                                    };
                                     file_picker = open_history_picker(snapshot);
                                     continue;
                                 }

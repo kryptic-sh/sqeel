@@ -409,6 +409,9 @@ pub enum SchemaLoadRequest {
 pub struct HistoryEntry {
     pub query: String,
     pub timestamp: SystemTime,
+    /// Connection that ran the query (per-connection history). Recall
+    /// paths only surface entries matching the active connection.
+    pub connection: Option<String>,
 }
 
 #[derive(Default)]
@@ -4085,6 +4088,7 @@ impl AppState {
             self.query_history.push(HistoryEntry {
                 query: trimmed,
                 timestamp: SystemTime::now(),
+                connection: self.active_connection.clone(),
             });
         }
         if self.query_history.len() > 100 {
@@ -4093,28 +4097,54 @@ impl AppState {
         self.history_cursor = None;
     }
 
-    /// Move cursor back in history and return that query, if available.
+    /// Global indices of history entries belonging to the active
+    /// connection (per-connection history: Ctrl-P/N and the picker only
+    /// recall what ran HERE).
+    fn history_indices(&self) -> Vec<usize> {
+        self.query_history
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.connection == self.active_connection)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Move cursor back in the active connection's history and return
+    /// that query, if available.
     pub fn history_prev(&mut self) -> Option<&str> {
-        if self.query_history.is_empty() {
+        let indices = self.history_indices();
+        if indices.is_empty() {
             return None;
         }
-        let max = self.query_history.len() - 1;
-        let idx = match self.history_cursor {
-            None => max,
+        // Position of the current cursor within the filtered view; a
+        // cursor pointing at another connection's entry (stale after a
+        // switch) restarts from the end.
+        let pos = self
+            .history_cursor
+            .and_then(|c| indices.iter().position(|&i| i == c));
+        let new_pos = match pos {
+            None => indices.len() - 1,
             Some(0) => 0,
-            Some(i) => i - 1,
+            Some(p) => p - 1,
         };
+        let idx = indices[new_pos];
         self.history_cursor = Some(idx);
         self.query_history.get(idx).map(|e| e.query.as_str())
     }
 
-    /// Move cursor forward in history; returns None when past the end.
+    /// Move cursor forward in the active connection's history; returns
+    /// None when past the end.
     pub fn history_next(&mut self) -> Option<&str> {
-        let idx = self.history_cursor? + 1;
-        if idx >= self.query_history.len() {
+        let indices = self.history_indices();
+        let pos = self
+            .history_cursor
+            .and_then(|c| indices.iter().position(|&i| i == c))?;
+        let new_pos = pos + 1;
+        if new_pos >= indices.len() {
             self.history_cursor = None;
             return None;
         }
+        let idx = indices[new_pos];
         self.history_cursor = Some(idx);
         self.query_history.get(idx).map(|e| e.query.as_str())
     }
@@ -4838,6 +4868,31 @@ trailing prose ignored";
         s.push_history("SELECT 1");
         s.push_history("SELECT 1");
         assert_eq!(s.query_history.len(), 1);
+    }
+
+    #[test]
+    fn history_is_scoped_per_connection() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.active_connection = Some("a".into());
+        s.push_history("SELECT a1");
+        s.push_history("SELECT a2");
+        s.active_connection = Some("b".into());
+        s.push_history("SELECT b1");
+
+        // Recall under b only sees b's entries.
+        assert_eq!(s.history_prev(), Some("SELECT b1"));
+        assert_eq!(s.history_prev(), Some("SELECT b1"), "clamped at oldest");
+        assert_eq!(s.history_next(), None);
+
+        // Switch to a: cursor pointing at b's entry restarts from a's end.
+        s.active_connection = Some("a".into());
+        assert_eq!(s.history_prev(), Some("SELECT a2"));
+        assert_eq!(s.history_prev(), Some("SELECT a1"));
+
+        // No connection → only entries pushed with no connection.
+        s.active_connection = None;
+        assert_eq!(s.history_prev(), None);
     }
 
     #[test]
