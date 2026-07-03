@@ -337,7 +337,21 @@ impl DbConnection {
         )
     }
 
+    /// Execute with the built-in [`DEFAULT_ROW_LIMIT`] auto-LIMIT.
     pub async fn execute(&self, query: &str) -> anyhow::Result<ExecOutcome> {
+        self.execute_with_limit(query, DEFAULT_ROW_LIMIT).await
+    }
+
+    /// Execute `query`. Bare top-level SELECT / WITH statements get
+    /// ` LIMIT <limit>` appended (`limit = 0` disables the rewrite;
+    /// queries with their own LIMIT / FETCH / TOP are left alone).
+    /// [`QueryResult::limited`] is set when the rewrite was applied AND
+    /// the cap was actually hit, so the UI can flag likely truncation.
+    pub async fn execute_with_limit(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> anyhow::Result<ExecOutcome> {
         // Non-row statements (INSERT/UPDATE/DELETE/CREATE/DROP/…) go
         // through sqlx's `execute()` so we can surface rows_affected
         // in a dedicated results pane instead of pretending the empty
@@ -368,8 +382,13 @@ impl DbConnection {
         }
 
         let owned;
-        let query = match apply_default_limit(query, DEFAULT_ROW_LIMIT) {
+        let mut auto_limited = false;
+        let query = match (limit > 0)
+            .then(|| apply_default_limit(query, limit))
+            .flatten()
+        {
             Some(q) => {
+                auto_limited = true;
                 owned = q;
                 owned.as_str()
             }
@@ -450,10 +469,12 @@ impl DbConnection {
             }
         };
 
+        let limited = auto_limited && rows.len() >= limit;
         Ok(ExecOutcome::Rows(QueryResult {
             columns,
             rows,
             col_widths: vec![],
+            limited,
         }))
     }
 
@@ -1546,6 +1567,73 @@ mod limit_tests {
         // TOP N is SQL Server/T-SQL pagination — don't double-limit
         assert_eq!(apply("SELECT TOP 10 * FROM t"), None);
         assert_eq!(apply("select top 100 id from users"), None);
+    }
+}
+
+#[cfg(test)]
+mod exec_limit_tests {
+    use super::*;
+
+    async fn seeded_sqlite() -> DbConnection {
+        let conn = DbConnection::connect("sqlite::memory:", None)
+            .await
+            .unwrap();
+        conn.execute("CREATE TABLE t (n INTEGER)").await.unwrap();
+        // 150 rows via recursive CTE — has its own LIMIT, so no rewrite.
+        conn.execute(
+            "INSERT INTO t SELECT x FROM (WITH RECURSIVE c(x) AS \
+             (SELECT 1 UNION ALL SELECT x+1 FROM c LIMIT 150) SELECT x FROM c)",
+        )
+        .await
+        .unwrap();
+        conn
+    }
+
+    #[tokio::test]
+    async fn bare_select_capped_and_flagged() {
+        let conn = seeded_sqlite().await;
+        let out = conn.execute("SELECT n FROM t").await.unwrap();
+        let ExecOutcome::Rows(r) = out else {
+            panic!("expected rows");
+        };
+        assert_eq!(r.rows.len(), DEFAULT_ROW_LIMIT);
+        assert!(r.limited, "cap hit must set the limited flag");
+    }
+
+    #[tokio::test]
+    async fn under_cap_not_flagged() {
+        let conn = seeded_sqlite().await;
+        let out = conn
+            .execute_with_limit("SELECT n FROM t WHERE n <= 10", 100)
+            .await
+            .unwrap();
+        let ExecOutcome::Rows(r) = out else {
+            panic!("expected rows");
+        };
+        assert_eq!(r.rows.len(), 10);
+        assert!(!r.limited, "under the cap must not flag truncation");
+    }
+
+    #[tokio::test]
+    async fn explicit_limit_respected_not_flagged() {
+        let conn = seeded_sqlite().await;
+        let out = conn.execute("SELECT n FROM t LIMIT 120").await.unwrap();
+        let ExecOutcome::Rows(r) = out else {
+            panic!("expected rows");
+        };
+        assert_eq!(r.rows.len(), 120, "explicit LIMIT wins over the default");
+        assert!(!r.limited);
+    }
+
+    #[tokio::test]
+    async fn zero_limit_disables_rewrite() {
+        let conn = seeded_sqlite().await;
+        let out = conn.execute_with_limit("SELECT n FROM t", 0).await.unwrap();
+        let ExecOutcome::Rows(r) = out else {
+            panic!("expected rows");
+        };
+        assert_eq!(r.rows.len(), 150, "limit 0 must fetch everything");
+        assert!(!r.limited);
     }
 }
 

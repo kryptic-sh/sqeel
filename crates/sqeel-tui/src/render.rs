@@ -1604,15 +1604,23 @@ pub(crate) fn draw_results(
                 return;
             }
 
+            // Auto-LIMIT hit the cap → the result is likely truncated;
+            // say "first N" instead of a bare count so nobody mistakes
+            // the cap for the full result set.
+            let rows_label = if r.limited {
+                format!("first {} rows — auto LIMIT", r.rows.len())
+            } else {
+                format!("{} rows", r.rows.len())
+            };
             let title = if state.result_tabs.len() > 1 {
                 format!(
-                    " Results ({}/{} • {} rows)",
+                    " Results ({}/{} • {})",
                     state.active_result_tab + 1,
                     state.result_tabs.len(),
-                    r.rows.len()
+                    rows_label
                 )
             } else {
-                format!(" Results ({} rows)", r.rows.len())
+                format!(" Results ({rows_label})")
             };
             let col_start = state.results_col_scroll();
             let sep_style = Style::default().fg(ui().results_sep);

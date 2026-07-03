@@ -320,6 +320,7 @@ mod tests {
             columns: vec!["id".into()],
             rows: vec![vec!["1".into()]],
             col_widths: vec![],
+            limited: false,
         };
         let r = dir.join("results");
         fs::create_dir_all(&r).unwrap();
@@ -353,6 +354,7 @@ mod tests {
             columns: vec!["col".into()],
             rows: vec![vec!["val".into()]],
             col_widths: vec![],
+            limited: false,
         };
         let json = serde_json::to_string(&result).unwrap();
         let loaded: QueryResult = serde_json::from_str(&json).unwrap();
@@ -384,6 +386,7 @@ mod tests {
                 vec!["2".into(), "Bob".into()],
             ],
             col_widths: vec![],
+            limited: false,
         };
         let csv = export_csv(&result);
         assert_eq!(csv, "id,name\n1,Alice\n2,Bob\n");
@@ -395,6 +398,7 @@ mod tests {
             columns: vec!["val".into()],
             rows: vec![vec!["hello, world".into()], vec!["say \"hi\"".into()]],
             col_widths: vec![],
+            limited: false,
         };
         let csv = export_csv(&result);
         assert!(csv.contains("\"hello, world\""));
@@ -407,6 +411,7 @@ mod tests {
             columns: vec!["x".into()],
             rows: vec![vec!["42".into()]],
             col_widths: vec![],
+            limited: false,
         };
         let json = export_json(&result).unwrap();
         let loaded: QueryResult = serde_json::from_str(&json).unwrap();

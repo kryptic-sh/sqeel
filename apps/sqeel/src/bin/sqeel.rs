@@ -313,7 +313,13 @@ fn main() -> anyhow::Result<()> {
             .or_else(|| conns.iter().find(|c| c.url == url))
             .and_then(|c| c.tls.clone());
         let rt = tokio::runtime::Runtime::new()?;
-        let code = rt.block_on(run_headless(&url, tls.as_ref(), &args.execute, args.format));
+        let code = rt.block_on(run_headless(
+            &url,
+            tls.as_ref(),
+            &args.execute,
+            args.format,
+            main_config.editor.default_row_limit,
+        ));
         // Headless sandbox runs (used by the integration tests) always
         // clean up — there's no terminal to prompt on.
         if let Some(root) = &sandbox_root {
@@ -638,6 +644,7 @@ async fn run_headless(
     tls: Option<&sqeel_core::config::TlsConfig>,
     chunks: &[String],
     format: OutputFormat,
+    row_limit: usize,
 ) -> i32 {
     let conn = match DbConnection::connect(url, tls).await {
         Ok(c) => c,
@@ -649,8 +656,17 @@ async fn run_headless(
     for chunk in chunks {
         let stmts: Vec<String> = sqeel_core::highlight::split_statements(chunk);
         for stmt in stmts {
-            match conn.execute(&stmt).await {
-                Ok(sqeel_core::db::ExecOutcome::Rows(r)) => print_result(&r, format),
+            match conn.execute_with_limit(&stmt, row_limit).await {
+                Ok(sqeel_core::db::ExecOutcome::Rows(r)) => {
+                    if r.limited {
+                        // stderr, like the non-query summaries — stdout
+                        // stays pure data.
+                        eprintln!(
+                            "note: auto-applied LIMIT {row_limit}; add an explicit LIMIT or raise editor.default_row_limit"
+                        );
+                    }
+                    print_result(&r, format)
+                }
                 Ok(sqeel_core::db::ExecOutcome::NonQuery {
                     verb,
                     rows_affected,
@@ -967,8 +983,9 @@ fn spawn_executor(
                     tokio::spawn(async move {
                         evict_old_results(&cleanup_slug);
                     });
+                    let row_limit = state.lock().unwrap().default_row_limit;
                     let outcome = tokio::select! {
-                        r = conn.execute(&query) => Some(r),
+                        r = conn.execute_with_limit(&query, row_limit) => Some(r),
                         _ = cancel.cancelled() => None,
                     };
                     let mut s = state.lock().unwrap();
@@ -980,9 +997,9 @@ fn spawn_executor(
                     tokio::spawn(async move {
                         evict_old_results(&cleanup_slug);
                     });
-                    let (stop_on_error, batch_start) = {
+                    let (stop_on_error, batch_start, row_limit) = {
                         let mut s = state.lock().unwrap();
-                        (s.stop_on_error, s.start_batch())
+                        (s.stop_on_error, s.start_batch(), s.default_row_limit)
                     };
                     let query_count = queries.len();
                     let mut cancelled = false;
@@ -993,7 +1010,7 @@ fn spawn_executor(
                         }
                         let tab_idx = start_idx + i;
                         let outcome = tokio::select! {
-                            r = conn.execute(&query) => Some(r),
+                            r = conn.execute_with_limit(&query, row_limit) => Some(r),
                             _ = cancel.cancelled() => None,
                         };
                         let stop = {

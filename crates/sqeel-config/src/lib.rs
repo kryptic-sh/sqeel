@@ -64,6 +64,15 @@ pub struct EditorConfig {
     /// Default `true`. Set `false` to dispatch everything unprompted.
     #[serde(default = "default_confirm_destructive")]
     pub confirm_destructive: bool,
+    /// Auto-append ` LIMIT <n>` to bare SELECT / WITH statements that
+    /// don't limit themselves (LIMIT / FETCH / TOP). `0` disables.
+    /// Default `100`.
+    #[serde(default = "default_row_limit")]
+    pub default_row_limit: usize,
+}
+
+fn default_row_limit() -> usize {
+    100
 }
 
 fn default_lsp_auto_install() -> bool {

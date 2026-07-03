@@ -4387,6 +4387,7 @@ mod tests {
             columns: vec!["col".into()],
             rows: vec![vec!["val".into()]],
             col_widths: vec![],
+            limited: false,
         });
         assert_eq!(s.editor_ratio, 0.5);
     }
@@ -5270,6 +5271,7 @@ mod tests {
             columns: vec!["a".to_string(), "b".to_string()],
             rows,
             col_widths: vec![],
+            limited: false,
         });
         s
     }

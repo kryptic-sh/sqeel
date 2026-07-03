@@ -232,6 +232,11 @@ pub struct QueryResult {
     pub rows: Vec<Vec<String>>,
     #[serde(skip)]
     pub col_widths: Vec<u16>,
+    /// True when the auto-LIMIT rewrite was applied AND the row count hit
+    /// the cap — i.e. the result is likely truncated. Drives the "first N
+    /// rows" marker in the results title.
+    #[serde(default)]
+    pub limited: bool,
 }
 
 impl QueryResult {
@@ -419,6 +424,9 @@ pub struct AppState {
     pub active_result_tab: usize,
     /// Whether a run-all batch should stop on the first query error.
     pub stop_on_error: bool,
+    /// Auto-LIMIT applied to bare SELECT/WITH statements (0 disables).
+    /// From `editor.default_row_limit`; consumed by the query executor.
+    pub default_row_limit: usize,
     /// Set while a run-all batch is in progress.
     pub batch_in_progress: bool,
     pub editor_ratio: f32,
@@ -653,6 +661,7 @@ impl AppState {
         Arc::new(Mutex::new(Self {
             editor_ratio: 1.0,
             stop_on_error: true,
+            default_row_limit: crate::db::DEFAULT_ROW_LIMIT,
             ..Default::default()
         }))
     }
@@ -660,6 +669,7 @@ impl AppState {
     pub fn apply_editor_config(&mut self, cfg: &crate::config::EditorConfig) {
         self.stop_on_error = cfg.stop_on_error;
         self.schema_ttl = std::time::Duration::from_secs(cfg.schema_ttl_secs);
+        self.default_row_limit = cfg.default_row_limit;
     }
 
     fn rebuild_schema_cache(&mut self) {
@@ -1261,6 +1271,7 @@ impl AppState {
             columns: header,
             rows,
             col_widths,
+            limited: false,
         })
     }
 
@@ -1371,6 +1382,7 @@ impl AppState {
                     columns: header,
                     rows,
                     col_widths,
+                    limited: false,
                 });
             }
         }
@@ -4376,6 +4388,7 @@ mod tests {
             columns: vec!["id".into()],
             rows: vec![vec!["1".into()]],
             col_widths: vec![],
+            limited: false,
         });
         assert_eq!(s.editor_ratio, 0.5);
         assert!(matches!(s.results(), ResultsPane::Results(_)));
@@ -4398,6 +4411,7 @@ mod tests {
             columns: vec!["id".into()],
             rows: vec![vec!["1".into()], vec!["2".into()], vec!["3".into()]],
             col_widths: vec![],
+            limited: false,
         });
         assert_eq!(s.results_scroll(), 0);
         s.scroll_results_down();
@@ -4423,6 +4437,7 @@ mod tests {
                 vec!["7".into(), "8".into(), "9".into()],
             ],
             col_widths: vec![],
+            limited: false,
         });
         s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 1 };
         s.results_enter_selection(ResultsSelectionMode::Line);
@@ -4444,6 +4459,7 @@ mod tests {
                 vec!["7".into(), "8".into(), "9".into()],
             ],
             col_widths: vec![],
+            limited: false,
         });
         s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 1 };
         s.results_enter_selection(ResultsSelectionMode::Block);
@@ -4464,6 +4480,7 @@ mod tests {
                 vec!["4".into(), "5".into(), "6".into()],
             ],
             col_widths: vec![],
+            limited: false,
         });
         s.result_tabs[0].cursor = ResultsCursor::Cell { row: 1, col: 2 };
         s.results_enter_selection(ResultsSelectionMode::Block);
@@ -4481,6 +4498,7 @@ mod tests {
             columns: vec!["x".into()],
             rows: vec![vec!["1".into()]],
             col_widths: vec![],
+            limited: false,
         });
         s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 0 };
         s.results_enter_selection(ResultsSelectionMode::Line);
@@ -4499,6 +4517,7 @@ mod tests {
                     .map(|i| vec![format!("{i}a"), format!("{i}b"), format!("{i}c")])
                     .collect(),
                 col_widths: vec![],
+                limited: false,
             });
         }
         state
@@ -4585,6 +4604,7 @@ mod tests {
             columns: vec!["x".into()],
             rows: vec![vec!["Alpha".into()], vec!["beta".into()]],
             col_widths: vec![],
+            limited: false,
         });
         s.result_tabs[0].cursor = ResultsCursor::Cell { row: 0, col: 0 };
         assert!(s.results_find("BETA", true, true));
@@ -4635,6 +4655,7 @@ trailing prose ignored";
             columns: vec!["a".into()],
             rows: vec![vec!["x".into()]],
             col_widths: vec![3],
+            limited: false,
         };
         s.open_hover_table(t);
         assert_eq!(s.focus, Focus::Hover);
@@ -4651,6 +4672,7 @@ trailing prose ignored";
             columns: vec!["a".into()],
             rows: vec![vec!["x".into()]],
             col_widths: vec![3],
+            limited: false,
         };
         s.open_hover_table(t);
         s.close_hover();
@@ -4666,6 +4688,7 @@ trailing prose ignored";
             columns: vec!["a".into(), "b".into()],
             rows: vec![vec!["1".into(), "2".into()], vec!["3".into(), "4".into()]],
             col_widths: vec![3, 3],
+            limited: false,
         };
         s.open_hover_table(t);
         s.hover_cursor_move(10, 10);
@@ -4682,6 +4705,7 @@ trailing prose ignored";
             columns: vec!["a".into(), "b".into()],
             rows: vec![vec!["x".into(), "y".into()]],
             col_widths: vec![3, 3],
+            limited: false,
         };
         s.open_hover_table(t);
         s.hover_cursor_move(0, 1);

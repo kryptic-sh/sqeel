@@ -46,3 +46,7 @@ lsp_auto_install = true
 # DELETE with no top-level WHERE, DROP, TRUNCATE. Set to false to dispatch
 # everything unprompted.
 confirm_destructive = true
+
+# Auto-append " LIMIT <n>" to bare SELECT/WITH statements that don't limit
+# themselves (queries with LIMIT / FETCH / TOP are left alone). 0 disables.
+default_row_limit = 100
