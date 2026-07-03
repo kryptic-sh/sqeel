@@ -1210,23 +1210,18 @@ impl AppState {
             }
         }
 
-        let mut in_head = false;
         let mut current_row: Vec<String> = Vec::new();
         let mut current_cell = String::new();
         let mut in_cell = false;
 
         for event in parser.by_ref() {
             match event {
-                Event::Start(Tag::TableHead) => {
-                    in_head = true;
-                    current_row.clear();
-                }
+                Event::Start(Tag::TableHead) => current_row.clear(),
                 Event::End(TagEnd::TableHead) => {
                     // pulldown-cmark emits TableCells directly inside
                     // TableHead (no wrapping TableRow), so we flush the
                     // accumulated row here.
                     header = std::mem::take(&mut current_row);
-                    in_head = false;
                 }
                 Event::Start(Tag::TableRow) => current_row.clear(),
                 Event::End(TagEnd::TableRow) => {
@@ -1256,9 +1251,6 @@ impl AppState {
                 _ => {}
             }
         }
-        // `in_head` is retained for potential future use (e.g. different
-        // cell trim rules); silence the unused-write warning until then.
-        let _ = in_head;
 
         if header.is_empty() || rows.is_empty() {
             return None;
@@ -2107,12 +2099,6 @@ impl AppState {
         self.status_message = None;
     }
 
-    /// Sorted, deduplicated identifier names from the schema tree. Cheap to clone —
-    /// backed by an `Arc` that is only rebuilt when the schema changes.
-    pub fn schema_identifier_names(&self) -> Arc<Vec<String>> {
-        Arc::clone(&self.schema_identifier_cache)
-    }
-
     /// Context-aware completion candidates. Returns names matching `prefix`
     /// (case-insensitive), scoped to what `ctx` says makes sense at the cursor.
     ///
@@ -2335,30 +2321,6 @@ impl AppState {
         for req in reqs {
             self.request_schema_load(req);
         }
-    }
-
-    /// Collect all identifier names from the schema tree (databases, tables, columns),
-    /// filter by case-insensitive prefix, deduplicate, and return sorted.
-    pub fn schema_identifier_completions(&self, prefix: &str) -> Vec<String> {
-        let prefix_lower = prefix.to_lowercase();
-        let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        let mut stack: Vec<&SchemaNode> = self.schema_nodes.iter().collect();
-        while let Some(node) = stack.pop() {
-            let name = node.name();
-            if name.to_lowercase().starts_with(&prefix_lower) && seen.insert(name.to_owned()) {
-                out.push(name.to_owned());
-            }
-            match node {
-                SchemaNode::Database { tables, .. } => stack.extend(tables.iter()),
-                SchemaNode::Table { columns, .. } => stack.extend(columns.iter()),
-                SchemaNode::Column { .. } => {}
-                SchemaNode::Index { .. } => {}
-                SchemaNode::ForeignKey { .. } => {}
-            }
-        }
-        out.sort();
-        out
     }
 
     pub fn visible_schema_items(&self) -> &[SchemaTreeItem] {
@@ -2813,36 +2775,6 @@ impl AppState {
         }
     }
 
-    /// Set the columns for one specific table without touching anything else.
-    pub fn set_table_columns(&mut self, db_name: &str, table_name: &str, columns: Vec<SchemaNode>) {
-        let mut changed = false;
-        'outer: for node in self.schema_nodes.iter_mut() {
-            if let SchemaNode::Database { name, tables, .. } = node
-                && name == db_name
-            {
-                for table in tables.iter_mut() {
-                    if let SchemaNode::Table {
-                        name,
-                        columns: c,
-                        columns_loaded_at,
-                        ..
-                    } = table
-                        && name == table_name
-                    {
-                        *c = columns;
-                        *columns_loaded_at = Some(Instant::now());
-                        changed = true;
-                        break 'outer;
-                    }
-                }
-                break;
-            }
-        }
-        if changed {
-            self.mark_schema_cache_dirty();
-        }
-    }
-
     /// Set columns, indexes, and foreign keys for one specific table at once.
     /// Sets `columns_loaded_at` and `relations_loaded_at` to `now`.
     pub fn set_table_relations(
@@ -2912,9 +2844,7 @@ impl AppState {
         };
         let ref_table = ref_table.clone();
         let items = self.schema_items_cache.clone();
-        if let Some(idx) =
-            crate::schema::fk_jump_target(&items, &items[self.schema_cursor], &ref_table)
-        {
+        if let Some(idx) = crate::schema::fk_jump_target(&items, &ref_table) {
             self.schema_cursor = idx;
             self.ensure_schema_cursor_visible();
             return true;

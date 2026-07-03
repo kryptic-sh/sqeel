@@ -43,6 +43,28 @@ use hjkl_engine::types::Style as EngineStyle;
 use hjkl_engine::{Editor, Host};
 use hjkl_form::TextFieldEditor;
 
+/// Copy `text` to the OS clipboard and queue a toast reporting success or the
+/// "too large" failure. `label` names what was copied (e.g. "Row", a column
+/// name) and leads both the success and failure messages.
+fn copy_to_clipboard(clipboard: &Clipboard, toasts: &mut Vec<Toast>, text: &str, label: &str) {
+    let ok = clipboard
+        .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
+        .is_ok();
+    toast(
+        toasts,
+        if ok {
+            ToastKind::Info
+        } else {
+            ToastKind::Error
+        },
+        if ok {
+            format!("{label} copied to clipboard")
+        } else {
+            format!("{label}: clipboard copy failed (too large)")
+        },
+    );
+}
+
 /// Result of a synchronous tree-sitter highlight pass over a viewport
 /// window. Mirrors the shape of the old `highlight_thread::HighlightResult`
 /// — `start_row` + `row_count` define the absolute window inside the
@@ -1905,22 +1927,7 @@ async fn run_loop(
                                     }
                                     s.clamp_results_cursor();
                                 }
-                                let ok = clipboard
-                                    .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
-                                    .is_ok();
-                                toast(
-                                    &mut toasts,
-                                    if ok {
-                                        ToastKind::Info
-                                    } else {
-                                        ToastKind::Error
-                                    },
-                                    if ok {
-                                        format!("{label} copied to clipboard")
-                                    } else {
-                                        format!("{label}: clipboard copy failed (too large)")
-                                    },
-                                );
+                                copy_to_clipboard(&clipboard, &mut toasts, &text, label);
                             }
                         }
                         mouse_drag_pane = None;
@@ -1938,22 +1945,7 @@ async fn run_loop(
                                 extract_results_row(mouse.column, mouse.row, &last_draw_areas, &s)
                             {
                                 drop(s);
-                                let ok = clipboard
-                                    .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
-                                    .is_ok();
-                                toast(
-                                    &mut toasts,
-                                    if ok {
-                                        ToastKind::Info
-                                    } else {
-                                        ToastKind::Error
-                                    },
-                                    if ok {
-                                        "Row copied to clipboard".to_string()
-                                    } else {
-                                        "Row: clipboard copy failed (too large)".to_string()
-                                    },
-                                );
+                                copy_to_clipboard(&clipboard, &mut toasts, &text, "Row");
                             }
                         }
                     }
@@ -3683,22 +3675,7 @@ async fn run_loop(
                     (KeyModifiers::NONE, KeyCode::Char('y')) if focus == Focus::Hover => {
                         let yanked = state.lock().unwrap().hover_yank();
                         if let Some((text, label)) = yanked {
-                            let ok = clipboard
-                                .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
-                                .is_ok();
-                            toast(
-                                &mut toasts,
-                                if ok {
-                                    ToastKind::Info
-                                } else {
-                                    ToastKind::Error
-                                },
-                                if ok {
-                                    format!("{label} copied to clipboard")
-                                } else {
-                                    format!("{label}: clipboard copy failed (too large)")
-                                },
-                            );
+                            copy_to_clipboard(&clipboard, &mut toasts, &text, label);
                         }
                     }
                     // Results pane navigation. Arrow keys mirror hjkl.
@@ -3909,22 +3886,7 @@ async fn run_loop(
                             Some(now)
                         };
                         if let Some((text, label)) = yanked {
-                            let ok = clipboard
-                                .set(Selection::Clipboard, MimeType::Text, text.as_bytes())
-                                .is_ok();
-                            toast(
-                                &mut toasts,
-                                if ok {
-                                    ToastKind::Info
-                                } else {
-                                    ToastKind::Error
-                                },
-                                if ok {
-                                    format!("{label} copied to clipboard")
-                                } else {
-                                    format!("{label}: clipboard copy failed (too large)")
-                                },
-                            );
+                            copy_to_clipboard(&clipboard, &mut toasts, &text, label);
                         }
                     }
                     // On error tab: Enter jumps editor cursor to the reported line:col

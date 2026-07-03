@@ -785,15 +785,6 @@ fn byte_to_rowcol_with_offsets(newline_offsets: &[usize], byte: usize) -> (usize
     (row, col)
 }
 
-/// Thin wrapper that builds newline offsets on the fly. Callers that invoke
-/// this in a loop should use [`byte_to_rowcol_with_offsets`] directly with a
-/// single pre-built offset table.
-#[allow(dead_code)]
-fn byte_to_rowcol(source: &str, byte: usize) -> (usize, usize) {
-    let offsets = compute_newline_offsets(source);
-    byte_to_rowcol_with_offsets(&offsets, byte.min(source.len()))
-}
-
 /// Range-scoped variant of [`promote_uncovered_dialect_keywords`]: only
 /// scan gaps inside `byte_range`, leaving spans outside it untouched.
 fn promote_uncovered_dialect_keywords_in_range(

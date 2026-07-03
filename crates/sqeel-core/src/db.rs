@@ -918,61 +918,6 @@ impl DbConnection {
             }
         }
     }
-
-    /// Load the schema tree: databases + tables only (no columns — too slow to
-    /// load eagerly for large schemas). Columns can be loaded on demand later.
-    pub async fn load_schema(&self) -> anyhow::Result<Vec<SchemaNode>> {
-        if self.is_sqlite() || self.is_duckdb() {
-            let tables = self.list_tables("main").await.unwrap_or_default();
-            let table_nodes = tables
-                .into_iter()
-                .map(|t| SchemaNode::Table {
-                    name: t,
-                    expanded: false,
-                    columns: vec![],
-                    columns_loaded_at: None,
-                    indexes: vec![],
-                    foreign_keys: vec![],
-                    relations_loaded_at: None,
-                    indexes_expanded: false,
-                    foreign_keys_expanded: false,
-                })
-                .collect();
-            return Ok(vec![SchemaNode::Database {
-                name: "main".into(),
-                expanded: true,
-                tables: table_nodes,
-                tables_loaded_at: Some(std::time::Instant::now()),
-            }]);
-        }
-
-        let databases = self.list_databases().await?;
-        let mut nodes = Vec::new();
-        for db in databases {
-            let tables = self.list_tables(&db).await.unwrap_or_default();
-            let table_nodes = tables
-                .into_iter()
-                .map(|t| SchemaNode::Table {
-                    name: t,
-                    expanded: false,
-                    columns: vec![],
-                    columns_loaded_at: None,
-                    indexes: vec![],
-                    foreign_keys: vec![],
-                    relations_loaded_at: None,
-                    indexes_expanded: false,
-                    foreign_keys_expanded: false,
-                })
-                .collect();
-            nodes.push(SchemaNode::Database {
-                name: db,
-                expanded: false,
-                tables: table_nodes,
-                tables_loaded_at: Some(std::time::Instant::now()),
-            });
-        }
-        Ok(nodes)
-    }
 }
 
 #[derive(Debug, Clone)]

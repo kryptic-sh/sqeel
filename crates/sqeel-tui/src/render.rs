@@ -277,6 +277,18 @@ pub(crate) fn toast(toasts: &mut Vec<Toast>, kind: ToastKind, msg: impl Into<Str
     toasts.push((msg.into(), kind, std::time::Instant::now()));
 }
 
+/// Center a `width`×`height` rect inside `area`, saturating so an oversized
+/// popup pins to the top-left rather than underflowing. The shared geometry
+/// behind every centered modal/popup.
+pub(crate) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum CursorShape {
     #[default]
@@ -2251,12 +2263,7 @@ pub(crate) fn draw_hover_table(
     let body_h = (table.rows.len() as u16).min(max_body.max(1));
     let popup_h = (body_h + 4 + prompt_rows).min(area.height.saturating_sub(2));
 
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
-        width: popup_w,
-        height: popup_h,
-    };
+    let popup = centered_rect(area, popup_w, popup_h);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
 
@@ -2398,12 +2405,7 @@ pub(crate) fn draw_hover_loading(f: &mut ratatui::Frame<'_>, area: Rect) {
     let content_w = (label.width() + hint.width()) as u16;
     let popup_w = (content_w + 4).min(area.width.saturating_sub(4));
     let popup_h = 3u16.min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
-        width: popup_w,
-        height: popup_h,
-    };
+    let popup = centered_rect(area, popup_w, popup_h);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
     let inner = Rect {
@@ -2499,12 +2501,7 @@ pub(crate) fn draw_hover_popup(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u
     // popup = content + 2 rows of vertical padding.
     let popup_h = (content_h + 2).min(area.height.saturating_sub(2));
 
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
-        width: popup_w,
-        height: popup_h,
-    };
+    let popup = centered_rect(area, popup_w, popup_h);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
     let inner = Rect {
@@ -2765,12 +2762,7 @@ pub(crate) fn draw_input_dialog(
     let inner_w = (content.chars().count() as u16 + 1).max(20);
     let width = (inner_w + 4).min(area.width.saturating_sub(4));
     let height = 3u16.min(area.height);
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
     let line = Rect {
@@ -2794,12 +2786,7 @@ pub(crate) fn draw_confirm_dialog(f: &mut ratatui::Frame<'_>, area: Rect, messag
     let inner_w = (message.chars().count() as u16).max(20);
     let width = (inner_w + 4).min(area.width.saturating_sub(4));
     let height = 3u16.min(area.height);
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
     let line = Rect {
@@ -2834,12 +2821,7 @@ pub(crate) fn draw_sqls_prompt_modal(f: &mut ratatui::Frame<'_>, area: Rect) {
     let width = (inner_w + 4).min(area.width.saturating_sub(4));
     // 1 top pad + N body rows + 1 bottom pad
     let height = (body_lines.len() as u16 + 2).min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
     let inner_x = popup.x + 2;
@@ -2885,12 +2867,7 @@ pub(crate) fn draw_file_picker(
     let list_rows = (entries.len() as u16).min(max_rows).max(1);
     // 1 row top pad + 1 row input + 1 row separator + N rows + 1 row bottom pad
     let height = (list_rows + 4).min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
 
@@ -2972,12 +2949,7 @@ pub(crate) fn draw_connection_switcher(f: &mut ratatui::Frame<'_>, state: &AppSt
     let list_rows = (conns.len() as u16).min(max_rows).max(1);
     // 1 row top pad + 1 row header + 1 row separator + N rows + 1 row bottom pad
     let height = (list_rows + 4).min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
 
@@ -3072,12 +3044,7 @@ pub(crate) fn draw_pgpass_picker(f: &mut ratatui::Frame<'_>, state: &AppState, a
     let list_rows = (entries.len() as u16).min(max_rows).max(1);
     // 1 row top pad + 1 row title + 1 row separator + N rows + 1 row hint + 1 row bottom pad
     let height = (list_rows + 5).min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
 
@@ -3256,12 +3223,7 @@ pub(crate) fn draw_help(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u16) -> 
         .sum::<u16>()
         + 1;
     let height = (total_rows + 4).min(area.height.saturating_sub(4));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
 
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
@@ -3351,12 +3313,7 @@ pub(crate) fn draw_connect_error_popup(
     let body_h = (body_lines.len() as u16).max(1);
     // 1 title + 1 blank + body + 1 blank + 1 footer + 2 vertical padding
     let height = (body_h + 6).min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
 
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
@@ -3419,12 +3376,7 @@ pub(crate) fn draw_add_connection(
     let extra = if has_error { 2 } else { 0 };
     let base_height: u16 = if show_tls { 13 } else { 9 };
     let height = (base_height + extra).min(area.height.saturating_sub(2));
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
+    let popup = centered_rect(area, width, height);
     f.render_widget(Clear, popup);
     f.render_widget(Block::default().style(bg), popup);
 

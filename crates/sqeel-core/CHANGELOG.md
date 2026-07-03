@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Dead public API pruned (no callers anywhere in the workspace):
+  `DbConnection::load_schema` (superseded by `load_schema_databases` + lazy
+  `list_tables`), and
+  `AppState::{set_table_columns, schema_identifier_names, schema_identifier_completions}`.
+
+### Changed
+
+- `schema::fk_jump_target` drops its unused `fk_item` parameter — now
+  `fk_jump_target(items: &[SchemaTreeItem], ref_table: &str)`.
+
 ## [0.4.13] - 2026-05-15
 
 ### Added

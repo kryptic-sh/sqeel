@@ -224,7 +224,7 @@ pub fn item_kind(node: &SchemaNode) -> SchemaItemKind {
 
 pub fn flatten_tree(nodes: &[SchemaNode]) -> Vec<SchemaTreeItem> {
     let mut items = Vec::new();
-    flatten_nodes(nodes, 0, &[], &[], &mut items);
+    flatten_nodes(nodes, 0, &[], &mut items);
     items
 }
 
@@ -313,7 +313,6 @@ fn flatten_nodes(
     nodes: &[SchemaNode],
     depth: usize,
     path: &[usize],
-    _ancestor_is_last: &[bool],
     items: &mut Vec<SchemaTreeItem>,
 ) {
     for (i, node) in nodes.iter().enumerate() {
@@ -354,8 +353,6 @@ fn flatten_nodes(
             kind: item_kind(node),
         });
 
-        let child_ancestor_is_last: Vec<bool> = Vec::new();
-
         match node {
             SchemaNode::Database {
                 expanded: true,
@@ -371,13 +368,7 @@ fn flatten_nodes(
                         "tables",
                     ));
                 } else {
-                    flatten_nodes(
-                        tables,
-                        depth + 1,
-                        &node_path,
-                        &child_ancestor_is_last,
-                        items,
-                    );
+                    flatten_nodes(tables, depth + 1, &node_path, items);
                 }
             }
             SchemaNode::Table {
@@ -398,13 +389,7 @@ fn flatten_nodes(
                         "columns",
                     ));
                 } else {
-                    flatten_nodes(
-                        columns,
-                        depth + 1,
-                        &node_path,
-                        &child_ancestor_is_last,
-                        items,
-                    );
+                    flatten_nodes(columns, depth + 1, &node_path, items);
                 }
                 // Emit Indexes section header (only when indexes are present).
                 if !indexes.is_empty() {
@@ -421,13 +406,7 @@ fn flatten_nodes(
                         },
                     });
                     if *indexes_expanded {
-                        flatten_nodes(
-                            indexes,
-                            depth + 2,
-                            &node_path,
-                            &child_ancestor_is_last,
-                            items,
-                        );
+                        flatten_nodes(indexes, depth + 2, &node_path, items);
                     }
                 }
                 // Emit ForeignKeys section header (only when FKs are present).
@@ -446,13 +425,7 @@ fn flatten_nodes(
                         },
                     });
                     if *foreign_keys_expanded {
-                        flatten_nodes(
-                            foreign_keys,
-                            depth + 2,
-                            &node_path,
-                            &child_ancestor_is_last,
-                            items,
-                        );
+                        flatten_nodes(foreign_keys, depth + 2, &node_path, items);
                     }
                 }
             }
@@ -723,15 +696,10 @@ pub fn toggle_node(nodes: &mut [SchemaNode], path: &[usize]) {
     }
 }
 
-/// Given a flat visible item list and a `ForeignKey` item, find the flat-list
-/// index of the referenced table (`ref_table`) within the same database
-/// subtree. Returns `None` if the table isn't visible in the current tree.
-pub fn fk_jump_target(
-    items: &[SchemaTreeItem],
-    _fk_item: &SchemaTreeItem,
-    ref_table: &str,
-) -> Option<usize> {
-    // The FK item's path is [db_idx, table_idx, fk_idx] (or similar).
+/// Given a flat visible item list and a foreign key's `ref_table`, find the
+/// flat-list index of the referenced table within the current tree. Returns
+/// `None` if the table isn't visible.
+pub fn fk_jump_target(items: &[SchemaTreeItem], ref_table: &str) -> Option<usize> {
     // Walk items to find a Table whose name matches ref_table.
     items
         .iter()
@@ -1154,7 +1122,7 @@ mod tests {
         let tree = sample_tree_with_relations();
         let items = flatten_tree(&tree);
         // The FK references "roles". Find its flat-list index.
-        let target_idx = fk_jump_target(&items, &items[0], "roles");
+        let target_idx = fk_jump_target(&items, "roles");
         assert!(target_idx.is_some());
         let idx = target_idx.unwrap();
         assert_eq!(items[idx].name, "roles");
@@ -1165,6 +1133,6 @@ mod tests {
     fn fk_jump_target_returns_none_for_missing_table() {
         let tree = sample_tree_with_relations();
         let items = flatten_tree(&tree);
-        assert!(fk_jump_target(&items, &items[0], "nonexistent").is_none());
+        assert!(fk_jump_target(&items, "nonexistent").is_none());
     }
 }
