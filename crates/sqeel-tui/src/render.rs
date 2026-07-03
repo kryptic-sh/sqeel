@@ -1462,7 +1462,23 @@ pub(crate) fn build_tab_title(state: &AppState) -> Line<'_> {
         } else {
             Style::default().fg(ui().tab_inactive_fg)
         };
-        spans.push(Span::styled(format!(" {} ", tab.name), style));
+        // Per-tab connections: flag tabs bound to a DIFFERENT connection
+        // than the active one — switching to them switches databases. Tabs
+        // on the current connection (the overwhelming default) stay clean;
+        // the status bar already names the active connection.
+        let foreign_conn = tab
+            .connection
+            .as_deref()
+            .filter(|c| state.active_connection.as_deref() != Some(*c));
+        if let Some(conn) = foreign_conn {
+            spans.push(Span::styled(format!(" {} ", tab.name), style));
+            spans.push(Span::styled(
+                format!("[{conn}] "),
+                style.fg(ui().tab_cancel_fg).add_modifier(Modifier::DIM),
+            ));
+        } else {
+            spans.push(Span::styled(format!(" {} ", tab.name), style));
+        }
         if i + 1 < state.tabs.len() {
             spans.push(Span::styled("│", Style::default().fg(ui().tab_sep_fg)));
         }
@@ -1885,10 +1901,20 @@ pub(crate) fn render_grid_lines(
                 let is_cursor = cursor_row == Some(row_idx) && active_col == Some(i);
                 let is_selected = selection_bounds
                     .is_some_and(|(t, b, l, rr)| row_idx >= t && row_idx <= b && i >= l && i <= rr);
+                // SQL NULLs arrive as the "NULL" sentinel from the decode
+                // layer (all four backends); render them dim so they read
+                // as absent-value rather than the four-letter string.
+                let is_null = cell == "NULL";
                 let style = if is_cursor {
                     Some(cursor_style)
                 } else if is_selected {
                     Some(selection_style)
+                } else if is_null {
+                    Some(
+                        Style::default()
+                            .fg(ui().results_cancelled)
+                            .add_modifier(Modifier::DIM),
+                    )
                 } else {
                     None
                 };

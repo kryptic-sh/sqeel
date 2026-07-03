@@ -310,6 +310,32 @@ fn set_wrap_renders_continuation_rows() {
     assert!(gone, ":set nowrap didn't unwrap\n{}", s.screen_dump());
 }
 
+/// SQL NULLs must reach the results grid as the "NULL" sentinel (the
+/// decode layer's contract that the dim-render heuristic keys on) —
+/// distinct from an empty string.
+#[test]
+fn null_cells_render_as_null_sentinel() {
+    let mut s = TerminalSession::spawn_sandbox();
+    assert!(
+        s.wait_for_text("CREATE TABLE", 5_000),
+        "editor never rendered\n{}",
+        s.screen_dump()
+    );
+    s.keys("ggVGc");
+    s.keys("SELECT NULL AS nothing, '' AS empty, 'x' AS text;<Esc>");
+    s.keys("<Space><CR>");
+    assert!(
+        s.wait_for_text("nothing", 10_000),
+        "result grid never rendered\n{}",
+        s.screen_dump()
+    );
+    assert!(
+        s.screen_contains("NULL"),
+        "NULL cell missing its sentinel\n{}",
+        s.screen_dump()
+    );
+}
+
 /// `:q!` must exit the process cleanly — the graceful shutdown path (LSP
 /// shutdown, session persist, terminal restore, sandbox autoclean). A hang
 /// here means the event loop or an async worker is wedged on quit.

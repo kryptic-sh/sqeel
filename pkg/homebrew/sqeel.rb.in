@@ -21,6 +21,9 @@ class Sqeel < Formula
 
   def install
     bin.install "sqeel"
+    generate_completions_from_executable(bin/"sqeel", "--completions")
+    File.write("sqeel.1", Utils.safe_popen_read(bin/"sqeel", "--man"))
+    man1.install "sqeel.1"
   end
 
   test do

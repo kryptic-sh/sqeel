@@ -4432,6 +4432,49 @@ mod tests {
     }
 
     #[test]
+    fn tab_title_flags_foreign_connection_bindings() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.active_connection = Some("local".into());
+        s.tabs = vec![
+            sqeel_core::state::TabEntry {
+                name: "a.sql".into(),
+                content: None,
+                last_accessed: None,
+                cursor: None,
+                dirty: false,
+                connection: Some("local".into()),
+            },
+            sqeel_core::state::TabEntry {
+                name: "b.sql".into(),
+                content: None,
+                last_accessed: None,
+                cursor: None,
+                dirty: false,
+                connection: Some("prod".into()),
+            },
+            sqeel_core::state::TabEntry {
+                name: "c.sql".into(),
+                content: None,
+                last_accessed: None,
+                cursor: None,
+                dirty: false,
+                connection: None,
+            },
+        ];
+        let line = super::build_tab_title(&s);
+        let text: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            text.contains("[prod]"),
+            "foreign binding not flagged: {text}"
+        );
+        assert!(
+            !text.contains("[local]"),
+            "same-connection binding must stay clean: {text}"
+        );
+    }
+
+    #[test]
     fn connection_switcher_open_close() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
