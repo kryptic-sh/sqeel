@@ -136,8 +136,9 @@ sqeel --completions fish > ~/.config/fish/completions/sqeel.fish
 sqeel --man | gzip > /usr/share/man/man1/sqeel.1.gz
 ```
 
-`bash`, `zsh`, `fish`, `powershell`, and `elvish` are supported. Releases also
-ship a `sqeel-<tag>-completions-man.tar.gz` asset with everything pre-generated.
+`bash`, `zsh`, `fish`, `powershell`, `elvish`, and `nushell` are supported.
+Releases also ship a `sqeel-<tag>-completions-man.tar.gz` asset with everything
+pre-generated.
 
 ### Sandbox mode
 

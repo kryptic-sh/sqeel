@@ -181,7 +181,7 @@ fn error_stops_remaining_statements() {
 
 #[test]
 fn completions_flag_emits_shell_script() {
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in ["bash", "zsh", "fish", "nushell"] {
         let out = sqeel()
             .args(["--completions", shell])
             .output()

@@ -202,11 +202,42 @@ struct Args {
 
     /// Print shell completions to stdout and exit (packaging helper).
     #[arg(long, value_enum, value_name = "SHELL", hide = true)]
-    completions: Option<clap_complete::Shell>,
+    completions: Option<CompletionShell>,
 
     /// Print the man page (troff) to stdout and exit (packaging helper).
     #[arg(long, hide = true)]
     man: bool,
+}
+
+/// Shells `--completions` can generate for: clap_complete's five core
+/// shells plus nushell (separate generator crate).
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+    Elvish,
+    Nushell,
+}
+
+impl CompletionShell {
+    fn generate(self, cmd: &mut clap::Command) {
+        use clap_complete::Shell;
+        let out = &mut std::io::stdout();
+        match self {
+            CompletionShell::Bash => clap_complete::generate(Shell::Bash, cmd, "sqeel", out),
+            CompletionShell::Zsh => clap_complete::generate(Shell::Zsh, cmd, "sqeel", out),
+            CompletionShell::Fish => clap_complete::generate(Shell::Fish, cmd, "sqeel", out),
+            CompletionShell::Powershell => {
+                clap_complete::generate(Shell::PowerShell, cmd, "sqeel", out)
+            }
+            CompletionShell::Elvish => clap_complete::generate(Shell::Elvish, cmd, "sqeel", out),
+            CompletionShell::Nushell => {
+                clap_complete::generate(clap_complete_nushell::Nushell, cmd, "sqeel", out)
+            }
+        }
+    }
 }
 
 /// Headless `-e` output formats.
@@ -226,7 +257,7 @@ fn main() -> anyhow::Result<()> {
     // config, sandbox, or connection work happens.
     if let Some(shell) = args.completions {
         use clap::CommandFactory;
-        clap_complete::generate(shell, &mut Args::command(), "sqeel", &mut std::io::stdout());
+        shell.generate(&mut Args::command());
         return Ok(());
     }
     if args.man {

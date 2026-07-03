@@ -206,7 +206,7 @@ jobs:
           TAG=${GITHUB_REF_NAME}
           BIN=target/${{ matrix.target }}/release/sqeel
           mkdir -p pkgext/completions
-          for shell in bash zsh fish powershell elvish; do
+          for shell in bash zsh fish powershell elvish nushell; do
             "$BIN" --completions "$shell" > "pkgext/completions/sqeel.$shell"
           done
           "$BIN" --man > pkgext/sqeel.1
