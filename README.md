@@ -6,7 +6,7 @@ Vim-native SQL client. Native Rust TUI. No Electron. No JVM.
 [![release](https://img.shields.io/github/v/release/kryptic-sh/sqeel)](https://github.com/kryptic-sh/sqeel/releases/latest)
 [![crates.io](https://img.shields.io/crates/v/sqeel.svg)](https://crates.io/crates/sqeel)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Website](https://img.shields.io/badge/website-sqeel.kryptic.sh-7ee787)](https://sqeel.kryptic.sh)
+[![Website](https://img.shields.io/badge/website-kryptic.sh%2Fsqeel-7ee787)](https://www.kryptic.sh/sqeel/)
 
 Modal SQL client built with [`ratatui`](https://crates.io/crates/ratatui). Vim
 bindings powered by [hjkl-engine](https://crates.io/crates/hjkl-engine).
