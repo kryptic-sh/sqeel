@@ -1248,13 +1248,7 @@ pub(crate) fn draw_schema(
     // Only mark the row as "selected" when it's actually inside the viewport;
     // otherwise ratatui's List would fight our offset and snap back to the
     // cursor every frame.
-    let selected_visible = selected.and_then(|c| {
-        if height > 0 && c >= offset && c < offset + height {
-            Some(c)
-        } else {
-            None
-        }
-    });
+    let selected_visible = selected.filter(|&c| height > 0 && c >= offset && c < offset + height);
 
     let list = List::new(list_items).highlight_style(highlight_style);
     let mut list_state = ListState::default()

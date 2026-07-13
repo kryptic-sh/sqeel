@@ -383,10 +383,9 @@ fn main() -> anyhow::Result<()> {
                         ResultsPane::Cancelled
                     } else if let Some(ref err) = r.error {
                         ResultsPane::Error(err.clone())
-                    } else if let Some(ref filename) = r.filename {
-                        ResultsPane::Results(load_result_for(&slug, filename).ok()?)
                     } else {
-                        return None;
+                        let filename = r.filename.as_ref()?;
+                        ResultsPane::Results(load_result_for(&slug, filename).ok()?)
                     };
                     Some(ResultsTab {
                         query: r.query.clone(),
