@@ -8,6 +8,31 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-13
+
+### Added
+
+- Per-connection query history keeps recent SQL isolated by connection while
+  preserving the existing history picker workflow.
+- Shell completion generation now supports Bash, Zsh, Fish, Elvish, PowerShell,
+  and Nushell; release packages install the generated completions and man page.
+- Result cells preserve SQL `NULL` separately from text values and render nulls
+  distinctly in table, JSON, CSV, and TUI output.
+- Configurable automatic query limits cap large result sets and indicate when
+  output was truncated.
+
+### Changed
+
+- Updated the complete `hjkl-*` dependency stack from 0.33.3 to 0.33.5.
+- Removed the bundled marketing site; project information now lives at
+  https://www.kryptic.sh/sqeel/.
+- Simplified popup, clipboard, result, and editor internals without changing
+  their public behavior.
+
+### Fixed
+
+- Updated `crossbeam-epoch` to 0.9.20 to resolve RUSTSEC-2026-0204.
+
 ## [0.5.0] - 2026-07-02
 
 ### Added
@@ -584,7 +609,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.4.19...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.6.0
 [0.5.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.5.0
 [0.4.19]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.19
 [0.4.18]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.18
