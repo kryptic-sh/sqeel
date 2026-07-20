@@ -14,7 +14,7 @@ readme = "README.md"
 
 [dependencies]
 hjkl-config = "0.33.5"
-hjkl-engine = "0.33.5"
+hjkl-engine = "0.34.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 anyhow = "1"
