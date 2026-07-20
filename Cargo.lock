@@ -1621,9 +1621,9 @@ dependencies = [
 
 [[package]]
 name = "hjkl-clipboard"
-version = "0.33.5"
+version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeabe3c0ad6bf01764a100d06c0dd9cb5c104a0cd0133788eba1b62ddc7ef7b2"
+checksum = "263c15364430d4c2002164289e661067849421fe5f270fc583b6b7b3ea7ca906"
 dependencies = [
  "async-trait",
  "bitflags 2.13.0",
