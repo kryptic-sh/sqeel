@@ -15,7 +15,7 @@ readme = "README.md"
 [dependencies]
 sqeel-config = { version = "0.3", path = "../sqeel-config" }
 sqeel-core = { version = "0.5", path = "../sqeel-core" }
-hjkl-splash = "0.33.5"
+hjkl-splash = "0.34.2"
 hjkl-engine = "0.33.5"
 hjkl-engine-tui = "0.33.5"
 hjkl-vim = "0.33.5"
