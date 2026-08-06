@@ -3,6 +3,22 @@
 Open work items, findings and deferred decisions. Finished items are deleted
 (see `git log` for the record).
 
+## Release pipeline 2026-08-06 (v0.6.1)
+
+Cut v0.6.1; GitHub release + homebrew published. Three tag-run jobs fail:
+
+- **crates.io publish** — `cargo publish -p sqeel` resolves the published
+  `sqeel-tui 0.5.0` / `sqeel-core 0.5.0` against hjkl `^0.41.0` → 0.41.1, whose
+  engine removed `vim_mode` / `mouse_click_doc`. Same caret-minor rot the
+  changelog documents; v0.6.0 failed identically and was never published
+  (crates.io latest is 0.5.0). Fix: pin hjkl to `=0.41.0` in the crates, or
+  adapt to the 0.41.1 API.
+- **Alpine apk** — abuild rejects "uncompressed man pages" (the man page added
+  in v0.6.0 ships uncompressed in the completions tarball). Same failure on
+  v0.6.0.
+- **AUR sqeel-bin** — "The AUR is down due to maintenance" (external, transient;
+  v0.6.0's AUR publish succeeded).
+
 ## Review 2026-08-06
 
 Correctness review of the whole codebase (4 crates + app + tests). All 10
