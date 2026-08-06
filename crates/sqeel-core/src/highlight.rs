@@ -1219,7 +1219,11 @@ pub fn strip_sql_comments(source: &str) -> String {
 pub fn is_show_create(query: &str) -> bool {
     let stripped = strip_sql_comments(query);
     let trimmed = stripped.trim_start();
-    trimmed.len() >= 11 && trimmed[..11].eq_ignore_ascii_case("show create")
+    // `get` (unlike `[..11]`) returns None when byte 11 falls inside a
+    // multi-byte char — a non-ASCII lead can't start "show create" anyway.
+    trimmed
+        .get(..11)
+        .is_some_and(|s| s.eq_ignore_ascii_case("show create"))
 }
 
 #[cfg(test)]
@@ -1251,6 +1255,22 @@ mod tests {
                 err
             );
         }
+    }
+
+    #[test]
+    fn is_show_create_ignores_leading_whitespace_and_comments() {
+        assert!(is_show_create("show create table t"));
+        assert!(is_show_create("  SHOW CREATE TABLE t"));
+        assert!(is_show_create("-- c\nSHOW CREATE TABLE t"));
+        assert!(!is_show_create("select * from t"));
+    }
+
+    #[test]
+    fn is_show_create_survives_multibyte_lead() {
+        // 11 bytes of non-ASCII: byte 11 is mid-char, the old `[..11]`
+        // slice panicked here.
+        assert!(!is_show_create("éééééé"));
+        assert!(!is_show_create("日本語のテキストx"));
     }
 
     #[test]

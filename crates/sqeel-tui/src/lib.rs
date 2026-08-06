@@ -1120,7 +1120,7 @@ async fn run_loop(
             // right after `where `).
             let buf_lines = buffer_lines(editor.buffer());
             let char_left = buf_lines.get(row).and_then(|line| {
-                let before = &line[..col.min(line.len())];
+                let before = &line[..char_col_to_byte(line, col)];
                 before.chars().next_back()
             });
             let hard_suppress = matches!(char_left, Some(';')) || char_left.is_none();

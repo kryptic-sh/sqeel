@@ -411,6 +411,17 @@ pub(crate) fn expand_tilde(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
+/// Byte offset of the character column `col` within `line`. `col` is a
+/// char index (what `hjkl_buffer::View::cursor` returns, clamped to the
+/// line's char count); String slicing needs a byte boundary, and this is
+/// the conversion the completion-prefix paths use before slicing.
+pub(crate) fn char_col_to_byte(line: &str, col: usize) -> usize {
+    line.char_indices()
+        .nth(col)
+        .map(|(i, _)| i)
+        .unwrap_or(line.len())
+}
+
 /// Convert a `(row, col)` character position into a byte offset in the
 /// joined source (`\n` between lines). Used to feed cursor position into
 /// `completion_ctx::parse_context`, which operates on a single string.
@@ -418,12 +429,7 @@ pub(crate) fn row_col_to_byte(lines: &[String], row: usize, col: usize) -> usize
     let mut offset = 0usize;
     for (i, line) in lines.iter().enumerate() {
         if i == row {
-            for (char_count, (b, _)) in line.char_indices().enumerate() {
-                if char_count == col {
-                    return offset + b;
-                }
-            }
-            return offset + line.len();
+            return offset + char_col_to_byte(line, col);
         }
         offset += line.len() + 1; // `\n`
     }
@@ -435,7 +441,7 @@ pub(crate) fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String
     let Some(line) = lines.get(row) else {
         return String::new();
     };
-    let before = &line[..col.min(line.len())];
+    let before = &line[..char_col_to_byte(line, col)];
     before
         .chars()
         .rev()
@@ -466,4 +472,38 @@ pub(crate) fn word_at_cursor(lines: &[String], row: usize, col: usize) -> String
         end += 1;
     }
     chars[start..end].iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_col_to_byte_lands_on_char_boundaries() {
+        assert_eq!(char_col_to_byte("aé", 0), 0);
+        assert_eq!(char_col_to_byte("aé", 1), 1);
+        assert_eq!(char_col_to_byte("aé", 2), 3);
+        assert_eq!(char_col_to_byte("aé", 99), 3); // past EOL clamps to len
+        assert_eq!(char_col_to_byte("", 0), 0);
+    }
+
+    #[test]
+    fn row_col_to_byte_counts_multibyte_bytes() {
+        let lines = vec!["aé".to_string(), "b".to_string()];
+        assert_eq!(row_col_to_byte(&lines, 0, 1), 1);
+        assert_eq!(row_col_to_byte(&lines, 0, 2), 3);
+        assert_eq!(row_col_to_byte(&lines, 1, 0), 4); // "\n" joins lines
+        assert_eq!(row_col_to_byte(&lines, 9, 0), 6); // past last row → one past end
+    }
+
+    #[test]
+    fn word_prefix_at_survives_multibyte_prefix() {
+        // col is a char index; slicing must not panic on the 2-byte é.
+        let lines = vec!["éx".to_string()];
+        assert_eq!(word_prefix_at(&lines, 0, 1), "é");
+        assert_eq!(word_prefix_at(&lines, 0, 2), "éx");
+        // Non-identifier boundary after a multi-byte char.
+        let lines = vec!["sélect ".to_string()];
+        assert_eq!(word_prefix_at(&lines, 0, 6), "sélect");
+    }
 }
