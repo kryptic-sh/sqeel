@@ -1317,6 +1317,157 @@ fn duck_value_to_string(v: duckdb::types::Value) -> Option<String> {
 /// Rows added automatically when a SELECT/WITH query has no LIMIT clause.
 pub const DEFAULT_ROW_LIMIT: usize = 100;
 
+/// Uppercased leading verb of `query`'s main statement, skipping a leading
+/// `WITH [RECURSIVE] cte AS (...), …` block: `WITH x AS (SELECT 1) DELETE
+/// FROM users` reports `DELETE`, `WITH x AS (SELECT 1) SELECT …` reports
+/// `SELECT`. Comments, string literals and quoted identifiers are skipped;
+/// CTE bodies are consumed by balanced-paren matching. Returns `None` when
+/// no top-level verb is found (empty, comments only, or a malformed CTE
+/// header).
+pub(crate) fn main_verb(query: &str) -> Option<String> {
+    let bytes = query.as_bytes();
+    let mut i = skip_ws_comments(bytes, 0);
+
+    let (first, after) = read_keyword(bytes, i)?;
+    if !first.eq_ignore_ascii_case("WITH") {
+        return Some(first);
+    }
+    i = skip_ws_comments(bytes, after);
+
+    // Optional RECURSIVE.
+    if let Some((kw, after)) = read_keyword(bytes, i)
+        && kw.eq_ignore_ascii_case("RECURSIVE")
+    {
+        i = skip_ws_comments(bytes, after);
+    }
+
+    loop {
+        // CTE name, optional column list, then `AS (body)`.
+        let (_, after) = read_keyword(bytes, i)?;
+        i = skip_ws_comments(bytes, after);
+        if bytes.get(i) == Some(&b'(') {
+            i = skip_balanced_parens(bytes, i)?;
+            i = skip_ws_comments(bytes, i);
+        }
+        let (kw, after) = read_keyword(bytes, i)?;
+        if !kw.eq_ignore_ascii_case("AS") {
+            return None;
+        }
+        i = skip_ws_comments(bytes, after);
+        if bytes.get(i) != Some(&b'(') {
+            return None;
+        }
+        i = skip_balanced_parens(bytes, i)?;
+        i = skip_ws_comments(bytes, i);
+
+        if bytes.get(i) == Some(&b',') {
+            i = skip_ws_comments(bytes, i + 1);
+        } else {
+            return read_keyword(bytes, i).map(|(kw, _)| kw);
+        }
+    }
+}
+
+/// Skip ASCII whitespace and `--` / `/* */` comments starting at byte `i`.
+fn skip_ws_comments(bytes: &[u8], mut i: usize) -> usize {
+    let n = bytes.len();
+    loop {
+        while i < n && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) == Some(&b'-') && bytes.get(i + 1) == Some(&b'-') {
+            while i < n && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes.get(i) == Some(&b'/') && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        }
+        return i;
+    }
+}
+
+/// Read the word (`[A-Za-z0-9_]` run) starting at byte `i`, uppercased.
+fn read_keyword(bytes: &[u8], i: usize) -> Option<(String, usize)> {
+    let n = bytes.len();
+    let mut j = i;
+    while j < n && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    if j == i {
+        None
+    } else {
+        Some((
+            String::from_utf8_lossy(&bytes[i..j]).to_ascii_uppercase(),
+            j,
+        ))
+    }
+}
+
+/// Consume from `bytes[i]` (an opening `(`) through its matching `)`,
+/// skipping string literals and comments, so parens inside a CTE subquery
+/// don't confuse the match. Returns the index just past the close, or
+/// `None` when unbalanced / unterminated.
+fn skip_balanced_parens(bytes: &[u8], i: usize) -> Option<usize> {
+    let n = bytes.len();
+    if bytes.get(i) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut j = i;
+    while j < n {
+        let b = bytes[j];
+        match b {
+            b'(' => {
+                depth += 1;
+                j += 1;
+            }
+            b')' => {
+                depth -= 1;
+                j += 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            b'\'' | b'"' | b'`' => {
+                let quote = b;
+                j += 1;
+                while j < n {
+                    if bytes[j] == b'\\' && j + 1 < n {
+                        j += 2;
+                        continue;
+                    }
+                    if bytes[j] == quote {
+                        j += 1;
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            b'-' if j + 1 < n && bytes[j + 1] == b'-' => {
+                while j < n && bytes[j] != b'\n' {
+                    j += 1;
+                }
+            }
+            b'/' if j + 1 < n && bytes[j + 1] == b'*' => {
+                j += 2;
+                while j + 1 < n && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                    j += 1;
+                }
+                j = (j + 2).min(n);
+            }
+            _ => j += 1,
+        }
+    }
+    None
+}
+
 /// Returns the leading uppercase keyword if `query` is a non-row
 /// statement (DML / DDL / transaction control / etc), else `None`.
 /// Used by `execute` to dispatch to sqlx's `execute()` and surface
@@ -1326,10 +1477,10 @@ pub const DEFAULT_ROW_LIMIT: usize = 100;
 /// SELECT, WITH, VALUES, SHOW, EXPLAIN, DESC[RIBE], TABLE, PRAGMA.
 /// Anything else with a recognisable verb is treated as non-row.
 /// An unrecognisable / empty query falls through to fetch_all so
-/// sqlx surfaces its own parse error.
+/// sqlx surfaces its own parse error. A `WITH` CTE block is skipped, so
+/// `WITH x AS (...) DELETE …` is dispatched as DELETE, not SELECT.
 fn non_query_verb(query: &str) -> Option<String> {
-    let stripped = skip_leading_whitespace_and_comments(query.trim_start());
-    let kw = leading_keyword(stripped)?.to_ascii_uppercase();
+    let kw = main_verb(query)?;
     let row_returning = matches!(
         kw.as_str(),
         "SELECT"
@@ -1345,17 +1496,16 @@ fn non_query_verb(query: &str) -> Option<String> {
     if row_returning { None } else { Some(kw) }
 }
 
-/// If `query` is a top-level SELECT or WITH statement with no LIMIT clause,
-/// return a rewritten query with ` LIMIT <limit>` appended. Returns `None`
-/// when the query already limits itself or isn't a row-producing statement.
+/// If `query` is a top-level SELECT statement (including one fronted by a
+/// `WITH` CTE block) with no LIMIT clause, return a rewritten query with
+/// ` LIMIT <limit>` appended. Returns `None` when the query already limits
+/// itself or isn't a row-producing statement.
 pub fn apply_default_limit(query: &str, limit: usize) -> Option<String> {
     let trimmed = strip_trailing_semicolons(query).trim();
     if trimmed.is_empty() {
         return None;
     }
-    let after_comments = skip_leading_whitespace_and_comments(trimmed);
-    let first_kw = leading_keyword(after_comments)?.to_ascii_uppercase();
-    if first_kw != "SELECT" && first_kw != "WITH" {
+    if main_verb(trimmed).as_deref() != Some("SELECT") {
         return None;
     }
     if has_top_level_keyword(trimmed, "LIMIT")
@@ -1369,30 +1519,6 @@ pub fn apply_default_limit(query: &str, limit: usize) -> Option<String> {
 
 fn strip_trailing_semicolons(q: &str) -> &str {
     q.trim_end().trim_end_matches(';').trim_end()
-}
-
-fn skip_leading_whitespace_and_comments(mut s: &str) -> &str {
-    loop {
-        let before = s;
-        s = s.trim_start();
-        if let Some(rest) = s.strip_prefix("--") {
-            s = rest.split_once('\n').map(|(_, r)| r).unwrap_or("");
-        } else if let Some(rest) = s.strip_prefix("/*") {
-            s = rest.split_once("*/").map(|(_, r)| r).unwrap_or("");
-        }
-        if s == before {
-            return s;
-        }
-    }
-}
-
-fn leading_keyword(s: &str) -> Option<&str> {
-    let end = s
-        .char_indices()
-        .find(|(_, c)| !c.is_ascii_alphabetic())
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-    if end == 0 { None } else { Some(&s[..end]) }
 }
 
 /// Scan `q` for `needle` (case-insensitive, whole word) appearing at
@@ -1522,6 +1648,62 @@ mod limit_tests {
         let out = apply(q).unwrap();
         assert!(out.ends_with(" LIMIT 100"));
         assert!(out.contains("SELECT * FROM users"));
+    }
+
+    #[test]
+    fn main_verb_skips_cte_block() {
+        assert_eq!(main_verb("SELECT * FROM t"), Some("SELECT".into()));
+        assert_eq!(
+            main_verb("WITH x AS (SELECT 1) DELETE FROM users"),
+            Some("DELETE".into())
+        );
+        assert_eq!(
+            main_verb("WITH RECURSIVE x AS (SELECT 1), y AS (SELECT 2) INSERT INTO t VALUES (1)"),
+            Some("INSERT".into())
+        );
+        assert_eq!(
+            main_verb("  -- c\n/* b */ WITH x AS (SELECT 1) SELECT 2"),
+            Some("SELECT".into())
+        );
+        // Parens / strings / comments inside the CTE body don't confuse the scan.
+        assert_eq!(
+            main_verb("WITH x AS (SELECT ')' || '(x' FROM t /* ) */) UPDATE t SET a = 1"),
+            Some("UPDATE".into())
+        );
+        assert_eq!(main_verb("WITH x AS (SELECT 1)"), None); // no main statement
+        assert_eq!(main_verb(""), None);
+        assert_eq!(main_verb("-- only a comment"), None);
+    }
+
+    #[test]
+    fn with_dml_not_rewritten() {
+        // Old code treated every WITH as row-producing and appended
+        // ` LIMIT 100` to WITH-DML — a PG syntax error (and on MySQL 8+ an
+        // unconfirmed, partial delete).
+        assert_eq!(
+            apply("WITH x AS (SELECT 1) DELETE FROM users WHERE id = 1"),
+            None
+        );
+        assert_eq!(apply("WITH x AS (SELECT 1) UPDATE users SET a = 1"), None);
+        assert_eq!(apply("WITH x AS (SELECT 1) INSERT INTO t VALUES (1)"), None);
+        // WITH-SELECT still gets the cap.
+        assert_eq!(
+            apply("WITH x AS (SELECT 1) SELECT * FROM x"),
+            Some("WITH x AS (SELECT 1) SELECT * FROM x LIMIT 100".into())
+        );
+    }
+
+    #[test]
+    fn non_query_verb_sees_through_cte_block() {
+        assert_eq!(
+            non_query_verb("WITH x AS (SELECT 1) DELETE FROM users"),
+            Some("DELETE".into())
+        );
+        assert_eq!(
+            non_query_verb("WITH x AS (SELECT 1) UPDATE users SET a = 1"),
+            Some("UPDATE".into())
+        );
+        assert_eq!(non_query_verb("WITH x AS (SELECT 1) SELECT * FROM x"), None);
     }
 
     #[test]

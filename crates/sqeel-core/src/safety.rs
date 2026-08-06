@@ -40,7 +40,13 @@ impl DestructiveKind {
 /// before running. `None` means "safe to dispatch".
 pub fn destructive_kind(stmt: &str) -> Option<DestructiveKind> {
     let words = top_level_words(stmt);
-    let first = words.first()?;
+    // The actual verb, skipping a leading `WITH … AS (…)` CTE block —
+    // `WITH x AS (SELECT 1) DELETE FROM users` must be flagged as DELETE,
+    // not treated as a row-producing WITH. Fall back to the first
+    // top-level word when the CTE header doesn't parse.
+    let first = crate::db::main_verb(stmt)
+        .or_else(|| words.first().cloned())
+        .unwrap_or_default();
     match first.as_str() {
         "DROP" => Some(DestructiveKind::Drop),
         "TRUNCATE" => Some(DestructiveKind::Truncate),
@@ -227,6 +233,36 @@ mod tests {
         assert_eq!(
             destructive_kind("TRUNCATE TABLE audit_log"),
             Some(DestructiveKind::Truncate)
+        );
+    }
+
+    #[test]
+    fn with_dml_flagged_destructive() {
+        // Old code classified by the first word only, so a CTE-fronted
+        // DELETE/UPDATE read as "WITH" → no confirm.
+        assert_eq!(
+            destructive_kind("WITH x AS (SELECT 1) DELETE FROM users"),
+            Some(DestructiveKind::DeleteWithoutWhere)
+        );
+        assert_eq!(
+            destructive_kind("WITH x AS (SELECT 1) UPDATE users SET email = 'x'"),
+            Some(DestructiveKind::UpdateWithoutWhere)
+        );
+        // A WHERE inside the CTE body doesn't count; one on the main
+        // statement does.
+        assert_eq!(
+            destructive_kind("WITH x AS (SELECT id FROM users WHERE active) DELETE FROM users"),
+            Some(DestructiveKind::DeleteWithoutWhere)
+        );
+        assert_eq!(
+            destructive_kind(
+                "WITH x AS (SELECT id FROM users) DELETE FROM users WHERE id IN (SELECT id FROM x)"
+            ),
+            None
+        );
+        assert_eq!(
+            destructive_kind("WITH x AS (SELECT 1) SELECT * FROM users"),
+            None
         );
     }
 
