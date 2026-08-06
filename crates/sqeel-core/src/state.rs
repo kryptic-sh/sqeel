@@ -3487,11 +3487,14 @@ impl AppState {
         let tls = self.build_tls_config(&url);
         let is_edit = self.edit_connection_original_name.is_some();
         if let Some(ref original) = self.edit_connection_original_name.clone() {
-            // Editing: rename file if name changed, then overwrite
+            // Editing: write the new connection first, then remove the old
+            // one. `save_connection` validates the name and does the
+            // disk/keyring writes; deleting first meant a bad rename or a
+            // failed write destroyed the original with nothing to replace it.
+            crate::config::save_connection(&name, &url, password_opt, tls.as_ref())?;
             if *original != name {
                 crate::config::delete_connection(original)?;
             }
-            crate::config::save_connection(&name, &url, password_opt, tls.as_ref())?;
             // Update in-memory entry. Store the URL as-is; the keyring
             // splice happens at load_connections() time on next startup.
             if let Some(entry) = self
@@ -5838,6 +5841,65 @@ trailing prose ignored";
         assert_eq!(s.add_connection_field, AddConnectionField::VerifyMode);
         s.add_connection_tab();
         assert_eq!(s.add_connection_field, AddConnectionField::Name);
+    }
+
+    #[test]
+    fn edit_connection_bad_rename_keeps_original() {
+        install_mock_keyring();
+        let _guard = lock_config_dir();
+        let _ = crate::config::delete_connection("keep_me");
+
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.add_connection_name = "keep_me".into();
+        s.add_connection_url = "postgres://user@localhost/db".into();
+        s.add_connection_password = String::new();
+        s.save_new_connection().unwrap();
+
+        s.edit_connection_original_name = Some("keep_me".into());
+        s.add_connection_name = "bad name!".into();
+        let err = s.save_new_connection().unwrap_err();
+        assert!(
+            err.to_string().contains("only contain"),
+            "unexpected error: {err:#}"
+        );
+
+        let conns = crate::config::load_connections().unwrap();
+        assert!(
+            conns.iter().any(|c| c.name == "keep_me"),
+            "original connection must survive a failed rename; got: {conns:#?}"
+        );
+        let _ = crate::config::delete_connection("keep_me");
+    }
+
+    #[test]
+    fn edit_connection_rename_moves_file_and_keyring() {
+        install_mock_keyring();
+        let _guard = lock_config_dir();
+        let _ = crate::config::delete_connection("old_name");
+        let _ = crate::config::delete_connection("new_name");
+
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.add_connection_name = "old_name".into();
+        s.add_connection_url = "postgres://user@localhost/db".into();
+        s.add_connection_password = String::new();
+        s.save_new_connection().unwrap();
+
+        s.edit_connection_original_name = Some("old_name".into());
+        s.add_connection_name = "new_name".into();
+        s.save_new_connection().unwrap();
+
+        let conns = crate::config::load_connections().unwrap();
+        assert!(
+            conns.iter().any(|c| c.name == "new_name"),
+            "renamed connection not found; got: {conns:#?}"
+        );
+        assert!(
+            !conns.iter().any(|c| c.name == "old_name"),
+            "old name must be gone; got: {conns:#?}"
+        );
+        let _ = crate::config::delete_connection("new_name");
     }
 
     #[test]
