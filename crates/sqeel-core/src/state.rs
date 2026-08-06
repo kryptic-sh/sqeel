@@ -3824,11 +3824,14 @@ impl AppState {
     }
 
     /// Evict content of cold tabs (not active, not accessed within 5 min) to free RAM.
+    /// Dirty tabs are never evicted — their in-memory content is the only
+    /// copy of unsaved edits (scratch files are only written by an explicit
+    /// save), and `switch_to_tab` would cold-load from disk, losing them.
     pub fn evict_cold_tabs(&mut self) {
         let cutoff = std::time::Duration::from_secs(300);
         let now = Instant::now();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            if i == self.active_tab {
+            if i == self.active_tab || tab.dirty {
                 continue;
             }
             if let Some(accessed) = tab.last_accessed
@@ -4202,6 +4205,30 @@ mod tests {
             qrx,
             lrx,
         )
+    }
+
+    #[test]
+    fn evict_cold_tabs_skips_dirty_tabs() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        let cold = Instant::now() - std::time::Duration::from_secs(301);
+        let mut dirty_tab = TabEntry::open("dirty.sql".into(), "unsaved edits".into());
+        dirty_tab.dirty = true;
+        dirty_tab.last_accessed = Some(cold);
+        let mut clean_tab = TabEntry::open("clean.sql".into(), "saved".into());
+        clean_tab.last_accessed = Some(cold);
+        s.tabs.push(dirty_tab);
+        s.tabs.push(clean_tab);
+        s.active_tab = 2; // neither tab is active
+
+        s.evict_cold_tabs();
+
+        assert_eq!(
+            s.tabs[0].content.as_deref(),
+            Some("unsaved edits"),
+            "dirty tab must keep its in-memory content"
+        );
+        assert_eq!(s.tabs[1].content, None, "clean cold tab is evicted");
     }
 
     #[test]
