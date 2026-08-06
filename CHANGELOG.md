@@ -8,6 +8,11 @@ patch bumps.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Alpine `.apk` package builds again — the man page is gzipped before
+  install (abuild rejects uncompressed man pages).
+
 ## [0.6.1] - 2026-08-06
 
 ### Changed
