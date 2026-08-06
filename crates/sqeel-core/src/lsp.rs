@@ -368,6 +368,20 @@ fn translate_response(id: i64, result: Value) -> Option<LspEvent> {
     None
 }
 
+/// Byte offset of the UTF-16 code-unit position `utf16` within `s` (LSP
+/// expresses `ParameterLabel::LabelOffsets` in UTF-16 code units, per the
+/// spec). Clamps to the end of the string for offsets past the end.
+fn utf16_to_byte_offset(s: &str, utf16: usize) -> usize {
+    let mut units = 0usize;
+    for (byte_idx, c) in s.char_indices() {
+        if units >= utf16 {
+            return byte_idx;
+        }
+        units += c.len_utf16();
+    }
+    s.len()
+}
+
 fn signature_help_text(sig: &SignatureHelp) -> Option<String> {
     if sig.signatures.is_empty() {
         return None;
@@ -401,11 +415,17 @@ fn signature_help_text(sig: &SignatureHelp) -> Option<String> {
             ParameterLabel::LabelOffsets([start, end]) => {
                 let s = *start as usize;
                 let e = *end as usize;
-                // Offsets are byte-safe via char boundary checks.
-                if s <= label.len() && e <= label.len() && s <= e {
-                    let param_slice = &label[s..e];
-                    let before = &label[..s];
-                    let after = &label[e..];
+                if s <= e {
+                    // LSP expresses these offsets in UTF-16 code units;
+                    // convert to the UTF-8 byte boundaries they land on
+                    // before slicing. The old code sliced at the raw
+                    // offsets, panicking on any label with a multi-byte
+                    // character before the active parameter.
+                    let bs = utf16_to_byte_offset(label, s);
+                    let be = utf16_to_byte_offset(label, e);
+                    let param_slice = &label[bs..be];
+                    let before = &label[..bs];
+                    let after = &label[be..];
                     format!("{before}[{param_slice}]{after}")
                 } else {
                     label.clone()
@@ -639,6 +659,57 @@ mod tests {
             super::signature_help_text(&sig),
             Some("fn(a int, [b text])".into())
         );
+    }
+
+    #[test]
+    fn sig_help_offsets_utf16_multibyte_label() {
+        // LSP offsets are UTF-16 code units: α is one unit but two bytes,
+        // so the raw offsets are not UTF-8 byte boundaries — the old code
+        // panicked slicing label[4..8] (byte 4 is inside α).
+        let label = "fn(α int, b text)";
+        let sig = make_sig(
+            label,
+            vec![
+                ParameterLabel::LabelOffsets([4, 8]),   // " int"
+                ParameterLabel::LabelOffsets([10, 16]), // "b text"
+            ],
+            None,
+            Some(0),
+        );
+        assert_eq!(
+            super::signature_help_text(&sig),
+            Some("fn(α[ int], b text)".into())
+        );
+    }
+
+    #[test]
+    fn sig_help_offsets_astral_char() {
+        // An astral char (😀) is two UTF-16 units but four bytes.
+        let label = "x😀 int";
+        let sig = make_sig(
+            label,
+            vec![ParameterLabel::LabelOffsets([4, 7])], // "int"
+            None,
+            Some(0),
+        );
+        assert_eq!(super::signature_help_text(&sig), Some("x😀 [int]".into()));
+    }
+
+    #[test]
+    fn utf16_to_byte_offset_lands_on_boundaries() {
+        let f = super::utf16_to_byte_offset;
+        // ASCII: UTF-16 offset == byte offset.
+        assert_eq!(f("abc", 0), 0);
+        assert_eq!(f("abc", 3), 3);
+        // BMP multi-byte (α = 1 unit, 2 bytes).
+        assert_eq!(f("aαb", 1), 1);
+        assert_eq!(f("aαb", 2), 3);
+        // Astral (😀 = 2 units, 4 bytes).
+        assert_eq!(f("a😀b", 1), 1);
+        assert_eq!(f("a😀b", 3), 5);
+        // Past the end clamps to the string length.
+        assert_eq!(f("aαb", 99), 4);
+        assert_eq!(f("", 0), 0);
     }
 
     #[test]
