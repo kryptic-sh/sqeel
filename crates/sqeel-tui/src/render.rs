@@ -2229,6 +2229,14 @@ pub(crate) fn highlight_query_line(query: &str, dialect: Dialect) -> Line<'stati
     Line::from(out)
 }
 
+/// Hover popup width: natural content width + 2-col pad on each side,
+/// clamped to `min..=cap`. The cap is never allowed to drop below the
+/// min, so a narrow terminal yields an overflowing-but-safe popup
+/// (ratatui clips it) instead of panicking `u16::clamp` on `min > max`.
+fn hover_popup_width(natural: u16, min: u16, cap: u16) -> u16 {
+    natural.saturating_add(4).clamp(min, cap.max(min))
+}
+
 /// Render a tabular hover payload as a centred, borderless, focus-
 /// stealing dialog. Chrome matches the command palette — 2-col / 1-row
 /// padding on `dialog_bg`, no border rule.
@@ -2252,9 +2260,7 @@ pub(crate) fn draw_hover_table(
         .map(|&w| w as u32 + 1)
         .sum::<u32>()
         .saturating_sub(1);
-    let popup_w = (natural_w as u16)
-        .saturating_add(4) // 2-col pad each side
-        .clamp(40, area.width.saturating_sub(4).min(100));
+    let popup_w = hover_popup_width(natural_w as u16, 40, area.width.saturating_sub(4).min(100));
     // Body max = terminal height - vertical padding (2) - borders
     // space (none) - header/hr (2). Popup height = header + hr + body
     // + 1 top + 1 bottom pad.
@@ -2497,7 +2503,7 @@ pub(crate) fn draw_hover_popup(f: &mut ratatui::Frame<'_>, area: Rect, scroll: u
         })
         .max()
         .unwrap_or(0);
-    let popup_w = (longest + 4).clamp(30, area.width.saturating_sub(4).min(80));
+    let popup_w = hover_popup_width(longest, 30, area.width.saturating_sub(4).min(80));
     let content_h = (lines.len() as u16).min(area.height.saturating_sub(4));
     // popup = content + 2 rows of vertical padding.
     let popup_h = (content_h + 2).min(area.height.saturating_sub(2));
@@ -3677,4 +3683,29 @@ pub(crate) fn draw_add_connection(
 pub(crate) struct CursorOptsResult<'a> {
     pub forward: std::borrow::Cow<'a, str>,
     pub info: Option<String>,
+}
+
+#[cfg(test)]
+mod hover_width_tests {
+    use super::hover_popup_width;
+
+    #[test]
+    fn popup_width_clamps_into_range() {
+        assert_eq!(hover_popup_width(10, 40, 100), 40);
+        assert_eq!(hover_popup_width(50, 40, 100), 54);
+        assert_eq!(hover_popup_width(200, 40, 100), 100);
+    }
+
+    #[test]
+    fn popup_width_survives_narrow_terminal() {
+        // min > cap used to panic `u16::clamp`; now the cap wins and the
+        // popup simply overflows (ratatui clips it).
+        assert_eq!(hover_popup_width(10, 40, 16), 40); // width-20 terminal
+        assert_eq!(hover_popup_width(10, 30, 6), 30); // width-10 terminal
+    }
+
+    #[test]
+    fn popup_width_saturates_huge_natural() {
+        assert_eq!(hover_popup_width(u16::MAX, 40, 100), 100);
+    }
 }
