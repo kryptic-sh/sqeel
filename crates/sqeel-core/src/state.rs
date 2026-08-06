@@ -248,6 +248,25 @@ pub fn cell_display(cell: &Option<String>) -> &str {
     cell.as_deref().unwrap_or("NULL")
 }
 
+/// Replace the password in `url` with `***` for display (status bar,
+/// connection switcher). `Url::password()` returns the percent-encoded
+/// slice, which matches the raw text for plain passwords and is what
+/// `replacen` needs for encoded ones — so both forms are masked. The URL
+/// is returned unchanged when it can't be parsed or has no password. A
+/// targeted string replacement is deliberate: round-tripping through the
+/// `url` crate normalises the URL in ways that can subtly alter opaque
+/// sqlite paths.
+pub fn mask_db_url_password(url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    let password = match parsed.password() {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => return url.to_string(),
+    };
+    url.replacen(&format!(":{password}@"), ":***@", 1)
+}
+
 impl QueryResult {
     pub fn compute_col_widths(&mut self) {
         self.col_widths = self

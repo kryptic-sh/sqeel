@@ -3035,7 +3035,10 @@ pub(crate) fn draw_connection_switcher(f: &mut ratatui::Frame<'_>, state: &AppSt
         let line = Line::from(vec![
             Span::styled(badge_glyph, row_style.fg(badge_color)),
             Span::styled(c.name.clone(), name_style),
-            Span::styled(format!(" — {}", c.url), row_style),
+            Span::styled(
+                format!(" — {}", sqeel_core::state::mask_db_url_password(&c.url)),
+                row_style,
+            ),
         ]);
         f.render_widget(Paragraph::new(line).style(row_style), row);
     }

@@ -10,7 +10,7 @@ use sqeel_core::{
     persistence::{evict_old_results, load_result_for, sanitize_conn_slug},
     schema::SchemaNode,
     state::cell_display,
-    state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest},
+    state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest, mask_db_url_password},
 };
 
 /// Map C0/C1 control characters and DEL to printable glyphs so a DB cell
@@ -125,27 +125,6 @@ fn prompt_yes_no(question: &str) -> bool {
     matches!(line.trim(), "y" | "Y")
 }
 
-/// Mask the password segment of a database URL for display.
-///
-/// Preserves scheme, user, host, port, and database path; replaces any
-/// password segment with `***`. Returns the original string unchanged on
-/// parse failure or when no authority block is present (e.g. sqlite paths).
-///
-/// Password detection uses the `url` crate, which already ships transitively
-/// in sqeel-core. We don't call `Url::set_password` here because the
-/// `url` crate normalises the URL in ways that can subtly alter opaque
-/// sqlite paths — instead we do a targeted in-place string replacement.
-fn mask_db_url_password(url: &str) -> String {
-    let Ok(parsed) = url::Url::parse(url) else {
-        return url.to_string();
-    };
-    let password = match parsed.password() {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => return url.to_string(),
-    };
-    url.replacen(&format!(":{password}@"), ":***@", 1)
-}
-
 /// Best-effort cleanup of the sandbox dir. Logged failures don't
 /// surface as a process error — the user's work in the parent shell
 /// shouldn't die because `/tmp` is wedged.
@@ -177,7 +156,9 @@ const LONG_ABOUT: &str = concat!(
     long_about = LONG_ABOUT,
 )]
 struct Args {
-    /// Connection URL (e.g. mysql://user:pass@host/db)
+    /// Connection URL (e.g. mysql://user:pass@host/db).
+    /// Prefer `$DATABASE_URL` or a saved connection: a password on the
+    /// command line is visible in the process list for the app's lifetime.
     #[arg(short = 'u', long)]
     url: Option<String>,
 
@@ -480,7 +461,7 @@ fn main() -> anyhow::Result<()> {
         {
             let mut s = state.lock().unwrap();
             s.schema_connecting = true;
-            s.set_status(format!("Connecting to {url}…"));
+            s.set_status(format!("Connecting to {}…", mask_db_url_password(&url)));
         }
         let connect_state = state.clone();
         rt.spawn(async move {
@@ -1466,6 +1447,16 @@ mod cli_tests {
         let url = "postgres://user@localhost/mydb";
         let masked = mask_db_url_password(url);
         assert_eq!(masked, url);
+    }
+
+    #[test]
+    fn mask_db_url_password_percent_encoded() {
+        // `Url::password()` returns the encoded slice, which the replacen
+        // matches — encoded passwords are masked too.
+        let url = "postgres://alice:p%40ss@dbhost/db";
+        let masked = mask_db_url_password(url);
+        assert_eq!(masked, "postgres://alice:***@dbhost/db");
+        assert!(!masked.contains("p%40ss"));
     }
 
     #[test]
