@@ -117,7 +117,7 @@ pub fn save_session(
         result_tabs,
         active_result_tab,
     })?;
-    std::fs::write(dir.join("session.toml"), content)?;
+    crate::persistence::write_private(&dir.join("session.toml"), content.as_bytes())?;
     Ok(())
 }
 

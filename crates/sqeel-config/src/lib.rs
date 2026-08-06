@@ -421,8 +421,36 @@ pub fn save_connection(
         tls: tls.cloned(),
     };
     let content = toml::to_string(&conn)?;
-    std::fs::write(conns_dir.join(format!("{name}.toml")), content)?;
+    write_private(&conns_dir.join(format!("{name}.toml")), content.as_bytes())?;
     Ok(())
+}
+
+/// Write `content` to `path` owner-only (0600). Connection files can hold
+/// a plaintext password (the keyring-fallback path), and
+/// `std::fs::write` defaults to 0644 under the 0755 config dir. The mode
+/// is applied at creation on Unix so a fresh file is never world-readable;
+/// a pre-existing (legacy 0644) file is chmodded down after writing.
+fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(content)?;
+        // Covers a pre-existing file created 0644 before this hardening.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content)?;
+        Ok(())
+    }
 }
 
 /// Attempt to migrate an existing connection's inline password to the OS keyring.
@@ -460,7 +488,7 @@ pub fn migrate_connection_to_keyring(name: &str) -> anyhow::Result<MigrationResu
         tls: conn.tls,
     };
     let updated_content = toml::to_string(&updated)?;
-    std::fs::write(&path, updated_content)?;
+    write_private(&path, updated_content.as_bytes())?;
     Ok(MigrationResult::Migrated)
 }
 
@@ -675,6 +703,16 @@ name = "local"
 
         // --- basic save + load roundtrip (no password) ---
         save_connection("test_db", "postgres://localhost/test", None, None).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(dir.path().join("conns").join("test_db.toml"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "connection file must be owner-only");
+        }
         let conns = load_connections().unwrap();
         assert_eq!(conns.len(), 1);
         assert_eq!(conns[0].name, "test_db");

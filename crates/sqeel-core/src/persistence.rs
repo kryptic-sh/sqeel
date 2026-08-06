@@ -63,6 +63,36 @@ fn ensure_dir(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Write `content` to `path` owner-only (0600). State files can hold
+/// query text, row data and (in the keyring-fallback case) passwords;
+/// `std::fs::write` defaults to 0644 under the 0755 config/data dirs.
+/// On Unix the mode is applied at creation, so there is no window where a
+/// fresh file is world-readable; a pre-existing (legacy 0644) file is
+/// chmodded down after writing. Non-Unix keeps the default (Windows ACLs).
+pub(crate) fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(content)?;
+        // Covers a pre-existing file that was created 0644 before this
+        // hardening landed (OpenOptions::mode only applies at creation).
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+}
+
 /// Returns next available `scratch_NNN.sql` name in the global
 /// queries dir. Scratch buffers are connection-agnostic.
 pub fn next_scratch_name() -> anyhow::Result<String> {
@@ -81,7 +111,7 @@ pub fn next_scratch_name() -> anyhow::Result<String> {
 pub fn save_query(name: &str, content: &str) -> anyhow::Result<()> {
     let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
     ensure_dir(&dir)?;
-    std::fs::write(dir.join(name), content)?;
+    write_private(&dir.join(name), content.as_bytes())?;
     Ok(())
 }
 
@@ -165,7 +195,7 @@ pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow
     let filename = format!("{}_{}.json", ts, hash);
 
     let json = serde_json::to_string_pretty(result)?;
-    std::fs::write(dir.join(&filename), json)?;
+    write_private(&dir.join(&filename), json.as_bytes())?;
 
     evict_old_results_dir(&dir);
     Ok(filename)
@@ -314,6 +344,40 @@ mod tests {
         save_query_to(&dir, "scratch_001.sql", "SELECT 1");
         let loaded = load_query_from(&dir, "scratch_001.sql");
         assert_eq!(loaded, "SELECT 1");
+    }
+
+    #[test]
+    fn write_private_creates_owner_only_file() {
+        let tmp = temp_data_dir();
+        let path = tmp.path().join("secret.bin");
+        write_private(&path, b"pw").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "state files must be owner-only");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "pw");
+    }
+
+    #[test]
+    fn write_private_hardens_pre_existing_world_readable_file() {
+        let tmp = temp_data_dir();
+        let path = tmp.path().join("legacy.bin");
+        std::fs::write(&path, b"old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        write_private(&path, b"new").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "legacy 0644 file must be chmodded down");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     }
 
     #[test]
