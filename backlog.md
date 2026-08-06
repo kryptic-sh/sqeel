@@ -5,44 +5,9 @@ Open work items, findings and deferred decisions. Finished items are deleted
 
 ## Review 2026-08-06
 
-Correctness review of the whole codebase (4 crates + app + tests). Every finding
-below was re-traced against the real code after the initial pass. Ranked
-most-severe first.
-
-### Findings
-
-All 10 findings fixed (see `git log`). The remaining subsections record what was
-cleared and what is deliberately fragile.
-
-### Cleared (suspected and disproved)
-
-- `completion_ctx::parse_context` mid-char `byte_offset` — the only caller
-  derives the offset through `row_col_to_byte` (char→byte conversion); no path
-  hands it a non-boundary offset. (The `&line[..col]` slice in the same block is
-  finding 1.)
-- `split_top_level_semicolons` / `has_top_level_keyword` / `strip_sql_comments`
-  doubled-quote handling — close-then-reopen keeps `;` inside strings; same
-  final token set.
-- `statement_ranges` tree-sitter walk — root children + semicolon split handles
-  DESC, comments, unterminated strings; test-covered.
-- `results_find`/`hover_find` backward wrap arithmetic — probes cover all cells
-  exactly once.
-- `strip_sql_comments` byte stripping — all stripped regions delimited by ASCII
-  bytes; multibyte sequences never split.
-- `evict_old_results_dir` timestamp parsing — non-matching names skipped, not
-  mis-deleted.
-- Tampered `session.toml` / result JSON — restore clamps indices; grid access is
-  `.get()`-based.
-- `:export csv out.csv` bare filename → `create_dir_all("")` — succeeds on Linux
-  (empty path = cwd).
-- Batch tab indexing in `dispatch_pending_run` — `dismiss_results()` clears
-  `result_tabs` before loading tabs are pushed.
-- Executor/channel leak on reconnect — dropping senders winds the old executor
-  down.
-- `run_statement_under_cursor` `content[s..e]` — offsets computed against the
-  same joined string the slice indexes.
-- pgpass parsing (5-field rule, `\:`/`\\` escapes, permission check) — matches
-  libpq; test-pinned.
+Correctness review of the whole codebase (4 crates + app + tests). All 10
+findings fixed (see `git log`); suspected-and-disproved items cleared. Open
+items below are deliberate fragility, not defects.
 
 ### Hardening (correct today, fragile — not defects)
 
@@ -83,44 +48,18 @@ cleared and what is deliberately fragile.
 Reviewed: all of `crates/sqeel-config`, `crates/sqeel-core` (incl. state.rs 5891
 lines), `crates/sqeel-tui` (lib.rs 5545 lines, render.rs 3680 lines),
 `apps/sqeel` src + tests. Read in full, not skimmed, by two read-only review
-passes; every finding above re-verified by me (tracing the failure path and
-reading the cited lines) before inclusion. Not reviewed: `pkg/` packaging
-scripts, `.github/` workflows, the tree-sitter grammar fixtures and
-`crates/sqeel-core/src/config.toml` bundled defaults. The LSP-position-unit
-finding (10) and the LabelOffsets reachability (9) depend on server behaviour
-(sqls) and were not exercised against a live server.
+passes; every item above re-verified by me (tracing the failure path and reading
+the cited lines) before inclusion. Not reviewed: `pkg/` packaging scripts,
+`.github/` workflows, the tree-sitter grammar fixtures and
+`crates/sqeel-core/src/config.toml` bundled defaults.
 
 ## Audit 2026-08-06
 
 Security audit of the whole codebase (local TUI SQL client; attack surface: CLI
 args, config/connection/session/result files, the local sqls LSP child process,
 pgpass, keyring, DB server responses). The user's own SQL is trusted by design.
-Two read-only passes; every finding below re-traced against the real code before
-inclusion.
-
-### Findings (ranked)
-
-All 4 findings fixed (see `git log`); the summary below is historical.
-
-### Cleared (suspected, disproved)
-
-- SQL injection via DB-server-controlled identifiers — backtick/quote-doubling
-  on the MySQL/SQLite introspection queries; the Postgres/MySQL/DuckDB catalog
-  queries are bound parameters.
-- Command injection — no shell is ever built from data; child processes use
-  `Command::new().args(...)` with fixed args (sqls `-config <path>`, tmux
-  `select-pane -{L|R|D|U}`); pkg/ scripts use fixed URLs + pinned checksums.
-- LSP child leak — hjkl-lsp 0.41 uses `kill_on_drop(true)` + grace period.
-- pgpass permissions — `mode & 0o177 == 0` check matches libpq semantics.
-- Path traversal via connection name / tab filenames — name charset restricted
-  to `[A-Za-z0-9_-]`.
-- TUI terminal escape injection — ratatui and hjkl-buffer-tui filter control
-  graphemes on every render path.
-- Malformed session.toml / result JSON — `.ok()` fallbacks, no panic.
-- Theme/config parsing — errors become toasts, never panics.
-- LSP diagnostic ranges — clamped before use.
-- `--sandbox` — fresh mkdtemp, dirs redirected before config reads, cleanup
-  default no.
+All 4 findings fixed (see `git log`); suspected-and-disproved items cleared.
+Open items below are deliberate fragility, not defects.
 
 ### Hardening (correct today, fragile)
 
@@ -143,7 +82,7 @@ All 4 findings fixed (see `git log`); the summary below is historical.
 - No per-cell size cap — a single multi-GB cell is held fully in memory and
   persisted before rendering truncates it.
 - `Mutex<AppState>` + `unwrap()` everywhere — a panic on any thread while
-  holding the lock (e.g. review finding 1) poisons it and cascades.
+  holding the lock (e.g. the byte/char slice panic) poisons it and cascades.
 - Keyring splice feeds attacker-planted URLs — requires config-dir write access
   (which already implies full file compromise).
 - Error strings may embed the URL — displayed in-TUI only, not persisted.
@@ -160,18 +99,13 @@ tree-sitter grammar fixtures were not audited in depth; the release workflow's
 checksum substitution step was not verified; MySQL/Postgres/DuckDB paths are
 static reads only — no live server exercised.
 
-Summary: 0 critical, 0 high, 2 medium, 2 low (plus 2 duplicates of review
-findings 1 and 5). Fix first: the `/tmp` sqls-config symlink race, and 0600
-permissions on conns/session/results files. The byte/char slice panic (review
-finding 1) and the headless escape injection (audit finding 3) are the crash and
-injection fixes respectively.
-
 ## Tidy 2026-08-06
 
 Quality/cleanup pass over the whole codebase (behavior-preserving only).
 Dead-code claims verified by workspace-wide grep (each symbol below has zero
 callers outside its own file); duplication claims traced against both copies.
-Nothing was changed.
+The dead-code deletions and the `ensure_dir` inline landed (567898b); the items
+below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
@@ -219,31 +153,6 @@ Nothing was changed.
   `home_dir() == None` and leaves bare `~` literal, `expand_tilde` passes
   through / expands. Unify only if the error path is kept.
 
-### Dead code (delete; each is pub-in-lib with zero callers, verified by grep)
-
-- `crates/sqeel-core/src/persistence.rs` — `results_dir()` (53),
-  `list_results()` (215), `load_result()` (238) — dead trio; `results_dir_for`
-  is the live variant.
-- `crates/sqeel-core/src/state.rs` — `close_active_result_tab` (876),
-  `schema_toggle_path` (2424), `append_db_tables` (2663), `refresh_schema_nodes`
-  (2858, not even used by tests), `update_active_tab_cursor` (3694),
-  `save_all_dirty` (3973; the TUI uses the `prepare_save_all_dirty` +
-  `PendingSave::commit` split).
-- `crates/sqeel-core/src/config.rs:154` — `load_session()` (binary uses
-  `load_session_data`/`save_session`; `load_session_inner` stays).
-- `crates/sqeel-core/src/schema.rs:121` — `is_expanded(&self)`.
-- `apps/sqeel/src/bin/sqeel.rs:1022/1025/1039/1060` — `cancelled` local in the
-  batch loop is write-only; drop the var and both assignments.
-- `crates/sqeel-tui/src/ex.rs:251` — `handle_export_cmd`'s `_toasts` param
-  unused (1 caller lib.rs:2604 + 5 test calls to update).
-- `crates/sqeel-tui/src/theme.rs:144` — `Theme.name` read only by tests; drop
-  field + the `#[allow(dead_code)]`, or surface it.
-
-### Over-abstraction
-
-- `crates/sqeel-core/src/persistence.rs:61-64` — `ensure_dir` is a pure
-  `create_dir_all` passthrough at 3 in-file call sites; inline it.
-
 ### Allocation nits
 
 - `crates/sqeel-core/src/highlight.rs:633` — `highlight()` clones the whole
@@ -272,8 +181,8 @@ Performance pass over the whole codebase. Frame-rate context: one redraw runs
 per event (keystroke, mouse, resize), per content change, per LSP event, and up
 to 20 Hz while a hover loads; each redraw runs `draw` while holding the global
 `state` mutex. Findings ranked by impact; every cost traced to a named caller +
-frequency. (One core-agent finding — `refresh_schema_nodes` — was dropped: it is
-dead code per the Tidy section.)
+frequency. (One core-agent finding — `refresh_schema_nodes` — was dropped: it
+was deleted as dead code in 567898b.)
 
 ### Findings
 
