@@ -254,14 +254,21 @@ fn keyring_entry(name: &str) -> anyhow::Result<keyring_core::Entry> {
 /// Returns `(original_url, None)` when the URL has no inline password or cannot
 /// be parsed by the `url` crate. The returned URL-without-password preserves all
 /// other components (host, path, query).
+///
+/// The returned password is percent-*decoded*: `Url::password()` yields the raw
+/// encoded slice (e.g. `p%40ss` for `p@ss`), and `set_password` re-encodes on
+/// splice — so storing the encoded form in the keyring would double-encode on
+/// every save/load cycle. The keyring is the safe place for the raw password.
 fn split_url_password(raw: &str) -> (String, Option<String>) {
     let Ok(mut parsed) = url::Url::parse(raw) else {
         return (raw.to_string(), None);
     };
-    let password = parsed
-        .password()
-        .filter(|p| !p.is_empty())
-        .map(String::from);
+    let password = parsed.password().filter(|p| !p.is_empty()).map(|p| {
+        percent_encoding::percent_decode_str(p)
+            .decode_utf8()
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| p.to_string())
+    });
     if password.is_some() {
         // Silently ignore errors — if we cannot clear the password field
         // (e.g. cannot-be-a-base URLs) we fall back to the original URL.
@@ -765,6 +772,56 @@ name = "local"
             matches!(entry.get_password(), Err(keyring_core::Error::NoEntry)),
             "keyring entry should be deleted after delete_connection"
         );
+    }
+
+    #[test]
+    fn inline_password_roundtrip_percent_decodes() {
+        install_mock_keyring();
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        set_config_dir_override(dir.path().to_path_buf());
+
+        // Password needing URL-encoding (`@`) supplied inline in the URL.
+        // The keyring must hold the DECODED form, or the load-time splice
+        // double-encodes (`p%40ss` → `p%2540ss`) and sqlx decodes to a
+        // literal `%40` string → auth failure.
+        save_connection("pct", "postgres://alice:p%40ss@dbhost/db", None, None).unwrap();
+        let entry = keyring_core::Entry::new("sqeel", "pct").unwrap();
+        assert_eq!(
+            entry.get_password().unwrap(),
+            "p@ss",
+            "keyring must store the decoded password"
+        );
+
+        let conns = load_connections().unwrap();
+        let conn = conns.iter().find(|c| c.name == "pct").unwrap();
+        assert_eq!(
+            conn.url, "postgres://alice:p%40ss@dbhost/db",
+            "spliced URL must be singly-encoded; got: {}",
+            conn.url
+        );
+
+        // A second save/load cycle must not accumulate encoding.
+        save_connection("pct", &conn.url, None, None).unwrap();
+        let conns = load_connections().unwrap();
+        let conn = conns.iter().find(|c| c.name == "pct").unwrap();
+        assert_eq!(conn.url, "postgres://alice:p%40ss@dbhost/db");
+
+        // Migration path decodes the inline password too.
+        std::fs::write(
+            dir.path().join("conns").join("migrate_pct.toml"),
+            "url = \"postgres://bob:p%40ss@dbhost/db\"\n",
+        )
+        .unwrap();
+        let result = migrate_connection_to_keyring("migrate_pct").unwrap();
+        assert_eq!(result, MigrationResult::Migrated);
+        let entry = keyring_core::Entry::new("sqeel", "migrate_pct").unwrap();
+        assert_eq!(entry.get_password().unwrap(), "p@ss");
+        let conns = load_connections().unwrap();
+        let conn = conns.iter().find(|c| c.name == "migrate_pct").unwrap();
+        assert_eq!(conn.url, "postgres://bob:p%40ss@dbhost/db");
     }
 
     #[test]
