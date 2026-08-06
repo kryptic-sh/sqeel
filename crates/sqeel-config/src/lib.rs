@@ -20,8 +20,24 @@ pub use pgpass::{PgpassEntry, load_pgpass, load_pgpass_from};
 use std::path::PathBuf;
 
 use hjkl_config::{AppConfig, Validate, ValidationError, ensure_non_empty_str, ensure_non_zero};
-pub use hjkl_engine::KeybindingMode;
 use serde::{Deserialize, Serialize};
+
+/// Modal keybinding scheme for the SQL panes, parsed from the config's
+/// `keybindings` key ("vim" or "emacs" / "vscode").
+///
+/// hjkl 0.41 dropped the non-vim disciplines (`Editor::new` no longer takes a
+/// mode), so every editor is vim — the non-vim strings parse for config
+/// compatibility and behave as `Vim`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeybindingMode {
+    #[default]
+    Vim,
+    /// Any other string ("emacs", "vscode", …). Parses for config
+    /// compatibility; hjkl only ships the vim discipline.
+    #[serde(other)]
+    Other,
+}
 
 /// Bundled default config — the single source of truth for default values.
 /// User overrides are deep-merged on top via [`hjkl_config::load_layered_from`].

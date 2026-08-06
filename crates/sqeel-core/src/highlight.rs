@@ -111,7 +111,7 @@ pub fn sql_grammar() -> Option<Arc<Grammar>> {
     // No handle yet — kick off async load.
     match (async_loader(), sql_spec_and_meta()) {
         (Ok(al), Ok((spec, meta))) => {
-            *handle_guard = Some(al.load_async("sql".into(), spec, meta));
+            *handle_guard = Some(al.load_async("sql", spec, meta));
         }
         (Err(e), _) | (_, Err(e)) => {
             tracing::warn!("sql grammar async loader init failed: {e:#}");
@@ -144,7 +144,7 @@ pub fn sql_grammar_blocking() -> anyhow::Result<Arc<Grammar>> {
             .map_err(|_| anyhow::anyhow!("sql grammar handle mutex poisoned"))?;
         handle_guard
             .take()
-            .unwrap_or_else(|| al.load_async("sql".into(), spec, meta))
+            .unwrap_or_else(|| al.load_async("sql", spec, meta))
     };
 
     let so_path = handle
@@ -523,7 +523,7 @@ impl Highlighter {
                     start_col,
                     end_row,
                     end_col,
-                    capture: s.capture,
+                    capture: s.capture.to_string(),
                 }
             })
             .collect();
@@ -686,7 +686,7 @@ impl Highlighter {
                     start_col,
                     end_row,
                     end_col,
-                    capture: s.capture,
+                    capture: s.capture.to_string(),
                 }
             })
             .collect();

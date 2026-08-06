@@ -12,12 +12,7 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-  # Marvin Attack timing sidechannel in `rsa` (pulled by `sqlx-mysql`).
-  # No safe upgrade exists. Threat model: attacker must observe local
-  # decryption timing; not exploitable over a network for sqeel use.
-  "RUSTSEC-2023-0071",
-]
+ignore = []
 
 [licenses]
 version = 2

@@ -8,6 +8,16 @@ patch bumps.
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the complete `hjkl-*` dependency stack from 0.33.5 to 0.41.0, `sqlx`
+  from 0.8.6 to 0.9.0, and `pulldown-cmark` from 0.11 to 0.13.4. The editor port
+  (`Editor` now wraps `hjkl_buffer::View`, the vim discipline is installed
+  explicitly, dynamic queries go through `sqlx::AssertSqlSafe`) is behaviour-
+  preserving.
+- Non-vim `keybindings` config values (`emacs`, `vscode`) now behave as `vim`:
+  hjkl 0.41 dropped its non-vim editing disciplines.
+
 ## [0.6.0] - 2026-07-13
 
 ### Added

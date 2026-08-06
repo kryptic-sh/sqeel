@@ -80,7 +80,7 @@ pub(crate) fn capture_style(capture: &str) -> Option<Style> {
 /// result arrived: we `take` the existing outer `Vec`, mutate only the
 /// rows inside the window, and put it back.
 pub(crate) fn apply_window_spans<H: Host>(
-    editor: &mut Editor<hjkl_buffer::Buffer, H>,
+    editor: &mut Editor<hjkl_buffer::View, H>,
     result: &HighlightResult,
     buffer_rows: usize,
     diagnostics: &[sqeel_core::lsp::Diagnostic],
@@ -351,12 +351,12 @@ pub(crate) fn overlay_span(
 
 /// Materialize the buffer's logical lines as owned `String`s.
 ///
-/// `hjkl_buffer::Buffer` went rope-only in 0.33 (`Buffer::lines` deleted);
+/// `hjkl_buffer::View` went rope-only in 0.33 (`Buffer::lines` deleted);
 /// the line-slice helpers below (`word_prefix_at`, `row_col_to_byte`, …)
 /// keep their `&[String]` shape and get fed through this adapter. O(n) per
 /// call — fine for sqeel's SQL-scratch buffer sizes (the heavy pipeline is
 /// already gated off above 2 MB).
-pub(crate) fn buffer_lines(buffer: &hjkl_buffer::Buffer) -> Vec<String> {
+pub(crate) fn buffer_lines(buffer: &hjkl_buffer::View) -> Vec<String> {
     let rope = buffer.rope();
     (0..rope.len_lines())
         .map(|r| hjkl_buffer::rope_line_str(&rope, r))

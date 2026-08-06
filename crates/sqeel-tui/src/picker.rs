@@ -43,7 +43,7 @@ impl hjkl_picker::PickerLogic for SqeelFileSource {
         self.inner.match_text(idx)
     }
 
-    fn preview(&self, idx: usize) -> (hjkl_buffer::Buffer, String) {
+    fn preview(&self, idx: usize) -> (hjkl_buffer::View, String) {
         self.inner.preview(idx)
     }
 
@@ -171,13 +171,13 @@ impl hjkl_picker::PickerLogic for SqeelHistorySource {
             .unwrap_or_default()
     }
 
-    fn preview(&self, idx: usize) -> (hjkl_buffer::Buffer, String) {
+    fn preview(&self, idx: usize) -> (hjkl_buffer::View, String) {
         let text = self
             .entries
             .get(idx)
             .map(|e| e.query.as_str())
             .unwrap_or_default();
-        let buf = hjkl_buffer::Buffer::from_str(text);
+        let buf = hjkl_buffer::View::from_str(text);
         (buf, String::new())
     }
 

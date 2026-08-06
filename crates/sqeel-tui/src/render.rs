@@ -61,7 +61,7 @@ pub(crate) const EDITOR_SIGN_COL_WIDTH: u16 = 1;
 /// `(text_width, mode)` the renderer wraps with, and the column maps into
 /// the clicked segment's char range.
 pub(crate) fn editor_cell_to_doc<H: Host>(
-    editor: &Editor<hjkl_buffer::Buffer, H>,
+    editor: &Editor<hjkl_buffer::View, H>,
     area: Rect,
     col: u16,
     row: u16,
@@ -122,7 +122,7 @@ pub(crate) fn editor_cell_to_doc<H: Host>(
 /// `i` is the 1-based index of the match at-or-after the cursor; 0 means no
 /// match has been navigated to yet (cursor is past the last match).
 pub(crate) fn search_label<H: Host>(
-    editor: &Editor<hjkl_buffer::Buffer, H>,
+    editor: &Editor<hjkl_buffer::View, H>,
 ) -> Option<Span<'static>> {
     let re = editor.search_state().pattern.as_ref()?;
     let pat = re.as_str().to_string();
@@ -197,7 +197,7 @@ pub(crate) fn parse_error_position(msg: &str) -> Option<(usize, usize)> {
 ///   "the lines I marked" matches user intent and matches what
 ///   VisualLine would have produced.
 pub(crate) fn visual_selection_text<H: Host>(
-    editor: &Editor<hjkl_buffer::Buffer, H>,
+    editor: &Editor<hjkl_buffer::View, H>,
 ) -> Option<String> {
     let lines = buffer_lines(editor.buffer());
     match editor.vim_mode() {
@@ -319,7 +319,7 @@ pub(crate) struct DrawAreas {
 pub(crate) fn draw<H: Host>(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
-    editor: &mut Editor<hjkl_buffer::Buffer, H>,
+    editor: &mut Editor<hjkl_buffer::View, H>,
     command_input: Option<&TextInput>,
     rename_input: Option<&TextInput>,
     file_picker: Option<&mut hjkl_picker::Picker>,
@@ -923,7 +923,7 @@ pub(crate) fn extract_results_row(
 pub(crate) fn draw_status_bar<H: Host>(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
-    editor: &Editor<hjkl_buffer::Buffer, H>,
+    editor: &Editor<hjkl_buffer::View, H>,
     area: Rect,
 ) {
     let mode = mode_label(state);
@@ -1267,7 +1267,7 @@ pub(crate) fn draw_schema(
 pub(crate) fn draw_editor<H: Host>(
     f: &mut ratatui::Frame<'_>,
     state: &AppState,
-    editor: &mut Editor<hjkl_buffer::Buffer, H>,
+    editor: &mut Editor<hjkl_buffer::View, H>,
     area: Rect,
     focused: bool,
     // (active_search, last_search) — bundled to stay under clippy's arg-count limit.
@@ -1403,7 +1403,11 @@ pub(crate) fn draw_editor<H: Host>(
         })
         .collect();
 
-    let style_table: Vec<Style> = editor.ratatui_style_table();
+    let style_table: Vec<Style> = editor
+        .style_table()
+        .iter()
+        .map(|&s| hjkl_engine_tui::style_to_ratatui(s))
+        .collect();
     let resolver = move |id: u32| style_table.get(id as usize).copied().unwrap_or_default();
     let selection = editor.buffer_selection();
     let (cursorline, cursorcolumn) = cursor_opts;
@@ -1427,6 +1431,7 @@ pub(crate) fn draw_editor<H: Host>(
         fold_line_bg: Style::default(),
         folds_override: None,
         cursor_column_bg: cursorcolumn_style,
+        cursor_column: None,
         selection_bg: Style::default().add_modifier(Modifier::REVERSED),
         cursor_style: Style::default().bg(cursor_line_bg),
         gutter: Some(gutter),
@@ -1437,6 +1442,7 @@ pub(crate) fn draw_editor<H: Host>(
         conceals: &[],
         spans: editor.buffer_spans(),
         search_pattern: editor.search_state().pattern.as_ref(),
+        search_ranges: None,
         non_text_style: Style::default(),
         show_eob: false,
         diag_overlays: &[],
@@ -1452,6 +1458,7 @@ pub(crate) fn draw_editor<H: Host>(
         eol_hints: &[],
         blame_plan: None,
         diff_filler: None,
+        background: Style::default(),
     };
     f.render_widget(view, chunks[1]);
 
@@ -2600,7 +2607,7 @@ pub(crate) fn format_hover_lines(text: &str) -> Vec<Line<'static>> {
                 out.push(Line::from(""));
             }
             Event::Start(Tag::BlockQuote(_)) => base_stack.push(quote_style),
-            Event::End(TagEnd::BlockQuote) => {
+            Event::End(TagEnd::BlockQuote(_)) => {
                 base_stack.pop();
                 flush_line(&mut current, &mut out);
             }

@@ -81,7 +81,7 @@ pub(crate) fn dispatch_pending_run(state: &Arc<Mutex<AppState>>, pending: Pendin
 /// returned as a [`PendingRun`] for the caller to park behind the y/N
 /// confirm modal.
 pub(crate) fn run_statement_under_cursor(
-    editor: &mut Editor<hjkl_buffer::Buffer, SqeelHost>,
+    editor: &mut Editor<hjkl_buffer::View, SqeelHost>,
     state: &Arc<Mutex<AppState>>,
     guard: bool,
 ) -> Option<PendingRun> {
@@ -143,7 +143,7 @@ pub(crate) fn run_statement_under_cursor(
 /// dispatched — the whole batch comes back as a [`PendingRun`] for the
 /// confirm modal (all-or-nothing keeps statement order intact).
 pub(crate) fn run_all_statements(
-    editor: &mut Editor<hjkl_buffer::Buffer, SqeelHost>,
+    editor: &mut Editor<hjkl_buffer::View, SqeelHost>,
     state: &Arc<Mutex<AppState>>,
     guard: bool,
 ) -> Option<PendingRun> {

@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use hjkl_editor_tui::spinner::frame as spinner_frame;
-use hjkl_engine_tui::{EditorRatatuiExt, crossterm_to_input, style_from_ratatui};
+use hjkl_engine_tui::{crossterm_to_input, style_from_ratatui};
 
 use completion_thread::CompletionThread;
 use crossterm::{
@@ -42,6 +42,7 @@ use crossterm::{
 use hjkl_engine::types::Style as EngineStyle;
 use hjkl_engine::{Editor, Host};
 use hjkl_form::TextFieldEditor;
+use hjkl_vim::VimEditorExt;
 
 /// Copy `text` to the OS clipboard and queue a toast reporting success or the
 /// "too large" failure. `label` names what was copied (e.g. "Row", a column
@@ -400,7 +401,7 @@ async fn run_loop(
     let mut opt_cursorline = main_config.editor.cursorline;
     let mut opt_cursorcolumn = main_config.editor.cursorcolumn;
     let mut editor = Editor::new(
-        hjkl_buffer::Buffer::new(),
+        hjkl_buffer::View::new(),
         SqeelHost::new(),
         hjkl_engine::types::Options {
             // Preserve sqeel's pre-0.1.0 default (Settings::default()
@@ -410,7 +411,7 @@ async fn run_loop(
             ..Default::default()
         },
     );
-    editor.keybinding_mode = keybinding_mode;
+    hjkl_vim::install_vim_discipline(&mut editor);
     let mut highlighter = sqeel_core::highlight::Highlighter::new_async();
     // `(dirty_gen, len_bytes, line_count)` cache for the joined source
     // string so pure scroll frames skip the O(N) Vec<String> ↔ String
@@ -858,7 +859,7 @@ async fn run_loop(
             .map(|t| t.elapsed() >= CONTENT_PUBLISH_DEBOUNCE)
             .unwrap_or(false);
         let buffer_bytes = if should_publish {
-            <hjkl_buffer::Buffer as hjkl_engine::Query>::len_bytes(editor.buffer())
+            <hjkl_buffer::View as hjkl_engine::Query>::len_bytes(editor.buffer())
         } else {
             0
         };
@@ -977,9 +978,9 @@ async fn run_loop(
                 }
 
                 let buffer = editor.buffer();
-                let dg = <hjkl_buffer::Buffer as hjkl_engine::Query>::dirty_gen(buffer);
-                let lb = <hjkl_buffer::Buffer as hjkl_engine::Query>::len_bytes(buffer);
-                let lc = <hjkl_buffer::Buffer as hjkl_engine::Query>::line_count(buffer);
+                let dg = <hjkl_buffer::View as hjkl_engine::Query>::dirty_gen(buffer);
+                let lb = <hjkl_buffer::View as hjkl_engine::Query>::len_bytes(buffer);
+                let lc = <hjkl_buffer::View as hjkl_engine::Query>::line_count(buffer);
                 let rebuild = dg != hl_cache_dirty_gen
                     || lb != hl_cache_len_bytes
                     || lc != hl_cache_line_count;
@@ -1024,9 +1025,9 @@ async fn run_loop(
                     let row_count_window = end.saturating_sub(start);
 
                     let vp_start =
-                        <hjkl_buffer::Buffer as hjkl_engine::Query>::byte_of_row(buffer, start);
+                        <hjkl_buffer::View as hjkl_engine::Query>::byte_of_row(buffer, start);
                     let vp_end =
-                        <hjkl_buffer::Buffer as hjkl_engine::Query>::byte_of_row(buffer, end)
+                        <hjkl_buffer::View as hjkl_engine::Query>::byte_of_row(buffer, end)
                             .min(hl_cache_source.len());
                     let vp_end = vp_end.max(vp_start);
 
@@ -1529,7 +1530,7 @@ async fn run_loop(
             let destructive_confirm_label: Option<String> =
                 destructive_confirm.as_ref().map(PendingRun::warn_label);
             let editor_search_text = editor.search_prompt().map(|p| p.text.as_str().to_owned());
-            let last_editor_search = editor.last_search().map(str::to_owned);
+            let last_editor_search = editor.last_search();
             let results_search_text = results_search_prompt.as_ref().map(|p| p.text());
             let hover_search_text = hover_search_prompt.as_ref().map(|p| p.text.clone());
             let command_input_view = command_input.as_ref().map(text_field_view);
@@ -1568,13 +1569,13 @@ async fn run_loop(
             // dialog's default Bar shape for Block so the user sees
             // mode feedback while editing the prompt line itself.
             let shape = if let Some(ref f) = command_input {
-                match f.vim_mode() {
-                    hjkl_engine::VimMode::Insert => CursorShape::Bar,
+                match f.coarse_mode() {
+                    hjkl_engine::CoarseMode::Insert => CursorShape::Bar,
                     _ => CursorShape::Block,
                 }
             } else if let Some(ref f) = results_search_prompt {
-                match f.vim_mode() {
-                    hjkl_engine::VimMode::Insert => CursorShape::Bar,
+                match f.coarse_mode() {
+                    hjkl_engine::CoarseMode::Insert => CursorShape::Bar,
                     _ => CursorShape::Block,
                 }
             } else {
@@ -2299,7 +2300,7 @@ async fn run_loop(
                         // Insert+non-empty → drop to Normal so user can
                         // edit the prompt line with vim motions.
                         let text = cmd.text();
-                        if text.is_empty() || cmd.vim_mode() != hjkl_engine::VimMode::Insert {
+                        if text.is_empty() || cmd.coarse_mode() != hjkl_engine::CoarseMode::Insert {
                             command_input = None;
                         } else {
                             cmd.enter_normal();
@@ -2748,9 +2749,9 @@ async fn run_loop(
                             }
                             // `:put [{reg}]` — paste register contents as new
                             // lines below (above with `:0put` → above=true).
-                            hjkl_ex::ExEffect::PutRegister { reg, above } => {
-                                let text =
-                                    editor.registers().read(reg).map(|slot| slot.text.clone());
+                            hjkl_ex::ExEffect::PutRegister { reg, above, .. } => {
+                                let text = editor
+                                    .with_registers(|regs| regs.read(reg).map(|s| s.text.clone()));
                                 match text {
                                     Some(t) if !t.is_empty() => {
                                         editor.set_yank_linewise(true);
@@ -3037,7 +3038,9 @@ async fn run_loop(
                     let input: EngineInput = crossterm_to_input(key);
                     if input.key == EngineKey::Esc {
                         let text = prompt.text();
-                        if text.is_empty() || prompt.vim_mode() != hjkl_engine::VimMode::Insert {
+                        if text.is_empty()
+                            || prompt.coarse_mode() != hjkl_engine::CoarseMode::Insert
+                        {
                             results_search_prompt = None;
                         } else {
                             prompt.enter_normal();
@@ -4196,7 +4199,6 @@ mod tests {
     use super::format_hover_lines;
     use hjkl_engine::{Input, Key};
     use hjkl_form::TextFieldEditor;
-    use hjkl_form::VimMode as FormVimMode;
     use ratatui::style::Modifier;
     use sqeel_core::{
         AppState,
@@ -4216,9 +4218,9 @@ mod tests {
         content: &str,
         text_width: u16,
         wrap: hjkl_buffer::Wrap,
-    ) -> Editor<hjkl_buffer::Buffer, hjkl_engine::types::DefaultHost> {
+    ) -> Editor<hjkl_buffer::View, hjkl_engine::types::DefaultHost> {
         let mut ed = Editor::new(
-            hjkl_buffer::Buffer::from_str(content),
+            hjkl_buffer::View::from_str(content),
             hjkl_engine::types::DefaultHost::new(),
             hjkl_engine::types::Options::default(),
         );
@@ -4233,7 +4235,7 @@ mod tests {
     }
 
     fn cell(
-        ed: &Editor<hjkl_buffer::Buffer, hjkl_engine::types::DefaultHost>,
+        ed: &Editor<hjkl_buffer::View, hjkl_engine::types::DefaultHost>,
         col: u16,
         row: u16,
     ) -> (usize, usize) {
@@ -4295,7 +4297,7 @@ mod tests {
     fn command_prompt_open_type_submit() {
         let mut f = TextFieldEditor::new(true);
         f.enter_insert_at_end();
-        assert_eq!(f.vim_mode(), FormVimMode::Insert);
+        assert_eq!(f.coarse_mode(), hjkl_engine::CoarseMode::Insert);
         type_chars(&mut f, "q!");
         assert_eq!(f.text(), "q!");
         // Enter at any mode submits — text() captures the payload, the
@@ -4312,9 +4314,9 @@ mod tests {
 
         // Non-empty + Insert + Esc → host drops to Normal.
         type_chars(&mut f, "wq");
-        assert_eq!(f.vim_mode(), FormVimMode::Insert);
+        assert_eq!(f.coarse_mode(), hjkl_engine::CoarseMode::Insert);
         f.enter_normal();
-        assert_eq!(f.vim_mode(), FormVimMode::Normal);
+        assert_eq!(f.coarse_mode(), hjkl_engine::CoarseMode::Normal);
         assert_eq!(f.text(), "wq");
         // Normal + Esc → host closes (cancel).
     }
@@ -4782,7 +4784,7 @@ mod tests {
         };
 
         let mut editor = hjkl_engine::Editor::new(
-            hjkl_buffer::Buffer::new(),
+            hjkl_buffer::View::new(),
             hjkl_engine::types::DefaultHost::new(),
             hjkl_engine::types::Options::default(),
         );
@@ -4848,7 +4850,7 @@ mod tests {
         };
 
         let mut editor = hjkl_engine::Editor::new(
-            hjkl_buffer::Buffer::new(),
+            hjkl_buffer::View::new(),
             hjkl_engine::types::DefaultHost::new(),
             hjkl_engine::types::Options::default(),
         );

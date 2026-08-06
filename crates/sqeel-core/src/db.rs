@@ -362,9 +362,18 @@ impl DbConnection {
         // result set means "nothing happened".
         if let Some(verb) = non_query_verb(query) {
             let rows_affected = match &self.pool {
-                Pool::MySql(p) => sqlx::query(query).execute(p).await?.rows_affected(),
-                Pool::Pg(p) => sqlx::query(query).execute(p).await?.rows_affected(),
-                Pool::Sqlite(p) => sqlx::query(query).execute(p).await?.rows_affected(),
+                Pool::MySql(p) => sqlx::query(sqlx::AssertSqlSafe(query))
+                    .execute(p)
+                    .await?
+                    .rows_affected(),
+                Pool::Pg(p) => sqlx::query(sqlx::AssertSqlSafe(query))
+                    .execute(p)
+                    .await?
+                    .rows_affected(),
+                Pool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(query))
+                    .execute(p)
+                    .await?
+                    .rows_affected(),
                 #[cfg(feature = "duckdb")]
                 Pool::DuckDb(c) => {
                     let conn = Arc::clone(c);
@@ -398,9 +407,13 @@ impl DbConnection {
             }
             None => query,
         };
+        // `query` is caller-supplied ad-hoc SQL (this is a query runner —
+        // the user is the one typing the statement), so it is inherently
+        // dynamic: wrap in `AssertSqlSafe` for sqlx 0.9's `SqlSafeStr`
+        // bound instead of pretending it is a `'static` literal.
         let (columns, rows) = match &self.pool {
             Pool::MySql(p) => {
-                let rs = sqlx::query(query).fetch_all(p).await?;
+                let rs = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(p).await?;
                 let cols = rs
                     .first()
                     .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
@@ -412,7 +425,7 @@ impl DbConnection {
                 (cols, data)
             }
             Pool::Pg(p) => {
-                let rs = sqlx::query(query).fetch_all(p).await?;
+                let rs = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(p).await?;
                 let cols = rs
                     .first()
                     .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
@@ -424,7 +437,7 @@ impl DbConnection {
                 (cols, data)
             }
             Pool::Sqlite(p) => {
-                let rs = sqlx::query(query).fetch_all(p).await?;
+                let rs = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(p).await?;
                 let cols = rs
                     .first()
                     .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
@@ -512,9 +525,10 @@ impl DbConnection {
         match &self.pool {
             Pool::MySql(p) => {
                 let safe_db = database.replace('`', "``");
-                let rows = sqlx::query(&format!("SHOW TABLES FROM `{safe_db}`"))
-                    .fetch_all(p)
-                    .await?;
+                let rows =
+                    sqlx::query(sqlx::AssertSqlSafe(format!("SHOW TABLES FROM `{safe_db}`")))
+                        .fetch_all(p)
+                        .await?;
                 Ok(rows.iter().map(|r| mysql_string(r, 0)).collect())
             }
             Pool::Sqlite(p) => {
@@ -588,9 +602,11 @@ impl DbConnection {
             }
             Pool::Sqlite(p) => {
                 let safe_table = table.replace('"', "\"\"");
-                let rows = sqlx::query(&format!("PRAGMA table_info(\"{safe_table}\")"))
-                    .fetch_all(p)
-                    .await?;
+                let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "PRAGMA table_info(\"{safe_table}\")"
+                )))
+                .fetch_all(p)
+                .await?;
                 Ok(rows
                     .iter()
                     .map(|r| ColumnInfo {
@@ -751,19 +767,23 @@ impl DbConnection {
             // SQLite: best-effort via PRAGMA index_list + PRAGMA index_info.
             Pool::Sqlite(p) => {
                 let safe_table = table.replace('"', "\"\"");
-                let list_rows = sqlx::query(&format!("PRAGMA index_list(\"{safe_table}\")"))
-                    .fetch_all(p)
-                    .await
-                    .unwrap_or_default();
+                let list_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "PRAGMA index_list(\"{safe_table}\")"
+                )))
+                .fetch_all(p)
+                .await
+                .unwrap_or_default();
                 let mut infos = Vec::new();
                 for lr in &list_rows {
                     let idx_name: String = lr.try_get::<String, _>(1).unwrap_or_default();
                     let unique_int: i64 = lr.try_get::<i64, _>(2).unwrap_or(0);
                     let safe_idx = idx_name.replace('"', "\"\"");
-                    let col_rows = sqlx::query(&format!("PRAGMA index_info(\"{safe_idx}\")"))
-                        .fetch_all(p)
-                        .await
-                        .unwrap_or_default();
+                    let col_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "PRAGMA index_info(\"{safe_idx}\")"
+                    )))
+                    .fetch_all(p)
+                    .await
+                    .unwrap_or_default();
                     let cols: Vec<String> = col_rows
                         .iter()
                         .map(|cr| cr.try_get::<String, _>(2).unwrap_or_default())
@@ -883,10 +903,12 @@ impl DbConnection {
             Pool::Sqlite(p) => {
                 // PRAGMA foreign_key_list returns one row per (fk, column).
                 let safe_table = table.replace('"', "\"\"");
-                let rows = sqlx::query(&format!("PRAGMA foreign_key_list(\"{safe_table}\")"))
-                    .fetch_all(p)
-                    .await
-                    .unwrap_or_default();
+                let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "PRAGMA foreign_key_list(\"{safe_table}\")"
+                )))
+                .fetch_all(p)
+                .await
+                .unwrap_or_default();
                 // Columns: id, seq, table, from, to, ...
                 let mut agg: Vec<(i64, String, Vec<String>, Vec<String>)> = Vec::new();
                 for r in &rows {
