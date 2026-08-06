@@ -239,3 +239,32 @@ fn json_format_emits_real_null_for_sql_null() {
     );
     assert_eq!(v[0]["empty"], "", "empty string must stay a string: {v}");
 }
+
+#[test]
+fn control_chars_in_cells_do_not_reach_stdout() {
+    let (_dir, url) = db_url("esc");
+    // A cell containing a raw OSC 52 clipboard-write sequence
+    // (char(27) = ESC) must not inject into the terminal — the table
+    // formatter replaces control chars with Control Pictures.
+    let seed = "CREATE TABLE t (v TEXT); \
+                INSERT INTO t VALUES (char(27)||']52;c;TUlTQ0g='||char(27)||'\\');";
+    let out = sqeel()
+        .args(["--url", &url, "-e", seed, "-e", "SELECT v FROM t;"])
+        .output()
+        .expect("spawn sqeel");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = out.stdout;
+    assert!(
+        !stdout.contains(&0x1b),
+        "raw ESC byte must not reach stdout: {stdout:?}"
+    );
+    let text = String::from_utf8_lossy(&stdout);
+    assert!(
+        text.contains('\u{241b}'),
+        "ESC should render as the ␛ Control Picture: {text}"
+    );
+}

@@ -13,6 +13,25 @@ use sqeel_core::{
     state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest},
 };
 
+/// Map C0/C1 control characters and DEL to printable glyphs so a DB cell
+/// containing a raw terminal escape sequence (e.g. an OSC 52 clipboard
+/// write, title spoofing) can never inject into the headless terminal.
+/// Same mapping the TUI's renderer applies (hjkl-buffer-tui
+/// `sanitize_control`): C0 → Control Pictures (U+2400..=U+241F), DEL →
+/// U+2421, C1 → U+FFFD; tab is kept. Applied to table and CSV cell
+/// output (JSON escapes control chars natively).
+fn sanitize_cell(s: &str) -> String {
+    s.chars()
+        .map(|ch| match ch {
+            '\t' => ch,
+            '\0'..='\u{1f}' => char::from_u32(0x2400 + ch as u32).unwrap_or('\u{fffd}'),
+            '\u{7f}' => '\u{2421}',
+            '\u{80}'..='\u{9f}' => '\u{fffd}',
+            _ => ch,
+        })
+        .collect()
+}
+
 const SAMPLE_QUERY: &str = "-- TODO: backfill display_name for legacy users
 -- NOTE: emails are validated at the app layer, not here
 -- INFO
@@ -729,7 +748,7 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
             );
             for row in &r.rows {
                 let display: Vec<String> =
-                    row.iter().map(|c| cell_display(c).to_string()).collect();
+                    row.iter().map(|c| sanitize_cell(cell_display(c))).collect();
                 println!("{}", fmt_row(&display));
             }
         }
@@ -753,7 +772,7 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
                 println!(
                     "{}",
                     row.iter()
-                        .map(|c| esc(cell_display(c)))
+                        .map(|c| esc(&sanitize_cell(cell_display(c))))
                         .collect::<Vec<_>>()
                         .join(",")
                 );
@@ -1409,6 +1428,21 @@ mod cli_tests {
             help.contains(env!("CARGO_PKG_VERSION")),
             "long_help missing CARGO_PKG_VERSION; got:\n{help}"
         );
+    }
+
+    #[test]
+    fn sanitize_cell_neutralizes_escape_sequences() {
+        assert_eq!(sanitize_cell("plain"), "plain");
+        assert_eq!(sanitize_cell("a\tb"), "a\tb"); // tab is kept
+        assert_eq!(sanitize_cell("\u{1b}"), "\u{241b}"); // ESC → ␛
+        assert_eq!(sanitize_cell("\0"), "\u{2400}"); // NUL → ␀
+        assert_eq!(sanitize_cell("\u{7f}"), "\u{2421}"); // DEL → ␡
+        assert_eq!(sanitize_cell("\u{9b}"), "\u{fffd}"); // C1 CSI → replacement
+        // A full OSC 52 clipboard-write sequence carries no ESC bytes.
+        let seq = "\u{1b}]52;c;TUlTQ0g=\u{1b}\\";
+        let out = sanitize_cell(seq);
+        assert!(!out.contains('\u{1b}'), "ESC survived: {out:?}");
+        assert_eq!(out.chars().count(), seq.chars().count()); // width preserved
     }
 
     #[test]
