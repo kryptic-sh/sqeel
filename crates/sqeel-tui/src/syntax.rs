@@ -422,6 +422,13 @@ pub(crate) fn char_col_to_byte(line: &str, col: usize) -> usize {
         .unwrap_or(line.len())
 }
 
+/// UTF-16 code-unit column of the character position `col` within `line`.
+/// LSP `Position.character` is UTF-16 code units (the spec's universal
+/// default), which coincides with a plain char count only for BMP text.
+pub(crate) fn char_col_to_utf16(line: &str, col: usize) -> usize {
+    line.chars().take(col).map(|c| c.len_utf16()).sum()
+}
+
 /// Convert a `(row, col)` character position into a byte offset in the
 /// joined source (`\n` between lines). Used to feed cursor position into
 /// `completion_ctx::parse_context`, which operates on a single string.
@@ -485,6 +492,20 @@ mod tests {
         assert_eq!(char_col_to_byte("aé", 2), 3);
         assert_eq!(char_col_to_byte("aé", 99), 3); // past EOL clamps to len
         assert_eq!(char_col_to_byte("", 0), 0);
+    }
+
+    #[test]
+    fn char_col_to_utf16_counts_code_units() {
+        // ASCII: char index == UTF-16 units.
+        assert_eq!(char_col_to_utf16("abc", 3), 3);
+        // BMP multi-byte (α = 1 unit): char index still matches.
+        assert_eq!(char_col_to_utf16("aαb", 2), 2);
+        // Astral (😀 = 2 units): char index diverges.
+        assert_eq!(char_col_to_utf16("a😀b", 2), 3);
+        assert_eq!(char_col_to_utf16("a😀b", 3), 4);
+        // Past EOL clamps to the full unit count.
+        assert_eq!(char_col_to_utf16("a😀b", 99), 4);
+        assert_eq!(char_col_to_utf16("", 0), 0);
     }
 
     #[test]

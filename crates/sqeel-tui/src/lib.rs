@@ -1197,10 +1197,16 @@ async fn run_loop(
                         // loop too — we get the id synchronously from
                         // the shared counter, the serialize + send run
                         // in a spawned task.
+                        // LSP character is UTF-16 code units, not the
+                        // engine's char index.
+                        let lsp_col = buf_lines
+                            .get(row)
+                            .map(|l| char_col_to_utf16(l, col))
+                            .unwrap_or(col);
                         let id = client.writer().request_completion(
                             active_lsp_uri.clone(),
                             row as u32,
-                            col as u32,
+                            lsp_col as u32,
                         );
                         last_completion_id = Some(id);
                         // Signature help fires off the same `(` / `,` keystroke
@@ -1211,7 +1217,7 @@ async fn run_loop(
                             last_sig_help_id = Some(client.writer().request_signature_help(
                                 active_lsp_uri.clone(),
                                 row as u32,
-                                col as u32,
+                                lsp_col as u32,
                             ));
                         }
                     }
@@ -3978,7 +3984,8 @@ async fn run_loop(
                         if focus == Focus::Editor && vim_mode == VimMode::Normal =>
                     {
                         let (row, col) = editor.cursor();
-                        let word = word_at_cursor(&buffer_lines(editor.buffer()), row, col);
+                        let buf_lines = buffer_lines(editor.buffer());
+                        let word = word_at_cursor(&buf_lines, row, col);
                         // Three-tier dispatch for K:
                         //   1. Word matches a table whose columns are
                         //      cached → render from cache instantly.
@@ -4005,10 +4012,14 @@ async fn run_loop(
                             }
                         }
                         if !handled && let Some(ref client) = lsp {
+                            let lsp_col = buf_lines
+                                .get(row)
+                                .map(|l| char_col_to_utf16(l, col))
+                                .unwrap_or(col);
                             last_hover_id = Some(client.writer().request_hover(
                                 active_lsp_uri.clone(),
                                 row as u32,
-                                col as u32,
+                                lsp_col as u32,
                             ));
                             state.lock().unwrap().open_hover_loading();
                         }
@@ -4048,10 +4059,14 @@ async fn run_loop(
                             && let Some(ref client) = lsp
                         {
                             let (row, col) = editor.cursor();
+                            let lsp_col = buffer_lines(editor.buffer())
+                                .get(row)
+                                .map(|l| char_col_to_utf16(l, col))
+                                .unwrap_or(col);
                             last_definition_id = Some(client.writer().request_definition(
                                 active_lsp_uri.clone(),
                                 row as u32,
-                                col as u32,
+                                lsp_col as u32,
                             ));
                         }
                         if let Some(text) = editor.host_mut().take_clipboard_writes().pop() {
