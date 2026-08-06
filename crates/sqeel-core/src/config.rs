@@ -149,14 +149,3 @@ pub fn load_session_data() -> SessionData {
         active_result_tab: s.active_result_tab,
     }
 }
-
-/// Load only the last-used connection name from session.toml.
-pub fn load_session() -> Option<String> {
-    load_session_inner().and_then(|s| {
-        if s.connection.is_empty() {
-            None
-        } else {
-            Some(s.connection)
-        }
-    })
-}

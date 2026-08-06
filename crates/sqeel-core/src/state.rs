@@ -6,8 +6,7 @@ use crate::lsp::Diagnostic;
 use crate::persistence;
 use crate::schema::{
     SchemaNode, SchemaTreeItem, collect_expanded_paths, expand_path, find_cursor_by_path,
-    flatten_all, flatten_tree, merge_expansion, path_to_string, restore_expanded_paths,
-    toggle_node,
+    flatten_all, flatten_tree, path_to_string, restore_expanded_paths, toggle_node,
 };
 use lsp_types::DiagnosticSeverity;
 use std::collections::HashSet;
@@ -890,19 +889,6 @@ impl AppState {
             self.active_result_tab - 1
         };
         self.clamp_results_cursor();
-    }
-
-    pub fn close_active_result_tab(&mut self) {
-        if self.result_tabs.is_empty() {
-            return;
-        }
-        self.result_tabs.remove(self.active_result_tab);
-        if self.result_tabs.is_empty() {
-            self.active_result_tab = 0;
-            self.editor_ratio = 1.0;
-        } else if self.active_result_tab >= self.result_tabs.len() {
-            self.active_result_tab = self.result_tabs.len() - 1;
-        }
     }
 
     /// Replace single-query result. Wraps `push_result_tab` for the test API.
@@ -2440,12 +2426,6 @@ impl AppState {
         self.schema_scroll_offset = new;
     }
 
-    pub fn schema_toggle_path(&mut self, path: &[usize]) {
-        toggle_node(&mut self.schema_nodes, path);
-        self.maybe_lazy_load(path);
-        self.rebuild_schema_cache();
-    }
-
     pub fn schema_toggle_current(&mut self) {
         let path = self
             .schema_items_cache
@@ -2677,26 +2657,6 @@ impl AppState {
         self.rebuild_schema_cache();
     }
 
-    /// Append a batch of table nodes (no columns yet) to the named database.
-    /// Does not touch other databases or reset the cursor.
-    pub fn append_db_tables(&mut self, db_name: &str, tables: Vec<SchemaNode>) {
-        let mut changed = false;
-        for node in self.schema_nodes.iter_mut() {
-            if let SchemaNode::Database {
-                name, tables: t, ..
-            } = node
-                && name == db_name
-            {
-                t.extend(tables);
-                changed = true;
-                break;
-            }
-        }
-        if changed {
-            self.mark_schema_cache_dirty();
-        }
-    }
-
     /// Merge a fresh db-name list into the existing tree without dropping
     /// cached tables/columns. Databases in the new list that already exist are
     /// left untouched; databases missing from the new list are removed.
@@ -2870,16 +2830,6 @@ impl AppState {
             return true;
         }
         false
-    }
-
-    /// Like `set_schema_nodes` but preserves the cursor position and the
-    /// expanded/collapsed state of nodes that exist in both old and new trees.
-    pub fn refresh_schema_nodes(&mut self, mut nodes: Vec<SchemaNode>) {
-        merge_expansion(&self.schema_nodes.clone(), &mut nodes);
-        self.schema_nodes = nodes;
-        self.rebuild_schema_cache();
-        let max = self.schema_items_cache.len().saturating_sub(1);
-        self.schema_cursor = self.schema_cursor.min(max);
     }
 
     pub fn set_available_connections(&mut self, conns: Vec<ConnectionConfig>) {
@@ -3711,14 +3661,6 @@ impl AppState {
         }
     }
 
-    /// Update the active tab's stored cursor `(row, col)` (0-based). Called
-    /// frequently from the TUI so the in-memory + persisted cursor stays fresh.
-    pub fn update_active_tab_cursor(&mut self, cursor: (usize, usize)) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.cursor = Some(cursor);
-        }
-    }
-
     /// Snapshot of `(tab_name, row, col, connection)` for every tab with a
     /// known cursor or a connection binding. Used by the session writer.
     #[allow(clippy::type_complexity)]
@@ -3990,25 +3932,6 @@ impl AppState {
             self.mark_tab_saved(idx);
         }
         Ok(pending.name)
-    }
-
-    /// Synchronous wrapper mirroring [`prepare_save_all_dirty`] +
-    /// inline commit. Returns the names of tabs whose disk write
-    /// failed.
-    pub fn save_all_dirty(&mut self) -> Vec<String> {
-        let pending = self.prepare_save_all_dirty();
-        let mut failed = Vec::new();
-        for p in pending {
-            match p.commit() {
-                Ok(()) => {
-                    if let Some(idx) = p.tab_index {
-                        self.mark_tab_saved(idx);
-                    }
-                }
-                Err(_) => failed.push(p.name.clone()),
-            }
-        }
-        failed
     }
 
     /// Names of tabs with unsaved in-memory changes.

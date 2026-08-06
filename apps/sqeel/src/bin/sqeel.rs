@@ -1019,10 +1019,8 @@ fn spawn_executor(
                         (s.stop_on_error, s.start_batch(), s.default_row_limit)
                     };
                     let query_count = queries.len();
-                    let mut cancelled = false;
                     for (i, query) in queries.into_iter().enumerate() {
                         if cancel.is_cancelled() {
-                            cancelled = true;
                             break;
                         }
                         let tab_idx = start_idx + i;
@@ -1035,10 +1033,7 @@ fn spawn_executor(
                             match apply_exec_outcome(&mut s, tab_idx, &query, outcome) {
                                 ExecDisposition::Ok => false,
                                 ExecDisposition::Err => stop_on_error,
-                                ExecDisposition::Cancelled => {
-                                    cancelled = true;
-                                    true
-                                }
+                                ExecDisposition::Cancelled => true,
                             }
                         };
                         if stop {
@@ -1057,7 +1052,6 @@ fn spawn_executor(
                     }
                     let mut s = state.lock().unwrap();
                     s.end_batch(batch_start);
-                    let _ = cancelled;
                 }
             }
             // Reset again so a cancel-late (fired between breakout and

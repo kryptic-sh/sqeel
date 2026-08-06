@@ -50,17 +50,8 @@ pub fn sanitize_conn_slug(s: &str) -> String {
     }
 }
 
-pub fn results_dir() -> Option<PathBuf> {
-    data_dir().map(|d| d.join("results"))
-}
-
 pub fn results_dir_for(conn_slug: &str) -> Option<PathBuf> {
     data_dir().map(|d| d.join("results").join(conn_slug))
-}
-
-fn ensure_dir(path: &std::path::Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(path)?;
-    Ok(())
 }
 
 /// Write `content` to `path` owner-only (0600). State files can hold
@@ -97,7 +88,7 @@ pub(crate) fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::R
 /// queries dir. Scratch buffers are connection-agnostic.
 pub fn next_scratch_name() -> anyhow::Result<String> {
     let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
-    ensure_dir(&dir)?;
+    std::fs::create_dir_all(&dir)?;
     for i in 1..=999u32 {
         let name = format!("scratch_{:03}.sql", i);
         if !dir.join(&name).exists() {
@@ -110,7 +101,7 @@ pub fn next_scratch_name() -> anyhow::Result<String> {
 /// Save a SQL buffer to the queries dir.
 pub fn save_query(name: &str, content: &str) -> anyhow::Result<()> {
     let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
-    ensure_dir(&dir)?;
+    std::fs::create_dir_all(&dir)?;
     write_private(&dir.join(name), content.as_bytes())?;
     Ok(())
 }
@@ -188,7 +179,7 @@ fn unix_timestamp() -> u64 {
 pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow::Result<String> {
     let dir =
         results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
-    ensure_dir(&dir)?;
+    std::fs::create_dir_all(&dir)?;
 
     let ts = unix_timestamp();
     let hash = fnv_hash8(query);
@@ -239,38 +230,6 @@ fn evict_old_results_dir(dir: &std::path::Path) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
-}
-
-/// List saved result filenames, newest first.
-pub fn list_results() -> anyhow::Result<Vec<String>> {
-    let dir = results_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut files: Vec<String> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) == Some("json") {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    files.sort_by(|a, b| b.cmp(a)); // newest first (timestamp prefix)
-    Ok(files)
-}
-
-/// Load a result by filename.
-pub fn load_result(name: &str) -> anyhow::Result<QueryResult> {
-    let dir = results_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
-    let content = std::fs::read_to_string(dir.join(name))?;
-    let mut result: QueryResult = serde_json::from_str(&content)?;
-    result.compute_col_widths();
-    Ok(result)
 }
 
 /// Export a QueryResult to CSV string.

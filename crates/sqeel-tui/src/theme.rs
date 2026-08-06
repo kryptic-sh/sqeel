@@ -141,7 +141,6 @@ pub struct HlGroup {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Theme {
-    pub name: String,
     groups: HashMap<String, HlGroup>,
     ui_cache: UiColors,
 }
@@ -338,7 +337,6 @@ impl Theme {
 
 #[derive(Deserialize)]
 struct RawThemeNew {
-    name: String,
     #[serde(default)]
     palette: HashMap<String, String>,
     hl: HashMap<String, RawHlGroup>,
@@ -390,7 +388,6 @@ impl RawThemeNew {
         }
 
         let mut t = Theme {
-            name: self.name,
             groups,
             ui_cache: UiColors::default(),
         };
@@ -403,7 +400,6 @@ impl RawThemeNew {
 
 #[derive(Deserialize)]
 struct RawThemeLegacy {
-    name: String,
     palette: HashMap<String, String>,
     ui: HashMap<String, String>,
 }
@@ -493,7 +489,6 @@ impl RawThemeLegacy {
         }
 
         let mut t = Theme {
-            name: self.name,
             groups,
             ui_cache: UiColors::default(),
         };
@@ -636,7 +631,6 @@ mod tests {
     #[test]
     fn bundled_tokyonight_parses() {
         let theme = Theme::from_toml(BUNDLED_TOKYONIGHT).unwrap();
-        assert_eq!(theme.name, "Tokyo Night");
         let ui = theme.build_ui();
         assert!(matches!(ui.editor_cursor_line_active, Color::Rgb(_, _, _)));
     }
@@ -644,7 +638,6 @@ mod tests {
     #[test]
     fn bundled_gruvbox_parses() {
         let theme = Theme::from_toml(BUNDLED_GRUVBOX).unwrap();
-        assert_eq!(theme.name, "Gruvbox");
         let ui = theme.build_ui();
         assert!(matches!(ui.schema_pane_bg, Color::Rgb(_, _, _)));
     }

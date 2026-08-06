@@ -118,16 +118,6 @@ impl SchemaNode {
         }
     }
 
-    pub fn is_expanded(&self) -> bool {
-        match self {
-            SchemaNode::Database { expanded, .. } => *expanded,
-            SchemaNode::Table { expanded, .. } => *expanded,
-            SchemaNode::Column { .. } => false,
-            SchemaNode::Index { .. } => false,
-            SchemaNode::ForeignKey { .. } => false,
-        }
-    }
-
     pub fn toggle(&mut self) {
         match self {
             SchemaNode::Database { expanded, .. } => *expanded = !*expanded,

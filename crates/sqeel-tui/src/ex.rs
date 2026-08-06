@@ -241,15 +241,10 @@ pub(crate) fn run_migrate_secrets() -> Vec<(String, ToastKind)> {
 
 /// Parse and execute a `:export csv|json [<path>]` ex-command.
 ///
-/// Returns `Some((message, kind))` that the caller should push as a toast, or
-/// `None` when a toast was already pushed into `toasts` directly.  In
-/// practice this always returns `Some`; the `Option` makes the calling site
-/// tidy.
-pub(crate) fn handle_export_cmd(
-    cmd: &str,
-    state: &AppState,
-    _toasts: &mut Vec<(String, ToastKind, std::time::Instant)>,
-) -> Option<(String, ToastKind)> {
+/// Returns `Some((message, kind))` that the caller should push as a toast.
+/// In practice this always returns `Some`; the `Option` makes the calling
+/// site tidy.
+pub(crate) fn handle_export_cmd(cmd: &str, state: &AppState) -> Option<(String, ToastKind)> {
     let mut parts = cmd.split_whitespace();
     // skip the "export" token we already matched on
     let _ = parts.next();

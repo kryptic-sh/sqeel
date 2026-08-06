@@ -2617,8 +2617,7 @@ async fn run_loop(
                                         }
                                     }
                                 } else if c.starts_with("export") {
-                                    let msg =
-                                        handle_export_cmd(&c, &state.lock().unwrap(), &mut toasts);
+                                    let msg = handle_export_cmd(&c, &state.lock().unwrap());
                                     if let Some((text, kind)) = msg {
                                         toast(&mut toasts, kind, text);
                                     }
@@ -5282,8 +5281,7 @@ mod tests {
     #[test]
     fn export_no_subcommand_returns_usage_error() {
         let s = make_state_with_result(vec![]);
-        let mut toasts = vec![];
-        let result = super::handle_export_cmd("export", &s, &mut toasts);
+        let result = super::handle_export_cmd("export", &s);
         let (msg, kind) = result.unwrap();
         assert!(msg.contains("usage:"), "expected usage hint, got: {msg}");
         assert!(matches!(kind, super::ToastKind::Error));
@@ -5292,8 +5290,7 @@ mod tests {
     #[test]
     fn export_unknown_format_returns_error() {
         let s = make_state_with_result(vec![]);
-        let mut toasts = vec![];
-        let result = super::handle_export_cmd("export foo /tmp/x", &s, &mut toasts);
+        let result = super::handle_export_cmd("export foo /tmp/x", &s);
         let (msg, kind) = result.unwrap();
         assert!(
             msg.contains("unknown export format"),
@@ -5310,9 +5307,8 @@ mod tests {
             vec![Some("1".to_string()), Some("alpha".to_string())],
             vec![Some("2".to_string()), Some("beta".to_string())],
         ]);
-        let mut toasts = vec![];
         let cmd = format!("export csv {}", path.display());
-        let result = super::handle_export_cmd(&cmd, &s, &mut toasts);
+        let result = super::handle_export_cmd(&cmd, &s);
         let (msg, kind) = result.unwrap();
         assert!(
             matches!(kind, super::ToastKind::Info),
@@ -5329,9 +5325,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("out.json");
         let s = make_state_with_result(vec![vec![Some("x".to_string()), Some("y".to_string())]]);
-        let mut toasts = vec![];
         let cmd = format!("export json {}", path.display());
-        let result = super::handle_export_cmd(&cmd, &s, &mut toasts);
+        let result = super::handle_export_cmd(&cmd, &s);
         let (msg, kind) = result.unwrap();
         assert!(
             matches!(kind, super::ToastKind::Info),
@@ -5345,8 +5340,7 @@ mod tests {
     #[test]
     fn export_no_active_result_returns_error() {
         let s = AppState::default(); // no results tab
-        let mut toasts = vec![];
-        let result = super::handle_export_cmd("export csv /tmp/noop.csv", &s, &mut toasts);
+        let result = super::handle_export_cmd("export csv /tmp/noop.csv", &s);
         let (msg, kind) = result.unwrap();
         assert!(matches!(kind, super::ToastKind::Error));
         assert!(
