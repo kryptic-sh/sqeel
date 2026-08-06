@@ -11,8 +11,8 @@ most-severe first.
 
 ### Findings
 
-All 10 findings fixed (see `git log`). The remaining subsections record what
-was cleared and what is deliberately fragile.
+All 10 findings fixed (see `git log`). The remaining subsections record what was
+cleared and what is deliberately fragile.
 
 ### Cleared (suspected and disproved)
 

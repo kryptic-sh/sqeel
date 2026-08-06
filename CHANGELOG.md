@@ -18,6 +18,49 @@ patch bumps.
 - Non-vim `keybindings` config values (`emacs`, `vscode`) now behave as `vim`:
   hjkl 0.41 dropped its non-vim editing disciplines.
 
+### Fixed
+
+- Multi-byte characters no longer panic the editor: the completion prefix,
+  `word_prefix_at`, and `is_show_create` sliced on char-indexed columns instead
+  of byte boundaries.
+- Hover popups no longer panic when the terminal is narrower than the popup's
+  minimum width.
+- Dirty (unsaved) tabs are no longer evicted from memory after 5 minutes of
+  inactivity — switching back used to cold-load from disk and silently drop the
+  unsaved edits.
+- Renaming a connection no longer deletes the original file and keyring entry
+  before the new name is validated; a failed rename previously destroyed the
+  connection.
+- Passwords are percent-decoded before keyring storage — an inline password
+  needing URL-encoding (e.g. `p@ss`) previously round-tripped double-encoded and
+  failed authentication.
+- `WITH … DELETE/UPDATE/INSERT` statements are no longer treated as
+  row-producing: the auto-LIMIT rewrite no longer appends `LIMIT n` to
+  CTE-fronted DML, and the destructive-confirmation guard now sees DELETE/UPDATE
+  behind a `WITH` block.
+- The Postgres schema sidebar now queries the session's `search_path` instead of
+  binding the database name as the schema, so tables/columns/indexes/FKs are
+  listed for databases whose tables live in a differently-named schema.
+- LSP signature-help label offsets are converted from UTF-16 code units before
+  slicing; a multi-byte character in the label no longer panics the LSP bridge
+  thread.
+- LSP completion/hover/signature-help/definition positions are sent as UTF-16
+  code units instead of char indices.
+
+### Security
+
+- The `sqls` LSP config (which carries the DB password) is created with `O_EXCL`
+  and 0600 permissions under a unique name, and deleted when the server is
+  replaced or on quit — a pre-planted symlink in `/tmp` can no longer capture
+  it.
+- Connection, session, result, and scratch-query files are written owner-only
+  (0600) instead of world-readable 0644.
+- Headless `-e` output sanitizes control characters (rendered as Control
+  Pictures), so a DB cell containing a raw terminal escape sequence (e.g. an OSC
+  52 clipboard write) can't inject into the terminal.
+- DB passwords are masked in the "Connecting to…" status and the connection
+  switcher.
+
 ## [0.6.0] - 2026-07-13
 
 ### Added
