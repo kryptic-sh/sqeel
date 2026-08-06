@@ -8,6 +8,8 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-06
+
 ### Changed
 
 - Updated the complete `hjkl-*` dependency stack from 0.33.5 to 0.41.0, `sqlx`
@@ -662,7 +664,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.6.1
 [0.6.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.6.0
 [0.5.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.5.0
 [0.4.19]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.4.19
