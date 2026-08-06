@@ -508,6 +508,11 @@ async fn run_loop(
     let (lsp_restart_tx, mut lsp_restart_rx) =
         tokio::sync::mpsc::unbounded_channel::<anyhow::Result<LspClient>>();
     let mut lsp_restart_in_flight = false;
+    // The sqls config file currently handed to a running sqls server. The
+    // file is deleted when that server is replaced or on quit — the server
+    // reads it once at startup, so removing it while the server is alive is
+    // safe and keeps credentials from accumulating in /tmp.
+    let mut lsp_config_path: Option<std::path::PathBuf> = None;
 
     // Cold-tab content loads run on `spawn_blocking` so a large file
     // or slow filesystem doesn't freeze the render loop on a tab
@@ -1258,6 +1263,12 @@ async fn run_loop(
             let pending_cfg = state.lock().unwrap().pending_sqls_config.take();
             if let Some(cfg_path) = pending_cfg {
                 lsp = None; // kill_on_drop SIGKILLs the previous sqls
+                // The previous server is dead and read its config at
+                // startup; remove that file so credentials don't pile up.
+                if let Some(old) = lsp_config_path.take() {
+                    let _ = std::fs::remove_file(&old);
+                }
+                lsp_config_path = Some(cfg_path.clone());
                 let args: Vec<String> =
                     vec!["-config".into(), cfg_path.to_string_lossy().into_owned()];
                 let binary = lsp_binary.clone();
@@ -4127,6 +4138,10 @@ async fn run_loop(
     // server clean up on clean exits.
     if let Some(mut client) = lsp.take() {
         client.shutdown().await;
+    }
+    // The sqls server is gone — remove its credential-bearing config file.
+    if let Some(path) = lsp_config_path.take() {
+        let _ = std::fs::remove_file(&path);
     }
     Ok(())
 }

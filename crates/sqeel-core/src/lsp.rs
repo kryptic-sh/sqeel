@@ -21,22 +21,48 @@ fn next_id() -> i64 {
 // ── sqeel-specific config writer ─────────────────────────────────────────────
 
 /// Write a `sqls` config file for the given connection URL.
+///
+/// The file is created with `O_CREAT|O_EXCL` and 0600 permissions applied
+/// atomically at creation (Unix), under a per-process-unique name. A local
+/// attacker who pre-plants the old predictable
+/// `sqeel-sqls-config-<pid>.yml` name — as a symlink, or a leftover file
+/// from a recycled PID — can no longer redirect the write through their
+/// link or observe a plaintext window: a colliding name is skipped for the
+/// next one instead of being followed. The caller must keep the file until
+/// the sqls child has read it (startup) and should remove it once that
+/// server is gone.
 pub fn write_sqls_config(url: &str) -> anyhow::Result<PathBuf> {
     let (driver, dsn) = sqls_driver_and_dsn(url)?;
     let yaml = format!(
         "lowercaseKeywords: false\nconnections:\n  - alias: sqeel\n    driver: {driver}\n    dataSourceName: \"{dsn}\"\n"
     );
-    let path = std::env::temp_dir().join(format!("sqeel-sqls-config-{}.yml", std::process::id()));
-    std::fs::write(&path, yaml)?;
-    // Restrict read access to the owner: the config contains database credentials.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let dir = std::env::temp_dir();
+    let mut attempt = 0u32;
+    loop {
+        let path = dir.join(format!(
+            "sqeel-sqls-config-{}-{attempt}.yml",
+            std::process::id()
+        ));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // Owner-only from the first byte: the file carries credentials.
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(mut f) => {
+                use std::io::Write as _;
+                f.write_all(yaml.as_bytes())?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 64 => {
+                attempt += 1;
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
-    // On Windows, %TEMP% ACLs already restrict access to the creating user,
-    // so no additional permission step is needed there.
-    Ok(path)
 }
 
 fn sqls_driver_and_dsn(url: &str) -> anyhow::Result<(&'static str, String)> {
@@ -514,6 +540,28 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("driver: mysql"));
         assert!(body.contains("u:p@tcp(host)/db"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "config must be owner-only from creation");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_sqls_config_skips_preplanted_name() {
+        // A local attacker (or a recycled PID) holding the first candidate
+        // name must not get the credentials written through their file or
+        // symlink — the writer moves on to the next name.
+        let first =
+            std::env::temp_dir().join(format!("sqeel-sqls-config-{}-0.yml", std::process::id()));
+        std::fs::write(&first, "planted").unwrap();
+        let path = write_sqls_config("mysql://u:p@host/db").unwrap();
+        assert_ne!(path, first, "must not reuse the pre-planted name");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("driver: mysql"));
+        let _ = std::fs::remove_file(&first);
         let _ = std::fs::remove_file(&path);
     }
 
