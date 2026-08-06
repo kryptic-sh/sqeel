@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-06
+
+### Changed
+
+- Migrated the `hjkl-*` dependency stack from 0.33 to 0.41 (with `sqlx` 0.8 →
+  0.9 and `pulldown-cmark` 0.11 → 0.13). The `hjkl-*` deps are pinned `=0.41.0`
+  to stay on the API this crate was built against. Non-vim `keybindings` config
+  values now behave as `vim` (hjkl 0.41 dropped its non-vim disciplines).
+
 ## [0.4.17] - 2026-05-15
 
 ### Added

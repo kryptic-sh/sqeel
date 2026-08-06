@@ -6,17 +6,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-06
+
+### Changed
+
+- Migrated the `hjkl-*` dependency stack from 0.33 to 0.41 (with `sqlx` 0.8 →
+  0.9 and `pulldown-cmark` 0.11 → 0.13). The `hjkl-*` deps are pinned `=0.41.0`
+  to stay on the API this crate was built against.
+- `schema::fk_jump_target` drops its unused `fk_item` parameter — now
+  `fk_jump_target(items: &[SchemaTreeItem], ref_table: &str)`.
+
 ### Removed
 
 - Dead public API pruned (no callers anywhere in the workspace):
   `DbConnection::load_schema` (superseded by `load_schema_databases` + lazy
   `list_tables`), and
   `AppState::{set_table_columns, schema_identifier_names, schema_identifier_completions}`.
-
-### Changed
-
-- `schema::fk_jump_target` drops its unused `fk_item` parameter — now
-  `fk_jump_target(items: &[SchemaTreeItem], ref_table: &str)`.
 
 ## [0.4.13] - 2026-05-15
 

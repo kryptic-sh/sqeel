@@ -3,21 +3,21 @@ name = "sqeel-core"
 description = "Core SQL engine for sqeel: sqlx-backed connection pool, tree-sitter SQL parser, LSP integration."
 keywords = ["sql", "tui", "client", "lsp", "vim"]
 categories = ["database", "command-line-utilities"]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/kryptic-sh/sqeel-core"
+repository = "https://github.com/kryptic-sh/sqeel"
 homepage = "https://sqeel.kryptic.sh"
 authors = ["mxaddict <mxaddict@kryptic.sh>"]
 rust-version = "1.95"
 readme = "README.md"
 
 [dependencies]
-sqeel-config = { version = "0.3", path = "../sqeel-config" }
-hjkl-engine = "0.41.0"
-hjkl-bonsai = "0.41.0"
-hjkl-config = "0.41.0"
-hjkl-lsp = "0.41.0"
+sqeel-config = { version = "0.4", path = "../sqeel-config" }
+hjkl-engine = "=0.41.0"
+hjkl-bonsai = "=0.41.0"
+hjkl-config = "=0.41.0"
+hjkl-lsp = "=0.41.0"
 anyhow = "1"
 tracing = "0.1"
 dirs = "6.0.0"

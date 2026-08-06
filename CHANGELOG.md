@@ -12,6 +12,12 @@ patch bumps.
 
 - The Alpine `.apk` package builds again — the man page is gzipped before
   install (abuild rejects uncompressed man pages).
+- `cargo publish` ships all four crates (`sqeel-config`, `sqeel-core`,
+  `sqeel-tui`, `sqeel`) in dependency order from this monorepo. The three
+  library crates were absorbed from their own repos but never re-published, so
+  the umbrella's version pins resolved stale 0.33-era builds from crates.io that
+  no longer compile. They now publish at 0.4.0 / 0.6.0 / 0.6.0 with the `hjkl-*`
+  stack pinned `=0.41.0` (hjkl 0.41.1 dropped the API surface these crates use).
 
 ## [0.6.1] - 2026-08-06
 

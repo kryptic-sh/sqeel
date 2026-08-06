@@ -599,45 +599,55 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Publish sqeel app to crates.io (idempotent)
+      - name: Publish crates to crates.io (idempotent)
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          # sqeel-core, sqeel-tui, and sqeel-config are workspace members but
-          # publish separately (they ship their own crates.io releases). Only
-          # the sqeel umbrella binary is published by this job.
-          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          URL="https://crates.io/api/v1/crates/sqeel/${VERSION}"
-          if curl -fsS -A "sqeel-release-ci" -o /dev/null "$URL"; then
-            echo "::notice::sqeel@${VERSION} already on crates.io, skipping"
-            exit 0
-          fi
-          # Publish with hjkl-style 429 retries: parse crates.io's
-          # "try again after" timestamp (11-min fallback), 3 attempts;
-          # non-rate-limit failures fail fast.
-          attempt=0
-          while [ $attempt -lt 3 ]; do
-            if cargo publish -p sqeel --locked 2>&1 | tee /tmp/publish.log; then
-              exit 0
+          # All four packages publish from this monorepo (the sqeel-config /
+          # sqeel-core / sqeel-tui crates were absorbed from their own repos
+          # in 432b055; those repos are gone). Publish in dependency order so
+          # each crate's version req on the previous one resolves.
+          for crate in sqeel-config sqeel-core sqeel-tui sqeel; do
+            VERSION=$(cargo metadata --no-deps --format-version 1 | \
+              python3 -c "import json,sys; print([p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='$crate'][0])")
+            URL="https://crates.io/api/v1/crates/${crate}/${VERSION}"
+            if curl -fsS -A "sqeel-release-ci" -o /dev/null "$URL"; then
+              echo "::notice::${crate}@${VERSION} already on crates.io, skipping"
+              continue
             fi
-            if grep -qiE "429|Too Many Requests" /tmp/publish.log; then
-              wait_until=$(grep -oE 'try again after [^.]+' /tmp/publish.log | sed 's/try again after //' || true)
-              if [ -n "$wait_until" ]; then
-                wait_secs=$(( $(date -d "$wait_until" +%s) - $(date +%s) + 30 ))
-                [ "$wait_secs" -lt 30 ] && wait_secs=30
-                echo "::warning::rate limited, sleeping ${wait_secs}s until $wait_until"
-              else
-                wait_secs=660
-                echo "::warning::rate limited, sleeping ${wait_secs}s (11 min fallback)"
+            echo "::group::publish $crate@$VERSION"
+            # Publish with hjkl-style 429 retries: parse crates.io's
+            # "try again after" timestamp (11-min fallback), 3 attempts;
+            # non-rate-limit failures fail fast.
+            attempt=0
+            published=0
+            while [ $attempt -lt 3 ]; do
+              if cargo publish -p "$crate" --locked 2>&1 | tee /tmp/publish.log; then
+                published=1
+                break
               fi
-              sleep "$wait_secs"
-              attempt=$(( attempt + 1 ))
-            else
-              echo "::error::publish failed (non-rate-limit error)"
+              if grep -qiE "429|Too Many Requests" /tmp/publish.log; then
+                wait_until=$(grep -oE 'try again after [^.]+' /tmp/publish.log | sed 's/try again after //' || true)
+                if [ -n "$wait_until" ]; then
+                  wait_secs=$(( $(date -d "$wait_until" +%s) - $(date +%s) + 30 ))
+                  [ "$wait_secs" -lt 30 ] && wait_secs=30
+                  echo "::warning::rate limited, sleeping ${wait_secs}s until $wait_until"
+                else
+                  wait_secs=660
+                  echo "::warning::rate limited, sleeping ${wait_secs}s (11 min fallback)"
+                fi
+                sleep "$wait_secs"
+                attempt=$(( attempt + 1 ))
+              else
+                echo "::error::publish failed (non-rate-limit error)"
+                exit 1
+              fi
+            done
+            echo "::endgroup::"
+            if [ "$published" -ne 1 ]; then
+              echo "::error::publish failed after 3 rate-limit retries"
               exit 1
             fi
           done
-          echo "::error::publish failed after 3 rate-limit retries"
-          exit 1

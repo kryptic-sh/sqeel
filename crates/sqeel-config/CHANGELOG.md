@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-06
+
+### Changed
+
+- Migrated the `hjkl-*` dependency stack from 0.33 to 0.41 (pinned `=0.41.0` to
+  stay on the API this crate was built against).
+
 ## [0.2.8] - 2026-05-15
 
 ### Changed

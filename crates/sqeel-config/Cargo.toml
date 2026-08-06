@@ -3,18 +3,18 @@ name = "sqeel-config"
 description = "Config loading for sqeel: MainConfig / EditorConfig on top of hjkl-config."
 keywords = ["sql", "tui", "config"]
 categories = ["database", "command-line-utilities"]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/kryptic-sh/sqeel-config"
+repository = "https://github.com/kryptic-sh/sqeel"
 homepage = "https://sqeel.kryptic.sh"
 authors = ["mxaddict <mxaddict@kryptic.sh>"]
 rust-version = "1.95"
 readme = "README.md"
 
 [dependencies]
-hjkl-config = "0.41.0"
-hjkl-engine = "0.41.0"
+hjkl-config = "=0.41.0"
+hjkl-engine = "=0.41.0"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 anyhow = "1"
