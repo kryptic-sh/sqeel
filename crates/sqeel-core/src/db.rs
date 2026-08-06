@@ -521,6 +521,29 @@ impl DbConnection {
         }
     }
 
+    /// Postgres: the first schema in the session's `search_path` — the
+    /// schema unqualified table names resolve to. The schema browser's
+    /// tree nodes are databases (from `pg_database`), and the catalog
+    /// queries below used to bind the *database name* as the schema,
+    /// returning zero rows whenever the two names differed (the common
+    /// case: db `app`, tables in `public`). Returns `None` when the query
+    /// fails or the path is empty, so callers can fall back to the legacy
+    /// behaviour.
+    async fn pg_search_path_schema(&self) -> Option<String> {
+        let Pool::Pg(p) = &self.pool else {
+            return None;
+        };
+        let rows = sqlx::query("SELECT current_schemas(false)")
+            .fetch_all(p)
+            .await
+            .ok()?;
+        rows.first()?
+            .try_get::<Vec<String>, _>(0)
+            .ok()?
+            .into_iter()
+            .next()
+    }
+
     pub async fn list_tables(&self, database: &str) -> anyhow::Result<Vec<String>> {
         match &self.pool {
             Pool::MySql(p) => {
@@ -542,10 +565,14 @@ impl DbConnection {
                     .collect())
             }
             Pool::Pg(p) => {
+                let schema = self
+                    .pg_search_path_schema()
+                    .await
+                    .unwrap_or_else(|| database.to_string());
                 let rows = sqlx::query(
                     "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
                 )
-                .bind(database)
+                .bind(&schema)
                 .fetch_all(p)
                 .await?;
                 Ok(rows
@@ -618,6 +645,10 @@ impl DbConnection {
                     .collect())
             }
             Pool::Pg(p) => {
+                let schema = self
+                    .pg_search_path_schema()
+                    .await
+                    .unwrap_or_else(|| database.to_string());
                 let rows = sqlx::query(
                     "SELECT c.column_name, c.data_type, c.is_nullable, \
                      COALESCE((SELECT 1 FROM information_schema.table_constraints tc \
@@ -630,7 +661,7 @@ impl DbConnection {
                      WHERE c.table_schema = $1 AND c.table_name = $2 \
                      ORDER BY c.ordinal_position",
                 )
-                .bind(database)
+                .bind(&schema)
                 .bind(table)
                 .fetch_all(p)
                 .await?;
@@ -721,6 +752,10 @@ impl DbConnection {
                     .collect())
             }
             Pool::Pg(p) => {
+                let schema = self
+                    .pg_search_path_schema()
+                    .await
+                    .unwrap_or_else(|| database.to_string());
                 let rows = sqlx::query(
                     "SELECT \
                        i.relname  AS index_name, \
@@ -736,7 +771,7 @@ impl DbConnection {
                      WHERE n.nspname = $1 AND t.relname = $2 \
                      ORDER BY index_name, col_pos",
                 )
-                .bind(database)
+                .bind(&schema)
                 .bind(table)
                 .fetch_all(p)
                 .await?;
@@ -854,6 +889,10 @@ impl DbConnection {
                     .collect())
             }
             Pool::Pg(p) => {
+                let schema = self
+                    .pg_search_path_schema()
+                    .await
+                    .unwrap_or_else(|| database.to_string());
                 let rows = sqlx::query(
                     "SELECT \
                        con.conname AS name, \
@@ -873,7 +912,7 @@ impl DbConnection {
                      WHERE con.contype = 'f' AND n.nspname = $1 AND t.relname = $2 \
                      ORDER BY name, u.ord",
                 )
-                .bind(database)
+                .bind(&schema)
                 .bind(table)
                 .fetch_all(p)
                 .await?;
