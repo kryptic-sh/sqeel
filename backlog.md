@@ -3,6 +3,18 @@
 Open work items, findings and deferred decisions. Finished items are deleted
 (see `git log` for the record).
 
+## Work 2026-08-07
+
+Worked from the backlog above; completed items deleted (see `git log`, commits
+def5889..f8c5ef9). One related finding surfaced and left open:
+
+- `push_history` stamps `connection: self.active_connection` at completion time
+  (state.rs `push_history`) — the same mid-query-switch defect fixed in
+  `persist_result` this session. A query run on connection A while the user
+  switched to B is recorded under B, so it disappears from A's per-connection
+  history (Ctrl-P/N and the picker). Fix mirrors `persist_result`: thread the
+  executor's connection name through `apply_exec_outcome` into `push_history`.
+
 ## Release pipeline 2026-08-06 (v0.6.1)
 
 Cut v0.6.1; GitHub release + homebrew published. Three tag-run jobs failed.
@@ -37,13 +49,6 @@ items below are deliberate fragility, not defects.
 - `splice_password_into_url` silently skips URLs with no username — a password
   saved via the form for a userless URL is dropped on reload → auth failure with
   no explanation. Verified: `if parsed.username().is_empty() { return }`.
-- Editor tab-bar mouse hit-test uses `tab.name.len()` bytes (lib.rs:1736) while
-  rendering counts chars — multi-byte tab names mis-click. Verified.
-- `AppState::persist_result` keys the results file by `active_connection` at
-  completion time, not the connection the query ran on — a switch mid-query
-  files the result under the wrong slug (session restore can't find it).
-- `save_result` filename is `{1s-timestamp}_{fnv-1a-32bit}.json` — colliding
-  32-bit hashes in the same second overwrite each other.
 - `sanitize_conn_slug` maps `my conn` and `my_conn` to the same slug — colliding
   results dirs.
 - Session watcher has a 1 s debounce with no final flush on quit — the last <1 s
@@ -79,16 +84,11 @@ Open items below are deliberate fragility, not defects.
 
 ### Hardening (correct today, fragile)
 
-- sqls config file never deleted — credential-bearing file accumulates per
-  process in /tmp (0600). Delete on drop.
 - `load_result_for` (`persistence.rs:178`) joins `session.toml`-sourced names
   into the results dir without a `components()` check — self-inflicted content
   only; add the check anyway.
 - No size limits on session.toml / result JSON reads — unbounded allocation on
   planted huge files (same-user DoS).
-- Auto-LIMIT can be nullified by a trailing comment: `SELECT * FROM t -- x`
-  becomes `SELECT * FROM t -- x LIMIT 100` — the cap is commented out, a large
-  table materializes fully in memory. Verified (db.rs `apply_default_limit`).
 - `duckdb:///abs/path` resolves to a _relative_ path (leading slashes all
   trimmed, db.rs:240-241); single-slash form works.
 - Main TUI connection ignores the saved connection's TLS block —
@@ -141,15 +141,6 @@ below remain open.
   edge-stepping at `results_drag_to_cell` 1560-1571 vs `hover_drag_to_cell`
   1638-1649. Extract `col_at_x(col_widths, col_scroll, rel_x, col_count)` + a
   step helper.
-- `crates/sqeel-tui/src/render.rs` — `cursor_byte_offset` (245-260) is a byte-
-  for-byte reimplementation of `syntax.rs` `row_col_to_byte` (417-431); delete
-  it and call the existing helper from exec.rs:92. Verified identical on
-  empty/EOL/past-EOL/past-last-row inputs.
-- `crates/sqeel-tui/src/render.rs` — `extract_results_left_click` per-pane
-  query-row blocks at 811-813, 834-836, 862-864 are dead duplicates of the outer
-  check at 737-742 (the caller bounds clicks inside the results area, so the
-  outer fires first); each also re-clones `query` the outer already holds.
-  Delete the three blocks + per-arm clones, keep `has_q`/`body_start`.
 - `crates/sqeel-tui/src/render.rs` — `highlight_sql_lines` (2113-2129) and
   `highlight_query_line` (2183-2202) duplicate the TLS highlighter bootstrap;
   extract one `highlight_spans(source, dialect)`.
@@ -237,15 +228,6 @@ then `first_syntax_error` (exec.rs:93, 119); Ctrl+Shift+Enter runs
 (exec.rs:151, 163) — while the `Highlighter` already maintains an incremental
 tree of this exact buffer (lib.rs:954-1018). Fix: route statement-finding
 through the retained tree.
-
-#### 5. Completion pipeline: per-keystroke O(schema) allocs under the state lock
-
-`crates/sqeel-core/src/state.rs:2110-2190` — `completions_for_context` runs with
-`prefix = ""` (lib.rs:1148, 1487) so every `starts_with` is true, yet each
-candidate pays `to_lowercase()` + `to_owned()`×2 (3 heap allocs) plus an
-`out.sort()`; the `Any` arm re-processes `schema_identifier_cache` which is
-already sorted + deduped (:702-704). Fix: skip lowercase/prefix work for empty
-prefix; return the cache clone directly for `Any`.
 
 #### 6. K-hover does linear schema scans with per-name allocations
 
