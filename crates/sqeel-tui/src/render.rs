@@ -1365,10 +1365,15 @@ pub(crate) fn draw_editor<H: Host>(
     } else {
         editor_search.or(last_editor_search)
     };
-    let search_pattern = search_query
-        .filter(|q| !q.is_empty())
-        .and_then(|q| regex::Regex::new(q).ok());
-    editor.set_search_pattern(search_pattern);
+    // Reuse the regex already installed on the editor instead of
+    // recompiling `Regex::new` on every frame — that compile is the
+    // dominant per-redraw cost while a `/` search is active.
+    let query = search_query.filter(|q| !q.is_empty());
+    let installed = editor.search_state().pattern.as_ref().map(|re| re.as_str());
+    if query != installed {
+        let search_pattern = query.and_then(|q| regex::Regex::new(q).ok());
+        editor.set_search_pattern(search_pattern);
+    }
 
     // Gutter width matches what tui-textarea reserved: digit count
     // for the largest line number, plus a leading + trailing space.

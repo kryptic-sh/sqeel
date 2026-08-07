@@ -197,18 +197,15 @@ was deleted as dead code in 567898b.)
 
 ### Findings
 
-#### 1. Search-state work per frame: whole-buffer materialization + regex scan + `Regex::new` recompile
+#### 1. Search-state work per frame: whole-buffer materialization + regex scan
 
-Three related costs, all in `draw_status_bar` / `draw_editor` (every redraw
-while a `/` search was ever committed):
-
-- `search_label` (render.rs:129-144) calls `buffer_lines(editor.buffer())` (all
-  lines as owned Strings) and `re.find_iter` over every line, per frame.
-- `draw_editor` (render.rs:1368-1370) recompiles `regex::Regex::new(q)` from
-  `last_editor_search` on every frame — the engine already holds the compiled
-  regex in `search_state().pattern`. Fix: cache the match counts keyed on the
-  buffer's `dirty_gen` + pattern, and reuse `search_state().pattern` instead of
-  recompiling.
+Every redraw while a `/` search was ever committed, `search_label`
+(render.rs:129-144) calls `buffer_lines(editor.buffer())` (all lines as owned
+Strings) and `re.find_iter` over every line to compute the status-bar match
+counts. The per-frame `regex::Regex::new` recompile in `draw_editor` is already
+gone (the installed `search_state().pattern` is reused when the query is
+unchanged). Fix: cache `(total, current)` keyed on the buffer's `dirty_gen` +
+pattern + cursor, so steady-state frames skip the scan.
 
 #### 2. Schema filter is O(N·M) per frame while the search box is active
 
