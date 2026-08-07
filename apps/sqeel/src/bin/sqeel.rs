@@ -1007,7 +1007,7 @@ fn spawn_executor(
                     };
                     let mut s = state.lock().unwrap();
                     s.batch_in_progress = false;
-                    let _ = apply_exec_outcome(&mut s, tab_idx, &query, outcome);
+                    let _ = apply_exec_outcome(&mut s, tab_idx, &query, &conn_slug, outcome);
                 }
                 QueryRequest::Batch(queries, start_idx) => {
                     let cleanup_slug = conn_slug.clone();
@@ -1030,7 +1030,7 @@ fn spawn_executor(
                         };
                         let stop = {
                             let mut s = state.lock().unwrap();
-                            match apply_exec_outcome(&mut s, tab_idx, &query, outcome) {
+                            match apply_exec_outcome(&mut s, tab_idx, &query, &conn_slug, outcome) {
                                 ExecDisposition::Ok => false,
                                 ExecDisposition::Err => stop_on_error,
                                 ExecDisposition::Cancelled => true,
@@ -1080,11 +1080,12 @@ fn apply_exec_outcome(
     s: &mut AppState,
     tab_idx: usize,
     query: &str,
+    conn_slug: &str,
     outcome: Option<anyhow::Result<sqeel_core::db::ExecOutcome>>,
 ) -> ExecDisposition {
     let disposition = match outcome {
         Some(Ok(sqeel_core::db::ExecOutcome::Rows(mut r))) => {
-            let filename = s.persist_result(query, &r);
+            let filename = s.persist_result(query, &r, conn_slug);
             s.push_history(query);
             r.compute_col_widths();
             s.finish_result_tab(tab_idx, ResultsPane::Results(r));

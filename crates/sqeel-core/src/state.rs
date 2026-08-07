@@ -3960,9 +3960,19 @@ impl AppState {
     /// Persist a successful query result to disk (errors are never stored).
     /// Returns the on-disk filename on success, so the caller can record it on
     /// the owning `ResultsTab` for session restoration.
-    pub fn persist_result(&self, query: &str, result: &QueryResult) -> Option<String> {
-        let slug =
-            persistence::sanitize_conn_slug(self.active_connection.as_deref().unwrap_or("default"));
+    ///
+    /// The result is filed under `conn_slug` — the connection the query ran
+    /// on, supplied by the executor. It must NOT come from
+    /// [`Self::active_connection`]: that can change while a query is in
+    /// flight, which would save the result under the wrong connection's
+    /// subdir and session restore would never find it.
+    pub fn persist_result(
+        &self,
+        query: &str,
+        result: &QueryResult,
+        conn_slug: &str,
+    ) -> Option<String> {
+        let slug = persistence::sanitize_conn_slug(conn_slug);
         persistence::save_result(&slug, query, result).ok()
     }
 
@@ -5408,6 +5418,34 @@ trailing prose ignored";
         s.editor_content_synced = true;
         let _ = s.save_active_tab();
         assert_eq!(s.tabs[0].content.as_deref(), Some("fresh edit"));
+    }
+
+    #[test]
+    fn persist_result_filed_under_query_connection_not_active() {
+        let _dir = isolated_data_dir();
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        // The user switched connections while the query was in flight.
+        s.active_connection = Some("switched_mid_query".into());
+        let result = QueryResult {
+            columns: vec!["col".into()],
+            rows: vec![vec![Some("val".into())]],
+            col_widths: vec![],
+            limited: false,
+        };
+        let filename = s
+            .persist_result("SELECT 1", &result, "ran_on_conn")
+            .expect("persist should succeed");
+        let data = std::env::var_os("XDG_DATA_HOME").expect("isolated_data_dir sets it");
+        let results = std::path::Path::new(&data).join("sqeel").join("results");
+        assert!(
+            results.join("ran_on_conn").join(&filename).exists(),
+            "result must be filed under the connection it ran on"
+        );
+        assert!(
+            !results.join("switched_mid_query").exists(),
+            "active_connection must not pick the results subdir"
+        );
     }
 
     #[test]
