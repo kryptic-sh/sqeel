@@ -197,18 +197,7 @@ was deleted as dead code in 567898b.)
 
 ### Findings
 
-#### 1. Results grid rebuilt end-to-end every frame — O(rows-after-scroll × cols) per redraw
-
-`crates/sqeel-tui/src/render.rs:1918-1960` — `render_grid_lines` skips
-`body_skip` then `.collect()`s every remaining row as ratatui `Line`s, with a
-`format!` String alloc per cell (1930) and `"│".to_string()` per gap (1955); no
-`.take()` bounds the visible window. Called by `draw_results`
-(render.rs:1681-1694) and `draw_hover_table` (2331-2344) on every redraw. With
-`default_row_limit = 0` a 100k-row result means 100k×cols String allocs per
-keystroke. Fix: `.skip(body_skip).take(body_height)` (ratatui clips vertically;
-only the horizontal scroll matters).
-
-#### 2. Search-state work per frame: whole-buffer materialization + regex scan + `Regex::new` recompile
+#### 1. Search-state work per frame: whole-buffer materialization + regex scan + `Regex::new` recompile
 
 Three related costs, all in `draw_status_bar` / `draw_editor` (every redraw
 while a `/` search was ever committed):
@@ -221,7 +210,7 @@ while a `/` search was ever committed):
   buffer's `dirty_gen` + pattern, and reuse `search_state().pattern` instead of
   recompiling.
 
-#### 3. Schema filter is O(N·M) per frame while the search box is active
+#### 2. Schema filter is O(N·M) per frame while the search box is active
 
 `crates/sqeel-core/src/schema.rs:473-491` — `filter_items` runs a linear scan of
 all matched paths for every item (`is_descendant` closure), plus a lowercased
@@ -230,7 +219,7 @@ all matched paths for every item (`is_descendant` closure), plus a lowercased
 with prefix probes (depth ≤ 5), cache the filtered list keyed on query,
 pre-lower search labels.
 
-#### 4. Retained-tree walk + two full newline-offset scans per highlight pass
+#### 3. Retained-tree walk + two full newline-offset scans per highlight pass
 
 `crates/sqeel-core/src/highlight.rs:563-568` — `highlight_range` walks the
 ENTIRE retained tree (`collect_block_ranges` + `node.walk()` per node) on every
@@ -241,7 +230,7 @@ and again inside `promote_uncovered_dialect_keywords_in_range` (:825) for every
 non-Generic dialect. Fix: cache block ranges on a tree-generation counter; pass
 the :511 offsets into the promotion function.
 
-#### 5. Statement runs pay 1–2 full cold tree-sitter parses each
+#### 4. Statement runs pay 1–2 full cold tree-sitter parses each
 
 `crates/sqeel-core/src/highlight.rs:996-1031` / `:1110-1115` —
 `statement_ranges` builds a fresh `Parser` and parses the whole buffer;
@@ -252,7 +241,7 @@ then `first_syntax_error` (exec.rs:93, 119); Ctrl+Shift+Enter runs
 tree of this exact buffer (lib.rs:954-1018). Fix: route statement-finding
 through the retained tree.
 
-#### 6. Completion pipeline: per-keystroke O(schema) allocs under the state lock
+#### 5. Completion pipeline: per-keystroke O(schema) allocs under the state lock
 
 `crates/sqeel-core/src/state.rs:2110-2190` — `completions_for_context` runs with
 `prefix = ""` (lib.rs:1148, 1487) so every `starts_with` is true, yet each
@@ -261,14 +250,14 @@ candidate pays `to_lowercase()` + `to_owned()`×2 (3 heap allocs) plus an
 already sorted + deduped (:702-704). Fix: skip lowercase/prefix work for empty
 prefix; return the cache clone directly for `Any`.
 
-#### 7. K-hover does linear schema scans with per-name allocations
+#### 6. K-hover does linear schema scans with per-name allocations
 
 `crates/sqeel-core/src/state.rs:1291-1315` (`find_table`) and `:1322-1404`
 (`hover_table_from_cache`) loop every db × table with a `to_lowercase()` alloc
 per name, per `K` press. Fix: lowercase-name → table map built in
 `rebuild_schema_cache` (off the render loop).
 
-#### 8. Query/DDL line re-parsed on every redraw
+#### 7. Query/DDL line re-parsed on every redraw
 
 `crates/sqeel-core/src/highlight.rs:627-741` — `highlight_shared` does
 `inner.reset()` + a cold full parse + full-tree walk on every call, from
@@ -276,7 +265,7 @@ per name, per `K` press. Fix: lowercase-name → table map built in
 (render.rs:1592-1593, 1696, 2029). The DDL body is a stable String across
 frames. Fix: cache `(source identity, dialect) → spans` in the `Highlighter`.
 
-#### 9. Whole-buffer materialization for single-line reads
+#### 8. Whole-buffer materialization for single-line reads
 
 `buffer_lines(editor.buffer())` allocates every line to serve one row:
 lib.rs:1121-1129 (per content publish, ~75 ms debounce), lib.rs:3981
@@ -284,7 +273,7 @@ lib.rs:1121-1129 (per content publish, ~75 ms debounce), lib.rs:3981
 Fix: rope-walking variants of `word_prefix_at`/`row_col_to_byte` that read only
 up to the cursor row.
 
-#### 10. Frame-global lock + LSP-event redraws multiply everything above
+#### 9. Frame-global lock + LSP-event redraws multiply everything above
 
 `crates/sqeel-tui/src/lib.rs:1538-1541` holds `state` across the whole
 `terminal.draw`, so every cost above serializes under one mutex; and lib.rs:1368

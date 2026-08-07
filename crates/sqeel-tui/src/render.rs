@@ -1678,6 +1678,21 @@ pub(crate) fn draw_results(
             } else {
                 None
             };
+            // Split content_area: hr (1) + title (1) + hr (1) + query (1) + hr (1) + header (1) + hr (1) + body (rest).
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(content_area);
+
             let (header_line, body_lines) = render_grid_lines(
                 &r.columns,
                 &r.rows,
@@ -1687,6 +1702,7 @@ pub(crate) fn draw_results(
                 header_cursor_col,
                 selection_bounds,
                 state.results_scroll(),
+                chunks[7].height as usize,
                 header_style,
                 sep_style,
                 Style::default().bg(cursor_bg),
@@ -1709,20 +1725,6 @@ pub(crate) fn draw_results(
             }
 
             // Split content_area: hr (1) + title (1) + hr (1) + query (1) + hr (1) + header (1) + hr (1) + body (rest).
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(0),
-                ])
-                .split(content_area);
-
             let hr: String = "─".repeat(content_area.width as usize);
             f.render_widget(Paragraph::new(hr.clone()).style(sep_style), chunks[0]);
             f.render_widget(Paragraph::new(title).style(title_style), chunks[1]);
@@ -1884,6 +1886,9 @@ pub(crate) fn results_cursor_bg(focused: bool) -> Color {
 /// - `selection_bounds` is `(top, bot, left, right)` when a visual
 ///   selection is active. Rows inside it take the muted column bg.
 /// - `body_skip` drops N leading body rows (row-scroll offset).
+/// - `body_height` caps the returned body lines to the visible area height;
+///   ratatui clips the overflow anyway, so this only avoids materializing
+///   rows the viewport cannot show.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_grid_lines(
     columns: &[String],
@@ -1894,6 +1899,7 @@ pub(crate) fn render_grid_lines(
     header_cursor_col: Option<usize>,
     selection_bounds: Option<(usize, usize, usize, usize)>,
     body_skip: usize,
+    body_height: usize,
     header_style: Style,
     sep_style: Style,
     cursor_style: Style,
@@ -1919,6 +1925,7 @@ pub(crate) fn render_grid_lines(
         .iter()
         .enumerate()
         .skip(body_skip)
+        .take(body_height)
         .map(|(row_idx, row)| {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 2);
             for i in 0..col_count {
@@ -2343,6 +2350,7 @@ pub(crate) fn draw_hover_table(
         None,
         selection_bounds,
         state.hover_scroll,
+        chunks[2].height as usize,
         header_style,
         sep_style,
         cursor_style,
@@ -3710,5 +3718,53 @@ mod hover_width_tests {
     #[test]
     fn popup_width_saturates_huge_natural() {
         assert_eq!(hover_popup_width(u16::MAX, 40, 100), 100);
+    }
+}
+
+#[cfg(test)]
+mod grid_lines_tests {
+    use super::*;
+
+    /// Rows 0..`rows`, body_skip/body_height as given; returns the body lines.
+    fn grid(rows: usize, body_skip: usize, body_height: usize) -> Vec<Line<'static>> {
+        let columns = vec!["a".to_string()];
+        let rows: Vec<Vec<Option<String>>> = (0..rows).map(|i| vec![Some(i.to_string())]).collect();
+        let col_widths = [4u16];
+        let (_, body) = render_grid_lines(
+            &columns,
+            &rows,
+            &col_widths,
+            None,
+            None,
+            None,
+            None,
+            body_skip,
+            body_height,
+            Style::default(),
+            Style::default(),
+            Style::default(),
+            Style::default(),
+        );
+        body
+    }
+
+    #[test]
+    fn body_lines_capped_at_visible_height() {
+        // The grid used to materialize every row after body_skip as a
+        // ratatui Line even though ratatui clips the overflow.
+        assert_eq!(grid(100, 0, 5).len(), 5);
+    }
+
+    #[test]
+    fn skip_then_cap_keeps_absolute_rows() {
+        let body = grid(100, 50, 5);
+        assert_eq!(body.len(), 5);
+        // The cap must not shift which rows render: first line is row 50.
+        assert_eq!(body[0].spans[0].content.as_ref(), " 50 ");
+    }
+
+    #[test]
+    fn cap_never_exceeds_remaining_rows() {
+        assert_eq!(grid(100, 98, 5).len(), 2);
     }
 }
