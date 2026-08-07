@@ -112,6 +112,19 @@ enum LspSource {
     Anvil,
 }
 
+/// Owns the sqls config file currently handed to a running sqls server and
+/// removes it on drop. The file carries connection credentials, so it must
+/// not outlive the process that wrote it — a panic or an early return would
+/// otherwise leak it into /tmp. The server reads the config once at startup,
+/// so deleting while it is alive is safe.
+struct SqlsConfigFile(std::path::PathBuf);
+
+impl Drop for SqlsConfigFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Bundle of schema-sidebar search state: query string, whether the input box has
 /// focus (typing mode), and cursor position within the filtered list.
 #[derive(Clone, Default)]
@@ -510,11 +523,10 @@ async fn run_loop(
     let (lsp_restart_tx, mut lsp_restart_rx) =
         tokio::sync::mpsc::unbounded_channel::<anyhow::Result<LspClient>>();
     let mut lsp_restart_in_flight = false;
-    // The sqls config file currently handed to a running sqls server. The
-    // file is deleted when that server is replaced or on quit — the server
-    // reads it once at startup, so removing it while the server is alive is
-    // safe and keeps credentials from accumulating in /tmp.
-    let mut lsp_config_path: Option<std::path::PathBuf> = None;
+    // The sqls config file currently handed to a running sqls server.
+    // `SqlsConfigFile` removes it on drop — when the server is replaced
+    // or the loop exits — so credentials never accumulate in /tmp.
+    let mut lsp_config_path: Option<SqlsConfigFile> = None;
 
     // Cold-tab content loads run on `spawn_blocking` so a large file
     // or slow filesystem doesn't freeze the render loop on a tab
@@ -1266,11 +1278,9 @@ async fn run_loop(
             if let Some(cfg_path) = pending_cfg {
                 lsp = None; // kill_on_drop SIGKILLs the previous sqls
                 // The previous server is dead and read its config at
-                // startup; remove that file so credentials don't pile up.
-                if let Some(old) = lsp_config_path.take() {
-                    let _ = std::fs::remove_file(&old);
-                }
-                lsp_config_path = Some(cfg_path.clone());
+                // startup; replacing the guard removes that credential-
+                // bearing file.
+                lsp_config_path = Some(SqlsConfigFile(cfg_path.clone()));
                 let args: Vec<String> =
                     vec!["-config".into(), cfg_path.to_string_lossy().into_owned()];
                 let binary = lsp_binary.clone();
@@ -4128,10 +4138,9 @@ async fn run_loop(
     if let Some(mut client) = lsp.take() {
         client.shutdown().await;
     }
-    // The sqls server is gone — remove its credential-bearing config file.
-    if let Some(path) = lsp_config_path.take() {
-        let _ = std::fs::remove_file(&path);
-    }
+    // The sqls server is gone — take the guard so its Drop removes the
+    // credential-bearing config file as the loop winds down.
+    let _ = lsp_config_path.take();
     Ok(())
 }
 
@@ -4505,6 +4514,33 @@ mod tests {
         // Past the last tab: no hit.
         assert_eq!(super::tab_bar_click_index(&tabs, 9), None);
         assert_eq!(super::tab_bar_click_index(&[], 0), None);
+    }
+
+    #[test]
+    fn sqls_config_file_deleted_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sqeel-sqls-config-test.yml");
+        std::fs::write(&path, "dataSourceName: secret").unwrap();
+        {
+            let _guard = super::SqlsConfigFile(path.clone());
+            assert!(path.exists(), "file lives while the guard holds it");
+        }
+        assert!(!path.exists(), "file must be removed when the guard drops");
+    }
+
+    #[test]
+    fn replacing_sqls_config_guard_removes_previous_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("one.yml");
+        let p2 = dir.path().join("two.yml");
+        std::fs::write(&p1, "a").unwrap();
+        std::fs::write(&p2, "b").unwrap();
+        let mut current = Some(super::SqlsConfigFile(p1.clone()));
+        assert!(current.is_some(), "first guard held");
+        current = Some(super::SqlsConfigFile(p2.clone()));
+        assert!(current.is_some(), "replacement guard still held");
+        assert!(!p1.exists(), "replaced guard must remove the old config");
+        assert!(p2.exists());
     }
 
     #[test]
