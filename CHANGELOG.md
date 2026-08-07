@@ -8,6 +8,13 @@ patch bumps.
 
 ## [Unreleased]
 
+### Changed
+
+- `sqeel-core` `Highlighter::highlight_shared` takes `&str` instead of
+  `&Arc<String>` (no full-source clone), and `block_ranges()` returns
+  `&[(usize, usize)]` instead of a cloned `Vec` — allocation-only, no behaviour
+  change, but breaking for external callers of those two methods.
+
 ### Fixed
 
 - The Alpine `.apk` package builds again — the man page is gzipped before

@@ -618,8 +618,8 @@ impl Highlighter {
 
     /// Block ranges (multi-row nodes) from the most recent highlight call.
     /// Returns `(start_row, end_row)` pairs in source order.
-    pub fn block_ranges(&self) -> Vec<(usize, usize)> {
-        self.last_block_ranges.clone()
+    pub fn block_ranges(&self) -> &[(usize, usize)] {
+        &self.last_block_ranges
     }
 
     /// Highlight a borrowed source string. Returns sqeel-level `HighlightSpan`s
@@ -630,17 +630,15 @@ impl Highlighter {
             self.last_block_ranges.clear();
             return vec![];
         }
-        self.highlight_shared(&Arc::new(source.to_owned()), dialect)
+        self.highlight_shared(source, dialect)
     }
 
-    /// Highlight a shared source buffer (avoids clone for large buffers).
+    /// Highlight a borrowed source string without cloning it. Callers that
+    /// already hold an `Arc<String>` pass `&*arc` to stay on the no-clone
+    /// path.
     ///
     /// Returns an empty `Vec` when the grammar is not yet ready.
-    pub fn highlight_shared(
-        &mut self,
-        source: &Arc<String>,
-        dialect: Dialect,
-    ) -> Vec<HighlightSpan> {
+    pub fn highlight_shared(&mut self, source: &str, dialect: Dialect) -> Vec<HighlightSpan> {
         if source.is_empty() {
             self.last_errors.clear();
             self.last_block_ranges.clear();
@@ -666,7 +664,7 @@ impl Highlighter {
         inner.reset();
 
         // Build newline offsets once and reuse across all per-span lookups.
-        let nl_offsets = compute_newline_offsets(source.as_str());
+        let nl_offsets = compute_newline_offsets(source);
 
         // Get inner spans (capture-name tagged, byte-range only).
         let mut inner_spans: Vec<InnerSpan> = inner.highlight(bytes);
@@ -692,7 +690,7 @@ impl Highlighter {
             .collect();
 
         // Post-pass: promote dialect-specific keywords in uncovered regions.
-        promote_uncovered_dialect_keywords(source.as_str(), dialect, &mut spans);
+        promote_uncovered_dialect_keywords(source, dialect, &mut spans);
 
         // Harvest parse errors.
         let inner_errors: Vec<InnerError> = inner.parse_errors(bytes);

@@ -103,7 +103,6 @@ fn is_ident_byte(b: u8) -> bool {
 #[derive(Debug, Clone)]
 struct Token<'a> {
     text: &'a str,
-    upper: String,
     /// Byte offset where this token starts in the source slice.
     start: usize,
     /// Byte offset one past the token's last byte.
@@ -138,7 +137,6 @@ fn tokenize_words(s: &str) -> Vec<Token<'_>> {
                 let text = &s[start..i];
                 out.push(Token {
                     text,
-                    upper: text.to_ascii_uppercase(),
                     start,
                     end: i,
                 });
@@ -157,13 +155,25 @@ fn joined_by_dot(source: &str, a: &Token<'_>, b: &Token<'_>) -> bool {
 }
 
 fn is_table_keyword(tokens: &[Token<'_>], idx: usize) -> bool {
-    match tokens[idx].upper.as_str() {
-        "FROM" | "JOIN" | "INTO" | "UPDATE" | "DESCRIBE" | "DESC" => true,
-        "TABLE" => {
+    match tokens[idx].text {
+        t if t.eq_ignore_ascii_case("FROM")
+            || t.eq_ignore_ascii_case("JOIN")
+            || t.eq_ignore_ascii_case("INTO")
+            || t.eq_ignore_ascii_case("UPDATE")
+            || t.eq_ignore_ascii_case("DESCRIBE")
+            || t.eq_ignore_ascii_case("DESC") =>
+        {
+            true
+        }
+        t if t.eq_ignore_ascii_case("TABLE") => {
             idx > 0
                 && matches!(
-                    tokens[idx - 1].upper.as_str(),
-                    "DROP" | "ALTER" | "TRUNCATE" | "CREATE" | "RENAME"
+                    tokens[idx - 1].text,
+                    t if t.eq_ignore_ascii_case("DROP")
+                        || t.eq_ignore_ascii_case("ALTER")
+                        || t.eq_ignore_ascii_case("TRUNCATE")
+                        || t.eq_ignore_ascii_case("CREATE")
+                        || t.eq_ignore_ascii_case("RENAME")
                 )
         }
         _ => false,
@@ -171,13 +181,24 @@ fn is_table_keyword(tokens: &[Token<'_>], idx: usize) -> bool {
 }
 
 fn is_column_keyword(tokens: &[Token<'_>], idx: usize) -> bool {
-    match tokens[idx].upper.as_str() {
-        "SELECT" | "WHERE" | "HAVING" | "ON" | "SET" | "AND" | "OR" => true,
-        "BY" => {
+    match tokens[idx].text {
+        t if t.eq_ignore_ascii_case("SELECT")
+            || t.eq_ignore_ascii_case("WHERE")
+            || t.eq_ignore_ascii_case("HAVING")
+            || t.eq_ignore_ascii_case("ON")
+            || t.eq_ignore_ascii_case("SET")
+            || t.eq_ignore_ascii_case("AND")
+            || t.eq_ignore_ascii_case("OR") =>
+        {
+            true
+        }
+        t if t.eq_ignore_ascii_case("BY") => {
             idx > 0
                 && matches!(
-                    tokens[idx - 1].upper.as_str(),
-                    "ORDER" | "GROUP" | "PARTITION"
+                    tokens[idx - 1].text,
+                    t if t.eq_ignore_ascii_case("ORDER")
+                        || t.eq_ignore_ascii_case("GROUP")
+                        || t.eq_ignore_ascii_case("PARTITION")
                 )
         }
         _ => false,

@@ -125,7 +125,7 @@ pub(crate) fn search_label<H: Host>(
     editor: &Editor<hjkl_buffer::View, H>,
 ) -> Option<Span<'static>> {
     let re = editor.search_state().pattern.as_ref()?;
-    let pat = re.as_str().to_string();
+    let pat = re.as_str();
     let lines = buffer_lines(editor.buffer());
     let (cur_row, cur_col) = editor.cursor();
     let mut total = 0usize;

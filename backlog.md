@@ -171,17 +171,12 @@ below remain open.
 
 ### Allocation nits
 
-- `crates/sqeel-core/src/highlight.rs:633` — `highlight()` clones the whole
-  string into an `Arc` for a callee that only uses `&str`; change
-  `highlight_shared` to take `&str`.
-- `crates/sqeel-core/src/lsp.rs:316,333,346` — `from_value(result.clone())` ×3;
-  consume on the first attempt, clone only for later ones.
-- `crates/sqeel-core/src/completion_ctx.rs:106,141` — `Token.upper: String`
-  per-token alloc; `eq_ignore_ascii_case` on `tokens[idx].text` drops the field.
-- `crates/sqeel-core/src/highlight.rs:621-623` — `block_ranges()` clones; return
-  `&[(usize, usize)]` (single caller iterates immediately).
-- `crates/sqeel-tui/src/render.rs:128` — `re.as_str().to_string()` only
-  interpolated into `format!`s; bind `re.as_str()` instead.
+- `crates/sqeel-core/src/lsp.rs` — `from_value(result.clone())` ×3 then a
+  consuming final attempt is already the minimum for 4 deserialization tries.
+  The proposed "consume on the first attempt" is impossible:
+  `serde_json::from_value` consumes the `Value` on failure and does not return
+  it. Any further saving needs shape-based pre-dispatch, which risks behaviour
+  change — decision needed.
 
 ### Coverage
 
