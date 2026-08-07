@@ -2114,10 +2114,13 @@ impl AppState {
     /// - `Any` — every identifier in the tree (original behavior).
     pub fn completions_for_context(&self, ctx: &CompletionCtx, prefix: &str) -> Vec<String> {
         let p = prefix.to_lowercase();
+        let no_prefix = prefix.is_empty();
         let mut seen: HashSet<String> = HashSet::new();
         let mut out: Vec<String> = Vec::new();
         let push = |name: &str, out: &mut Vec<String>, seen: &mut HashSet<String>| {
-            if name.to_lowercase().starts_with(&p) && seen.insert(name.to_owned()) {
+            // With an empty prefix every `starts_with` is true, so the
+            // per-name lowercase is pure waste — skip it.
+            if (no_prefix || name.to_lowercase().starts_with(&p)) && seen.insert(name.to_owned()) {
                 out.push(name.to_owned());
             }
         };
@@ -2185,6 +2188,12 @@ impl AppState {
                 }
             }
             CompletionCtx::Any => {
+                // The identifier cache is already sorted and deduped
+                // (`rebuild_schema_cache`), so an unfiltered request can be
+                // served by cloning it wholesale — no per-name allocs, no sort.
+                if no_prefix {
+                    return self.schema_identifier_cache.as_ref().clone();
+                }
                 for name in self.schema_identifier_cache.iter() {
                     push(name, &mut out, &mut seen);
                 }
