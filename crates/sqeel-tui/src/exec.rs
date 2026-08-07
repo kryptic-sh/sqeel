@@ -89,7 +89,11 @@ pub(crate) fn run_statement_under_cursor(
     let stmt = if let Some(sel) = visual_selection_text(editor) {
         sel
     } else {
-        let cursor_byte = cursor_byte_offset(&buffer_lines(editor.buffer()), editor.cursor());
+        let cursor_byte = row_col_to_byte(
+            &buffer_lines(editor.buffer()),
+            editor.cursor().0,
+            editor.cursor().1,
+        );
         statement_at_byte(&content, cursor_byte)
             .map(|(s, e)| content[s..e].trim().to_string())
             .filter(|s| !s.is_empty())

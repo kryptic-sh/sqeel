@@ -241,24 +241,6 @@ pub(crate) fn visual_selection_text<H: Host>(
     }
 }
 
-/// Convert a (row, char-col) cursor into a byte offset into `lines.join("\n")`.
-pub(crate) fn cursor_byte_offset(lines: &[String], cursor: (usize, usize)) -> usize {
-    let mut byte = 0;
-    for (i, line) in lines.iter().enumerate() {
-        if i < cursor.0 {
-            byte += line.len() + 1; // +1 for '\n'
-        } else if i == cursor.0 {
-            byte += line
-                .chars()
-                .take(cursor.1)
-                .map(|c| c.len_utf8())
-                .sum::<usize>();
-            break;
-        }
-    }
-    byte
-}
-
 /// Desired terminal cursor shape after a draw. The TUI uses a thin vertical bar
 /// for any text-input context (insert mode, dialogs, schema search) and a thick
 /// block for editor normal mode, so cursors look consistent across the app.
