@@ -781,18 +781,9 @@ pub(crate) fn extract_results_left_click(
                 return None;
             }
             let rel_y = (y - content_y) as usize;
-            let query = state
-                .active_result()
-                .map(|t| t.query.clone())
-                .unwrap_or_default();
-            let (body_start, has_q) = if !query.trim().is_empty() {
-                (5usize, true)
-            } else {
-                (3usize, false)
-            };
-            if has_q && rel_y == 3 {
-                return Some((query.clone(), "Query", ResultsCursor::Query));
-            }
+            // The query row (rel_y == 3) is handled by the shared hit-test
+            // above; only the message body remains here.
+            let body_start = if query_text.trim().is_empty() { 3 } else { 5 };
             if rel_y >= body_start {
                 let line_idx = rel_y - body_start + state.results_scroll();
                 let line = e.lines().nth(line_idx)?.to_string();
@@ -807,15 +798,7 @@ pub(crate) fn extract_results_left_click(
                 return None;
             }
             let rel_y = (y - content_y) as usize;
-            let query = state
-                .active_result()
-                .map(|t| t.query.clone())
-                .unwrap_or_default();
-            let has_q = !query.trim().is_empty();
-            let body_start = if has_q { 5 } else { 3 };
-            if has_q && rel_y == 3 {
-                return Some((query, "Query", ResultsCursor::Query));
-            }
+            let body_start = if query_text.trim().is_empty() { 3 } else { 5 };
             if rel_y >= body_start {
                 let msg = if matches!(pane, sqeel_core::state::ResultsPane::Cancelled) {
                     "Query cancelled"
@@ -835,15 +818,7 @@ pub(crate) fn extract_results_left_click(
                 return None;
             }
             let rel_y = (y - content_y) as usize;
-            let query = state
-                .active_result()
-                .map(|t| t.query.clone())
-                .unwrap_or_default();
-            let has_q = !query.trim().is_empty();
-            let body_start = if has_q { 5 } else { 3 };
-            if has_q && rel_y == 3 {
-                return Some((query, "Query", ResultsCursor::Query));
-            }
+            let body_start = if query_text.trim().is_empty() { 3 } else { 5 };
             if rel_y >= body_start {
                 return Some((
                     non_query_summary(verb, *rows_affected),
