@@ -157,14 +157,17 @@ pub fn list_queries() -> anyhow::Result<Vec<String>> {
     Ok(names)
 }
 
-/// Simple FNV-1a hash for stable short identifiers.
-fn fnv_hash8(s: &str) -> String {
+/// Simple FNV-1a hash for stable short identifiers. Full 64-bit: a
+/// truncated 32-bit value collides often enough that two distinct queries
+/// written within the same second (same timestamp prefix) would overwrite
+/// each other's result file.
+fn fnv_hash16(s: &str) -> String {
     let mut hash: u64 = 14695981039346656037;
     for b in s.bytes() {
         hash ^= b as u64;
         hash = hash.wrapping_mul(1099511628211);
     }
-    format!("{:08x}", hash & 0xFFFF_FFFF)
+    format!("{hash:016x}")
 }
 
 fn unix_timestamp() -> u64 {
@@ -182,7 +185,7 @@ pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow
     std::fs::create_dir_all(&dir)?;
 
     let ts = unix_timestamp();
-    let hash = fnv_hash8(query);
+    let hash = fnv_hash16(query);
     let filename = format!("{}_{}.json", ts, hash);
 
     let json = serde_json::to_string_pretty(result)?;
@@ -391,8 +394,15 @@ mod tests {
 
     #[test]
     fn fnv_hash_stable() {
-        assert_eq!(fnv_hash8("SELECT 1"), fnv_hash8("SELECT 1"));
-        assert_ne!(fnv_hash8("SELECT 1"), fnv_hash8("SELECT 2"));
+        assert_eq!(fnv_hash16("SELECT 1"), fnv_hash16("SELECT 1"));
+        assert_ne!(fnv_hash16("SELECT 1"), fnv_hash16("SELECT 2"));
+    }
+
+    #[test]
+    fn fnv_hash_uses_full_64_bits() {
+        // A 32-bit truncation lets distinct queries written in the same
+        // second collide on the same filename and overwrite each other.
+        assert_eq!(fnv_hash16("SELECT 1").len(), 16);
     }
 
     #[test]
