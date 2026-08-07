@@ -2703,9 +2703,14 @@ pub(crate) fn draw_completions(
     cur_col: usize,
 ) {
     let cursor = state.completion_cursor;
+    // The popup never scrolls and shows at most 12 rows, so only the
+    // first popup_h items can ever be visible; cap the ListItem build
+    // (the width calc below still scans the full set).
+    let popup_h = (state.completions.len() as u16 + 2).min(12);
     let items: Vec<ListItem> = state
         .completions
         .iter()
+        .take(popup_h as usize)
         .map(|s| ListItem::new(s.as_str()))
         .collect();
 
@@ -2718,7 +2723,6 @@ pub(crate) fn draw_completions(
     let popup_w = (longest + 2)
         .clamp(20, 60)
         .min(editor_area.width.saturating_sub(2));
-    let popup_h = (items.len() as u16 + 2).min(12);
 
     // inner editor area starts 1 cell in from the block border
     let inner_x = editor_area.x + 1;

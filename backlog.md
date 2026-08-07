@@ -280,8 +280,6 @@ visible state.
 
 ### Minor
 
-- `draw_completions` builds `Vec<ListItem>` over all completions every frame
-  though ≤12 show (render.rs:2687-2702) — `.take(popup_h)` first.
 - `tmux_navigate` spawns a `tmux` process per nav keystroke (exec.rs:188-193).
 - `merge_db_list` sorts by `position()` — O(D²) per db-list load
   (state.rs:2716-2721).
