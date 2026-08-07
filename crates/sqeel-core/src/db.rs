@@ -1,3 +1,4 @@
+use crate::highlight::strip_sql_comments;
 use crate::schema::SchemaNode;
 use crate::state::QueryResult;
 use sqeel_config::{TlsConfig, TlsVerifyMode};
@@ -1553,7 +1554,12 @@ pub fn apply_default_limit(query: &str, limit: usize) -> Option<String> {
     {
         return None;
     }
-    Some(format!("{trimmed} LIMIT {limit}"))
+    // Strip comments so a trailing `-- x` (or `/* x */`) can't swallow the
+    // appended LIMIT into a comment. Comments are inert, so the executed
+    // text is equivalent — only the cap actually applies now.
+    let stripped = strip_sql_comments(trimmed);
+    let base = stripped.trim_end();
+    Some(format!("{base} LIMIT {limit}"))
 }
 
 fn strip_trailing_semicolons(q: &str) -> &str {
@@ -1687,6 +1693,41 @@ mod limit_tests {
         let out = apply(q).unwrap();
         assert!(out.ends_with(" LIMIT 100"));
         assert!(out.contains("SELECT * FROM users"));
+    }
+
+    #[test]
+    fn trailing_line_comment_cannot_swallow_limit() {
+        // `-- x LIMIT 100` would be one big comment; the LIMIT must land
+        // after the comment is stripped.
+        assert_eq!(
+            apply("SELECT * FROM t -- x"),
+            Some("SELECT * FROM t LIMIT 100".into())
+        );
+    }
+
+    #[test]
+    fn trailing_block_comment_cannot_swallow_limit() {
+        assert_eq!(
+            apply("SELECT * FROM t /* x */"),
+            Some("SELECT * FROM t LIMIT 100".into())
+        );
+    }
+
+    #[test]
+    fn limit_inside_comment_does_not_count_as_limiting() {
+        // `-- LIMIT 5` is inert — the cap still applies.
+        assert_eq!(
+            apply("SELECT * FROM t -- LIMIT 5"),
+            Some("SELECT * FROM t LIMIT 100".into())
+        );
+    }
+
+    #[test]
+    fn comment_like_text_inside_string_is_preserved() {
+        assert_eq!(
+            apply("SELECT '--' FROM t"),
+            Some("SELECT '--' FROM t LIMIT 100".into())
+        );
     }
 
     #[test]
