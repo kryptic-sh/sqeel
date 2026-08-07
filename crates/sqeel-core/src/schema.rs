@@ -470,11 +470,13 @@ pub fn filter_items<'a>(all: &'a [SchemaTreeItem], query: &str) -> Vec<&'a Schem
         }
         matched.push(item.node_path.clone());
     }
-    let is_descendant = |path: &[usize]| {
-        matched
-            .iter()
-            .any(|m| path.len() > m.len() && path[..m.len()] == m[..])
-    };
+    // Descendant test as prefix probes into the matched-path set:
+    // O(depth) lookups per item instead of a linear scan of every
+    // match (tree depth is ≤ 5).
+    let matched_set: std::collections::HashSet<&[usize]> =
+        matched.iter().map(|p| p.as_slice()).collect();
+    let is_descendant =
+        |path: &[usize]| (1..path.len()).any(|len| matched_set.contains(&path[..len]));
     all.iter()
         .filter(|it| ancestors.contains(&it.node_path) || is_descendant(&it.node_path))
         .collect()
@@ -910,6 +912,16 @@ mod tests {
     fn filter_items_empty_on_no_match() {
         let all = flatten_all(&sample_tree());
         assert!(filter_items(&all, "zzz").is_empty());
+    }
+
+    #[test]
+    fn filter_items_excludes_sibling_of_match() {
+        let all = flatten_all(&sample_tree_with_relations());
+        let filtered = filter_items(&all, "users");
+        // "roles" is a sibling of the matched "users" table: not an
+        // ancestor, not a descendant — it must stay out.
+        assert!(filtered.iter().all(|it| !it.label.contains("roles")));
+        assert!(filtered.iter().any(|it| it.label.contains("users")));
     }
 
     #[test]

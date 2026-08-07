@@ -207,14 +207,14 @@ gone (the installed `search_state().pattern` is reused when the query is
 unchanged). Fix: cache `(total, current)` keyed on the buffer's `dirty_gen` +
 pattern + cursor, so steady-state frames skip the scan.
 
-#### 2. Schema filter is O(N·M) per frame while the search box is active
+#### 2. Schema filter: label lowercasing + no result cache while filtering
 
-`crates/sqeel-core/src/schema.rs:473-491` — `filter_items` runs a linear scan of
-all matched paths for every item (`is_descendant` closure), plus a lowercased
-`String` alloc per label (`label_matches`, 464-468). Called from `draw_schema`
-(render.rs:1179) on every redraw with a filter. Fix: `HashSet` of matched paths
-with prefix probes (depth ≤ 5), cache the filtered list keyed on query,
-pre-lower search labels.
+`filter_items` (schema.rs) now tests descendants via prefix probes into a
+matched-path set — O(depth) per item, the O(N·M) linear scan is gone. Remaining
+per-frame costs while the filter box is active: a lowercased `String` alloc per
+label (`label_matches`, schema.rs:454) and no result cache. Fix: pre-lower
+labels, and cache the filtered list keyed on query + schema generation (needs an
+invalidation key from the schema refresh path).
 
 #### 3. Retained-tree walk + two full newline-offset scans per highlight pass
 
