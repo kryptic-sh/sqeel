@@ -97,7 +97,9 @@ use sqeel_core::{
     },
     lsp::{LspClient, LspEvent},
     schema::{self, SchemaItemKind, SchemaTreeItem, SubGroup},
-    state::{AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, VimMode},
+    state::{
+        AddConnectionField, Focus, KeybindingMode, ResultsCursor, ResultsPane, TabEntry, VimMode,
+    },
 };
 use theme::ui;
 
@@ -1747,19 +1749,7 @@ async fn run_loop(
                                 mouse.column.saturating_sub(last_draw_areas.tab_bar.x) as usize;
                             let clicked = {
                                 let s = state.lock().unwrap();
-                                let mut offset = 0usize;
-                                let mut found = None;
-                                for (i, tab) in s.tabs.iter().enumerate() {
-                                    let w = tab.name.len()
-                                        + 2
-                                        + if i + 1 < s.tabs.len() { 1 } else { 0 };
-                                    if rel_x < offset + w {
-                                        found = Some(i);
-                                        break;
-                                    }
-                                    offset += w;
-                                }
-                                found
+                                tab_bar_click_index(&s.tabs, rel_x)
                             };
                             if let Some(idx) = clicked {
                                 let content = {
@@ -4223,6 +4213,22 @@ async fn commit_pending_saves(
     failed
 }
 
+/// Map a tab-bar x offset (cells from the bar's left edge) to the tab under
+/// the cursor. Widths mirror `render::build_tab_title`: `" {name} "` per tab
+/// plus a `│` separator between tabs, names measured in chars — ratatui lays
+/// spans out by chars, so a byte count would mis-hit multi-byte tab names.
+fn tab_bar_click_index(tabs: &[TabEntry], rel_x: usize) -> Option<usize> {
+    let mut offset = 0usize;
+    for (i, tab) in tabs.iter().enumerate() {
+        let w = tab.name.chars().count() + 2 + if i + 1 < tabs.len() { 1 } else { 0 };
+        if rel_x < offset + w {
+            return Some(i);
+        }
+        offset += w;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_hover_lines;
@@ -4475,6 +4481,30 @@ mod tests {
             !text.contains("[local]"),
             "same-connection binding must stay clean: {text}"
         );
+    }
+
+    #[test]
+    fn tab_bar_click_index_measures_names_in_chars() {
+        use sqeel_core::state::TabEntry;
+        let tab = |name: &str| TabEntry {
+            name: name.into(),
+            content: None,
+            last_accessed: None,
+            cursor: None,
+            dirty: false,
+            connection: None,
+        };
+        // Rendered widths: " 日本語 " (5 cells) + "│" + " b " (3 cells) = 9.
+        let tabs = [tab("日本語"), tab("b")];
+        // First tab's span (including its separator) covers x 0..6.
+        assert_eq!(super::tab_bar_click_index(&tabs, 0), Some(0));
+        assert_eq!(super::tab_bar_click_index(&tabs, 5), Some(0));
+        // x 6..9 lands on " b " — byte widths (9+2) would still report tab 0.
+        assert_eq!(super::tab_bar_click_index(&tabs, 6), Some(1));
+        assert_eq!(super::tab_bar_click_index(&tabs, 8), Some(1));
+        // Past the last tab: no hit.
+        assert_eq!(super::tab_bar_click_index(&tabs, 9), None);
+        assert_eq!(super::tab_bar_click_index(&[], 0), None);
     }
 
     #[test]
