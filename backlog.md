@@ -279,3 +279,653 @@ response), persistence (writes on spawn_blocking), sqeel-config (startup). Could
 not settle without profiling: relative weights of tree-sitter parse vs. the
 block-ranges walk vs. newline scans on large buffers; whether mouse-move events
 are enabled (which would inflate every per-frame cost above).
+
+## Review 2026-08-10
+
+Correctness review of the whole codebase (4 crates + app + tests; clean tree,
+depth low). 3 findings; the 2026-08-07 `push_history` item re-verified still
+open. No code changed.
+
+### Findings
+
+#### 1. Concurrent runs alias result-tab index 0 — an in-flight run's outcome overwrites the newer run's tab
+
+`dispatch_pending_run` calls `s.dismiss_results()` (exec.rs:52), which clears
+every result tab (state.rs:904-908) — including the previous run's still-
+Loading tab — before `push_loading_tab` re-creates a tab at index 0. The
+executor spawns each `Single` request in its own task and immediately awaits the
+next `rx.recv()` (sqeel.rs:990-1010), so two runs genuinely overlap, and both
+hold the same `tab_idx`. Nothing gates a run on `query_in_flight()`.
+
+```
+Repro: on a slow table, Ctrl+Enter "SELECT slow_join(...)" (run A), then
+       while A is still running Ctrl+Enter "SELECT 1" (run B, fast).
+Expect: the results pane shows B's rows (the last run the user issued).
+Actual: whichever executor finishes LAST wins tab 0. If A finishes after B,
+        A's apply_exec_outcome writes A's rows over B's tab and the user
+        sees A's result — labeled with A's query — while their last action
+        ran B. Batch runs (Ctrl+Shift+Enter twice) alias identically: both
+        batches write indices 0..N-1.
+```
+
+#### 2. LSP diagnostic underline interprets UTF-16 columns as byte offsets
+
+`translate_event` copies the server's `range.start.character` verbatim into
+`Diagnostic::col` (lsp.rs:322-325). LSP positions are UTF-16 code units, and
+sqeel itself assumes a UTF-16 wire on the request side (`char_col_to_utf16`,
+lib.rs:1221-1229). But `apply_diagnostic_underline` uses `d.col` as a byte index
+into the line — `line_len(row)` is `str::len` bytes and the spans slice byte
+ranges (syntax.rs:199-224). On any line with multi-byte characters before the
+diagnostic, the underline lands left of the true position, often inside a
+character. (If the server instead honors the client's negotiated `utf-8`
+encoding, the request-side conversion at lib.rs:1221-1229 is the mismatched side
+— either way one side of the wire conversion is wrong for multi-byte lines.)
+
+```
+Repro: buffer line "SELECT 日本語 bad FROM t", sqls publishes a diagnostic
+       whose character is the token after 日本語.
+Expect: underline under "bad" (bytes 17..20).
+Actual: underline at byte 10..13 — inside the second 日本語 character
+        (each CJK char is 1 UTF-16 unit / 3 bytes, so UTF-16 col 10 ≠
+        byte 10).
+```
+
+#### 3. Headless table/CSV headers bypass the control-char sanitizer (rows don't)
+
+`sanitize_cell`'s contract says it is "applied to table and CSV cell output"
+(sqeel.rs:20-22), and the data rows are: table body at sqeel.rs:732, CSV rows at
+sqeel.rs:756. The header rows are not: table header `fmt_row(&r.columns)` at
+sqeel.rs:721 and the CSV header `r.columns.iter().map(|c| esc(c))` at
+sqeel.rs:744-750 run through only plain formatting / CSV quoting. A column name
+carrying ESC bytes reaches stdout raw.
+
+```
+Repro: sqeel --url sqlite::memory: -e "SELECT 1 AS char(27)||']0;hi'||char(27)||'\'"
+       (quoted alias containing ESC), headless table format.
+Expect: no raw ESC byte on stdout (same guarantee the cell path gives,
+        pinned by tests/headless.rs:244).
+Actual: the header row prints the raw ESC bytes; catting the output runs
+        the control sequence.
+```
+
+### Re-verified (already tracked, still open)
+
+- `push_history` stamps `connection: self.active_connection` at completion time
+  (state.rs:3989), called from `apply_exec_outcome` with `conn_slug` in scope
+  (sqeel.rs:1089, 1104) — a query run on connection A that finishes after a
+  switch to B is recorded under B and vanishes from A's per- connection history.
+  Matches the open item under "Work 2026-08-07"; fix unchanged (thread the
+  executor's connection name through).
+
+### Cleared
+
+- `apply_default_limit` vs trailing comments/semicolons: `split_statements`
+  drops comment tails that follow a `;` (they land in their own, then
+  comment-filtered, range), and comments are stripped before the LIMIT append —
+  no `…; LIMIT n` multi-statement text ever reaches the executor
+  (db.rs:1543-1563, highlight.rs:984-991).
+- CSV cell injection: rows are sanitized before quoting (sqeel.rs:756) — only
+  the header path misses (finding 3).
+- `statement_at_byte` over a leading comment: the comment-only range is filtered
+  by the strip-comments check in `run_statement_under_cursor` (exec.rs:119-121).
+- `results_find` / `hover_find` backward-wrap math
+  `(start + i·(total−1)) % total`: correct for every total ≥ 2
+  (state.rs:1830-1834, 1871-1875).
+- `:describe` / `:desc` injection via backtick/paren table names
+  (ex.rs:390-409): user-typed input, trusted by design (audit scope).
+- Switch-away-from-dirty-tab and `evict_cold_tabs`: dirty tabs keep their
+  in-memory content in `tab.content` and are never evicted (state.rs:3620-3657,
+  3803-3816).
+- `SqlsConfigFile` drop lifecycle: the credential-bearing sqls config is removed
+  on drop and on replacement (lib.rs:120-126).
+- UTF-8/char-index conversions in TextInput, `row_col_to_byte`,
+  `char_col_to_byte`: all char-index carets converted via `char_indices`;
+  multibyte cases pinned by tests.
+
+### Hardening (correct today, fragile — not defects)
+
+- Editing a connection and leaving the Password field empty cannot clear the
+  keyring entry: `save_connection` with `password=None` leaves the old
+  credential in place (sqeel-config lib.rs:380-405), so `load_connections`
+  splices the stale password back on the next startup — including into a URL the
+  user edited to point at a different host (lib.rs:329-336). No UI path removes
+  a stored password short of deleting the connection.
+- Ctrl+N at the end of query history replaces the buffer with "" (lib.rs:
+  3948-3955), and Ctrl+P replaces the whole buffer with the recalled query with
+  no guard — unsaved edits in the buffer are discarded. Documented recall
+  semantics, but the wipe-on-`None` arm is vim-divergent (vim restores the
+  in-progress line at history end).
+- History semantics differ by failure path: `dispatch_pending_run` records the
+  query when the send fails (exec.rs:58), the executor's Error arm does not
+  (sqeel.rs:1117-1119) — "channel full" and "SQL error" leave different history
+  trails.
+
+### Coverage
+
+Scope: entire workspace (clean tree), depth low. Reviewed in full: sqeel-config
+(pgpass.rs, lib.rs); sqeel-core (config, safety, ddl, completion_ctx, db,
+highlight, lsp, schema, persistence, state); sqeel-tui (lib.rs, render.rs,
+exec.rs, ex.rs, host.rs, syntax.rs, picker.rs, completion_thread.rs, splash.rs,
+theme.rs lines 1-120 + structure); apps/sqeel (bin/sqeel.rs, tests/headless.rs,
+tests/e2e.rs, pty harness — the 11 smoke tests' `openpty` failure confirmed
+environmental at harness.rs:78). GAPS: theme.rs 121-849 (color tables) and the
+bundled theme TOMLs; tree-sitter grammar fixtures and hjkl-bonsai internals;
+pkg/ packaging scripts; .github workflows. The test suite was NOT run (task
+instruction; 11 PTY e2e tests fail environmentally in this sandbox).
+MySQL/Postgres/DuckDB paths are static reads only — no live server exercised;
+the sqls position-encoding behaviour (finding 2's operative assumption) was not
+exercised against a real server.
+
+## Audit 2026-08-10
+
+Security + correctness audit of the whole codebase (clean tree, depth low). No
+code changed. All 5 findings are LOW; 3 of them are the still-open findings from
+`## Review 2026-08-10` / `## Work 2026-08-07`, re-verified against the current
+code. New this pass: the 0644 export writes.
+
+### Findings
+
+#### 1. Headless `-e` table/CSV headers bypass `sanitize_cell` — raw ESC bytes reach stdout
+
+`apps/sqeel/src/bin/sqeel.rs:721` (table header `fmt_row(&r.columns)`) and
+`:744-750` (CSV header `esc(c)`). The function's own contract (`sqeel.rs:19-22`)
+says it is "applied to table and CSV cell output", and the row paths honour it
+(`sqeel.rs:732`, `:756`, pinned by `tests/headless.rs:243-270`) — the header
+rows run through only plain formatting / CSV quoting. A column name
+(server-controlled alias, e.g. a hostile view definition) carrying C0/C1 bytes
+reaches stdout raw. Same defect as Review 2026-08-10 finding 3 — re-verified
+still open, nothing changed since.
+
+```
+Repro: sqeel --url sqlite::memory: -e "SELECT 1 AS char(27)||']0;hi'||char(27)||'\'"
+Expect: no raw ESC byte on stdout (the guarantee the cell path gives).
+Actual: the header row prints the raw ESC bytes; catting the output runs
+        the control sequence (title spoof, OSC 52 clipboard write, …).
+```
+
+#### 2. `:export csv|json` and `:w <path>` write exported data with default 0644 permissions
+
+`crates/sqeel-tui/src/ex.rs:340` (`std::fs::write(&path, &content)`) and
+`crates/sqeel-tui/src/lib.rs:2682` (same for `:w <path>`). Every other state
+file — connection TOML, session.toml, result JSON, queries — goes through
+`write_private` 0600 (`persistence.rs:63-85`); the plain `:w` save path also
+lands in `save_query` → `write_private` (`state.rs:114-117`). The two
+explicit-export paths use bare `std::fs::write`, so exported query results
+(potentially sensitive) and buffer dumps land 0644 & ~umask — world-readable
+under the common 022 umask, in the same `~/.local/share/sqeel/results/` tree
+where the equivalent JSON is 0600.
+
+```
+Repro: run a query with sensitive rows, then :export csv (no path — lands
+       in ~/.local/share/sqeel/results/<conn>/<ts>.csv).
+Expect: 0600, matching the .json result files beside it.
+Actual: 0644 — any local user can read the exported rows.
+```
+
+#### 3. Concurrent runs alias result-tab index 0 — last issuer isn't last shown
+
+Re-verified still open (Review 2026-08-10 finding 1). `dispatch_pending_run`
+calls `s.dismiss_results()` (`exec.rs:52`), which clears every result tab
+(`state.rs:904-908`), then `push_loading_tab` re-creates a tab at index 0
+(`state.rs:832-847`); the executor spawns each `Single` in its own task and
+awaits the next `recv()` (`sqeel.rs:990-1010`), so two runs genuinely overlap
+and whichever finishes last writes tab 0. `Ctrl+Enter` A (slow) then
+`Ctrl+Enter` B (fast) can end with A's rows labelled under B's last action.
+Correctness, not security — but it misleads on which statement's data is on
+screen.
+
+#### 4. LSP diagnostic underline treats UTF-16 columns as byte offsets
+
+Re-verified still open (Review 2026-08-10 finding 2). `translate_event` copies
+the server's `range.start.character` verbatim (`lsp.rs:322-325`);
+`apply_diagnostic_underline` uses `d.col` as a byte index into the line
+(`syntax.rs:199-224`). LSP positions are UTF-16 code units; on any line with
+multi-byte characters before the diagnostic the underline lands left of the true
+position, often inside a character.
+
+#### 5. `push_history` stamps the active connection, not the one that ran
+
+Re-verified still open (`Work 2026-08-07`). `push_history` records
+`connection: self.active_connection.clone()` at completion time
+(`state.rs:3989`), called from `apply_exec_outcome` which has the executor's
+`conn_slug` in scope (`sqeel.rs:1089`, `:1104`). A query run on A that finishes
+after a switch to B is recorded under B and vanishes from A's per-connection
+history (Ctrl-P/N + picker). Fix unchanged: thread the connection name through.
+
+### Cleared
+
+- LSP server `line`/`col` → `editor.jump_to(line+1, col+1)`: clamps in
+  hjkl-engine 0.41.0 `editor.rs:4388` (row min'd to last, col min'd to line char
+  count) — a hostile `u32::MAX` position cannot panic or go OOB.
+- LSP diagnostic row/col out of range: `start_row >= buffer_rows` returns early,
+  `stop`/cols clamped (`syntax.rs:199-224`) — no OOB indexing.
+- Terminal-escape injection from DB cells / LSP hover / completions / status:
+  all TUI text renders through ratatui, and ratatui-core 0.1.2's
+  `Buffer::set_stringn` drops control characters at buffer-fill time
+  (`buffer.rs:350-353`); the editor pane additionally maps them to Control
+  Pictures (hjkl-buffer-tui 0.41.0 `render.rs`). Only the headless stdout path
+  (finding 1) leaks.
+- hjkl-lsp untrusted-server wire parsing: message payload capped at 16 MiB,
+  header at 64 KiB (`codec.rs:6-11`) — no unbounded allocation from a malicious
+  sqls.
+- `:describe`/`:desc` SQLi via backtick/paren/`;` table names (`ex.rs:390-409`):
+  user-typed command input — the trusted-by-design doctrine of both prior audits
+  applies; single-quote check is belt-and- braces. MySQL multi-statement text is
+  additionally rejected by sqlx.
+- Introspection-query injection: every catalog query binds its parameters
+  (`db.rs:574, 617-618, 654-667, 730-733, 773-776, 860-866, 897-918`); the three
+  SQLite PRAGMA sites escape `"` → `""` (`:632, :805, :816, :945`) and the one
+  MySQL `SHOW TABLES FROM` site backtick-doubles (`:551`). Traced: a table name
+  containing `"`/`` ` ``/`)` stays inside the quoted identifier.
+- LIMIT injection: `apply_default_limit` appends a formatted `usize`
+  (`db.rs:1562`), and multi-statement text never reaches the executor
+  (`split_statements` + comment stripping — re-verified, matches Review
+  2026-08-10's cleared item).
+- pgpass: world-readable files are skipped before any parse (`pgpass.rs:92-98`,
+  pinned by tests) — a planted 0644 `.pgpass` yields zero entries, not
+  credentials.
+- Keyring splice of attacker-planted `conns/*.toml` URLs
+  (`sqeel-config lib.rs:329-336`): requires config-dir write access, which
+  already implies full file compromise — not a boundary.
+- Tab-name path traversal: `rename_active_tab` restricts to `[A-Za-z0-9-_.]` +
+  `.sql` (`state.rs:3732-3739`); `:saveas` rejects multi-component names
+  (`lib.rs:2709`); `:e` strips to `file_name()` (`lib.rs:2808-2811`) — a name
+  can never escape the queries dir.
+- `theme::switch_colorscheme`: matches bundled names only, no file reads from
+  user input (`theme.rs:108-121`).
+- `evict_old_results`: `read_dir` never yields `..`; `remove_file` on a planted
+  symlink removes the link, not the target (`persistence.rs:223- 235`).
+- `mask_db_url_password`: `replacen(":{encoded}@")` matches both raw and
+  percent-encoded passwords (tests `sqeel.rs:1425-1462`); malformed URLs
+  returned unchanged.
+- DuckDB `:memory:` and path handling: `duckdb::memory:`/empty → in-memory,
+  spawn_blocking isolates panics (`db.rs:238-262`).
+- hjkl-buffer `jump_to`/`set_cursor` and `row_col_to_byte`: all clamp or fall
+  back to `String::new()` — no panic on out-of-range cursor math.
+
+### Hardening (correct today, fragile — not defects)
+
+- `write_sqls_config` interpolates the DSN raw into YAML (`lsp.rs:36-38`): a `"`
+  or newline in a URL/password yields an unparseable sqls config (LSP silently
+  off); a password containing a newline could inject a second `connections:`
+  entry — same-user (config dir / keyring access already implies compromise),
+  but the file is written to world-visible `/tmp` with 0600 and the injection
+  target is a config that then contains the password.
+- `splice_password_into_url` silently drops a saved password for URLs with no
+  username (`sqeel-config lib.rs:290`) — form-saved password for a userless URL
+  is lost on reload → auth failure with no explanation.
+- `save_connection` with `password=None`/empty cannot clear a stale keyring
+  entry (`sqeel-config lib.rs:380-405`) — the old credential is spliced back
+  into a URL the user edited to point at a different host.
+- `duckdb:///abs/path` resolves to a _relative_ path — leading slashes all
+  trimmed (`db.rs:241-242`).
+- `load_result_for` joins a session.toml-sourced filename without a
+  `components()` check (`persistence.rs:199-206`) — self-inflicted content only;
+  read fails (JSON parse) before anything loads.
+- TUI connection path ignores the saved connection's TLS block —
+  `DbConnection::connect(url, None)` (`sqeel.rs:847`) skips CA/mTLS/verify in
+  the TUI; they apply in `-e`.
+- No size limits on session.toml / result JSON reads (`config.rs:126`,
+  `persistence.rs:202`) — planted huge files are an unbounded read (same-user
+  DoS).
+- `export_csv` applies no control-char sanitization (`persistence.rs:239- 250`)
+  — the headless CSV row path sanitizes (`sqeel.rs:756`), so `:export csv` is
+  the one CSV path that writes raw ESC bytes into the file (inert on disk;
+  injects only when the file is catted).
+- CSV formula injection: leading `=`, `+`, `-`, `@` cells are exported verbatim
+  (headless CSV + `:export csv`) — a spreadsheet-opened export of DB-sourced
+  text can execute formulas. Data is the user's own; flagged for awareness only.
+- `retry_connection` status fallback can show the raw URL-with-password
+  (`state.rs:2931` `unwrap_or_else(|| url.clone())`) when the failed URL matches
+  no saved connection — in-TUI on the user's own screen, but the one spot the
+  masked-string discipline is bypassed.
+- `results/` and `queries/` dirs are created 0755 (`create_dir_all`): result
+  filenames (`<timestamp>_<fnv16>.json`) are world-listable — query
+  timing/metadata leak to other local users; file contents stay 0600.
+
+### Coverage
+
+Walked and traced: `apps/sqeel/src/bin/sqeel.rs` in full (CLI args, `-e`
+headless, sandbox, env: `DATABASE_URL`, `SQEEL_SANDBOX_AUTOCLEAN`,
+`SQEEL_DEBUG_HL_DUMP`, `PGPASSFILE`); `sqeel-config` (lib.rs, pgpass.rs) in
+full; `sqeel-core`: db.rs in full (connect, execution, LIMIT rewrite, statement
+splitting, introspection), lsp.rs in full + the event consumers in sqeel-tui
+(lib.rs diagnostics/definition/hover/completion/signature arms, syntax.rs
+underline + clamps), persistence.rs, config.rs, safety.rs, ddl.rs,
+completion_ctx.rs in full; state.rs security-relevant paths (URL masking,
+connection add/edit/delete forms, tabs/save/rename/delete, query history,
+persist_result, results-pane math, LSP event state, retry); sqeel- tui: lib.rs
+(LSP startup/restart/`SqlsConfigFile` lifecycle, ex-command dispatch incl.
+`:w`/`:saveas`/`:e`/`:export`/`:describe`/`:Anvil`, highlight window,
+clipboard), exec.rs, ex.rs, host.rs, picker.rs, completion_thread.rs in full;
+render.rs result/hover/status/export paths; theme.rs (colorscheme resolution +
+structure); dependency sides: hjkl-lsp 0.41.0 codec caps, hjkl-engine 0.41.0
+`jump_to`, hjkl-buffer 0.41.0 `set_cursor`, ratatui-core 0.1.2 control-char
+filtering. GAPs: tree-sitter grammar fixtures + bundled `config.toml` defaults;
+theme.rs 121-849 color tables and bundled theme TOMLs; hjkl-ex registry
+internals (how `:w`/ `:saveas`/`:e` parse before sqeel's arms) and hjkl-anvil
+install machinery; `pkg/` packaging scripts; `.github/` workflows. No live
+MySQL/Postgres/ DuckDB server exercised (static reads only) and the sqls binary
+was not run — server responses traced against `lsp_types` + the codec caps
+above. Test suite not run per task instruction (11 PTY e2e tests fail
+environmentally in this sandbox; CI runs them).
+
+### Summary
+
+5 findings, all LOW (1 security-correctness: headless header escape; 1
+data-at-rest perms: 0644 exports; 3 re-verified open correctness items:
+result-tab aliasing, UTF-16 diagnostic cols, history connection stamp), 0
+critical/high/medium. Overall risk for this local tool is low: no remote attack
+surface, credentials handled carefully (0600 state files, keyring with plaintext
+fallback only on keyring failure, URL masking, O_EXCL 0600 sqls config), and
+untrusted-server (LSP) inputs are size-capped and clamped. Top fixes: (1) run
+table/CSV headers through `sanitize_cell` to close the headless escape leak; (2)
+switch `:export` and `:w <path>` to the 0600 `write_private` path; (3) land the
+three open correctness items (thread `conn_slug` into `push_history`, fix the
+UTF-16→byte diagnostic conversion, gate runs on `query_in_flight()`).
+
+## Tidy 2026-08-10
+
+Quality/cleanup pass over the whole codebase (behavior-preserving only; clean
+tree; no code changed). Every duplication below was traced against both copies;
+the dead-branch claim (item 13) was checked against the helper's own fallback.
+The 2026-08-06 tidy items 1–10 were re-verified still open and are re-listed
+with current line numbers (nothing landed since). New this pass: items 2, 11–24.
+
+### Duplicated logic (extract a helper — drift risk)
+
+- `crates/sqeel-core/src/highlight.rs` — the parse-error harvesting `filter_map`
+  (skip native statement → byte→row/col → `ParseError`) is byte-identical at
+  538-561, 588-611, 695-720 (two callers already share `nl_offsets`). Extract
+  `harvest_parse_errors(source, dialect, &nl_offsets, errors)`.
+- `crates/sqeel-core/src/highlight.rs` — `promote_uncovered_dialect_keywords`
+  (867-936) and its `_in_range` variant (788-862) share the covered-ranges
+  sort/merge + gap-walk skeleton (~50 lines, identical modulo the range clip and
+  cursor bounds). Extract `scan_gaps(source, dialect, covered, start, end)` with
+  the full version calling it as `0..source.len()`.
+- `crates/sqeel-core/src/state.rs` — header+rows column-width computation
+  duplicated at 1267-1278 (`parse_hover_table`) and 1383-1394
+  (`hover_table_from_cache`). Extract `grid_col_widths(header, rows)` using
+  `chars().count()` (NOT `QueryResult::compute_col_widths`, which uses byte
+  `.len()` — they differ for non-ASCII cells).
+- `crates/sqeel-core/src/state.rs` — find-scan loop duplicated at `results_find`
+  1828-1843 and `hover_find` 1868-1885 (same `(start + i·step) % total` walk +
+  `cell_display().to_lowercase().contains`). Extract
+  `find_in_grid(rows, cols, cur, needle_lc, forward, skip_current) -> Option<(row, col)>`;
+  callers keep their cursor move + `clamp_hover_scroll`.
+- `crates/sqeel-core/src/state.rs` — mouse-hit column walk duplicated at
+  `results_click_to_cell` 1605-1616 vs `hover_click_to_cell` 1682-1693
+  (prefix-sum through `col_widths` + 1 separator). Extract
+  `col_at_x(col_widths, col_scroll, rel_x)`. Drag edge-stepping at
+  `results_drag_to_cell` 1567-1576 vs `hover_drag_to_cell` 1645-1654 (step
+  row/col one cell toward the crossed edge) is a second identical pair — extract
+  one step helper.
+- `crates/sqeel-tui/src/render.rs` — `highlight_sql_lines` (2081-2098) and
+  `highlight_query_line` (2150-2171) duplicate the TLS `Highlighter` bootstrap
+  (thread_local + borrow_mut + `new_async` + `try_upgrade` + `highlight`).
+  Extract `highlight_spans(source, dialect) -> Vec<HighlightSpan>`; the per-line
+  splitting / flattening that follows stays in each caller.
+- `crates/sqeel-tui/src/render.rs` — column-scroll char-offset prefix sum
+  (`.take(skip).map(|w| w + 1).sum()`) ×3 at 734-739 (mouse hit-test, usize),
+  1615-1620 (results scroll, u16), 2322-2327 (hover scroll, u16). Extract
+  `col_scroll_char_offset(col_widths, skip)` and cast at the call sites.
+- `crates/sqeel-tui/src/lib.rs` — schema-refresh-with-toast block (conn_name
+  clone → `refresh_schema()` → Info/Error toast) byte-identical at 2126-2157
+  (`<leader>R`) and 2624-2644 (`:refreshschema`). Extract
+  `refresh_schema_with_toast(state, &mut toasts)`.
+- `crates/sqeel-tui/src/lib.rs` — Anvil `ToolSpec` literal tripled (698-706,
+  2375-2386, 2414-2425) and the Install/Update arms (2359-2433) share the
+  unknown-tool toast, already-in-progress toast and install-kickoff. Extract
+  `sqls_tool_spec()` + one
+  `kick_off_install(install_pool, &mut active_install, &mut toasts, "installing"|"updating")`
+  arm.
+- `crates/sqeel-tui/src/lib.rs` — tab-content apply block (`set_content` +
+  `take_dirty` + `editor_dirty = false` + `last_highlight_top = usize::MAX`) ×5
+  at 1776-1781, 2170-2175, 3010-3015, 3420-3425, 3440-3445. Extract
+  `apply_tab_content(editor, &mut editor_dirty, &mut last_highlight_top, c)`.
+  Related: the editor-dirty sync (`editor_content = content_arc()` +
+  `mark_active_dirty()` + `editor_dirty = false`) is triplicated at 1768-1771,
+  2820-2823, 2972-2975.
+- `crates/sqeel-tui/src/lib.rs` — "open a saved query into a tab" (position by
+  name, else push `TabEntry` + `switch_to_tab`) duplicated at `:e` 2819-2840 and
+  the file-picker OpenPath arm 2971-2994. Extract
+  `open_saved_query_tab(state, name) -> bool`; `:e` toasts when it returns false
+  (the picker already swallows).
+- `crates/sqeel-tui/src/lib.rs` — results-tab-bar hit-test inline at 1793-1805
+  (`format!(" {} ", i+1)` per tab + separator) duplicates the width-accumulation
+  walk in `tab_bar_click_index` (4229-4239) against the renderer's
+  `results_tab_bar` (render.rs:2036-2072). Generalize `tab_bar_click_index` to
+  take a width callback (or add `results_tab_click_index`) and call it from both
+  sites — also kills the per-tab `format!` alloc on every click.
+- `crates/sqeel-core/src/state.rs` — the add-connection caret methods
+  (`add_connection_type_char`/`backspace`/`delete`/`left`/`right`/`home`/`end`,
+  3335-3408) reimplement `TextInput`'s char-index arithmetic (lib.rs:195-287)
+  against the `(&mut String, &mut usize)` field pairs. Hoisting `TextInput` into
+  sqeel-core and storing it for the add-connection fields removes ~30 lines of
+  duplicated caret math (AppState is not Serialize, so no wire impact —
+  cross-crate decision).
+- `crates/sqeel-tui/src/lib.rs` — `lsp_col` UTF-16 conversion
+  (`buf_lines.get(row).map(|l| char_col_to_utf16(l, col)).unwrap_or(col)`) ×3 at
+  1221-1224, 4025-4028, 4072-4075. Extract `lsp_col_for(lines, row, col)`.
+- `crates/sqeel-core/src/state.rs` —
+  `for req in reqs { self.request_schema_load(req) }` ×3 (2286-2288, 2605-2607,
+  2657-2659) plus the same loop in `apps/sqeel/src/bin/sqeel.rs:972-974`.
+  Extract `AppState::request_schema_loads(Vec<SchemaLoadRequest>)`.
+- `crates/sqeel-core/src/lsp.rs` — `open_document`'s already-open branch
+  (210-219) re-implements `Inner::sync_document` (130-133); and
+  `LspClient::change_document` (221-224) is a byte-identical wrapper of
+  `LspWriter::change_document` (254-257). Have `open_document` call
+  `sync_document` in the open branch; one of the two `change_document`s can
+  delegate to the other.
+- `crates/sqeel-tui/src/ex.rs:286-299` — inline `~/` expansion still duplicates
+  `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
+  ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
+  passes through. Unify only if the error path is kept.
+- `crates/sqeel-core/src/persistence.rs` —
+  `queries_dir().ok_or_else(|| anyhow!("cannot determine data dir"))?` ×6 (90,
+  103, 111, 121, 133, 139) and `results_dir_for(..).ok_or_else(...)` ×2 (184,
+  201). Extract `queries_dir_or_err()` / `results_dir_or_err(conn)`.
+- `crates/sqeel-config/src/lib.rs` —
+  `config_dir().ok_or_else(|| anyhow!("cannot determine config dir"))?.join("conns")`
+  ×4 (307-309, 414-416, 466-469, 512-515). Extract
+  `conns_dir() -> anyhow::Result<PathBuf>`.
+- `crates/sqeel-config/src/pgpass.rs:136-150` — the
+  `match default_pgpass_path() { Some(p) => p, None => return vec![] }` arm is
+  duplicated for the PGPASSFILE-empty and env-absent branches. Fold into one
+  `if let` chain.
+- `crates/sqeel-tui/src/lib.rs` + `crates/sqeel-core/src/lsp.rs` — the
+  `SQEEL_DEBUG_HL_DUMP` append-dump block (env var → `OpenOptions::append` →
+  `writeln!`) is copied 4× in lib.rs (834-848, 1199-1213, 1291-1311, 1405-1425)
+  and 2× in lsp.rs (360-369, 384-393). Per-file `lsp_debug_dump(msg: &str)`
+  helper (the multi-line diagnostics dump formats one string).
+- `crates/sqeel-core/src/persistence.rs:63-85` and
+  `crates/sqeel-config/src/lib.rs:433-454` — `write_private` (0600 create +
+  chmod-down) is a byte-identical copy in two crates (sqeel-config's is private;
+  sqeel-core's is `pub(crate)`). Expose sqeel-config's as `pub` and call it from
+  sqeel-core, or move to one crate — the copies can drift (the audit's
+  0644-export finding shows the write path is exactly where that matters).
+- `apps/sqeel/src/bin/sqeel.rs:999-1002` vs `1013-1016` — the
+  `evict_old_results` spawn
+  (`let cleanup_slug = conn_slug.clone(); tokio::spawn(...)`) is duplicated in
+  the Single and Batch executor arms. Hoist above the `match req`.
+
+### Dead branch
+
+- `apps/sqeel/src/bin/sqeel.rs:934-938` —
+  `let conn_slug = if conn_name.is_empty() { sanitize_conn_slug("default") } else { sanitize_conn_slug(&conn_name) };`.
+  `sanitize_conn_slug` already returns `"default"` for an empty input
+  (persistence.rs:46-50), so both arms produce identical values — collapse to
+  `sanitize_conn_slug(&conn_name)`.
+
+### Coverage
+
+Walked in full (non-test code): sqeel-config (lib.rs, pgpass.rs); sqeel-core
+(state.rs 1-4173, db.rs 1-1640, highlight.rs 1-1226, lsp.rs 1-496, schema.rs
+1-700, persistence.rs, config.rs, safety.rs, ddl.rs, completion_ctx.rs);
+sqeel-tui (lib.rs, render.rs, ex.rs, exec.rs, host.rs, syntax.rs, picker.rs,
+completion_thread.rs, splash.rs, theme.rs 1-130 + structure); apps/sqeel
+(bin/sqeel.rs, tests/headless.rs).
+`cargo clippy --all-targets --all-features -- -D warnings` green — no dead
+private code; every dead-code/dup claim verified by workspace grep incl. tests.
+GAP: theme.rs 131-849 (color tables) and the bundled theme TOMLs; tree-sitter
+grammar fixtures + bundled config.toml; `pkg/` and `.github/`; the test modules
+of the core/tui crates (grepped for symbol usage, not read for cleanups). Test
+suite NOT run per task instruction (11 PTY e2e tests fail environmentally in
+this sandbox; CI runs them).
+
+## Perf 2026-08-10
+
+Performance pass over the whole codebase (clean tree, depth low; no code
+changed). Second perf pass: every finding from `## Perf 2026-08-06` was
+re-verified against the current tree — all 9 numbered + 3 minor are STILL OPEN,
+line numbers refreshed below. New this pass: findings 1 and 3. Frame-rate
+context unchanged from the 06-06 pass: one redraw runs per event (keystroke,
+mouse, resize), per content change, per LSP event, and up to 20 Hz while a
+hover loads; each redraw runs `draw` while holding the global `state` mutex
+(lib.rs:1567-1568). Every cost below is traced to a named caller + frequency.
+
+### Findings
+
+#### 1. Result persistence + col-width scan + eviction run under the global state mutex on the executor task (NEW)
+
+`apps/sqeel/src/bin/sqeel.rs:1008-1010` takes `state.lock()` and holds it across
+`apply_exec_outcome`, which calls `persist_result` (state.rs:3969-3977) →
+`save_result`: `serde_json::to_string_pretty` of the WHOLE result set +
+`write_private` + a full `read_dir` eviction walk (persistence.rs:182-196,
+218-236), plus `compute_col_widths` O(rows×cols) (state.rs:270-285, called at
+sqeel.rs:1090) — all synchronous, on the tokio worker, while the render loop
+blocks on the same lock for every frame (lib.rs:1568). Frequency: once per
+query completion; size: the full result set (no per-cell cap per the audit; the
+default 100-row auto-LIMIT bounds plain SELECTs, but an explicit `LIMIT n` or a
+raised `default_row_limit` bypasses it, and the whole thing is a string-build +
+disk write). Fix: serialize + write + evict off the lock — the `QueryResult` and
+query are in scope in `apply_exec_outcome` before `finish_result_tab` installs
+the tab, so hand the data to a `spawn_blocking` closure (or at minimum drop the
+lock around `persist_result`). Related: the executor ALSO spawns
+`evict_old_results` per query (sqeel.rs:999-1002, 1013-1016), repeating the
+`read_dir` walk `save_result` just did — dedupe, one eviction per query is
+enough.
+
+#### 2. Per-frame cold tree-sitter parse of the query line / SHOW CREATE DDL
+
+`draw_results` calls `highlight_query_line` on every frame with a Results tab
+(render.rs:1674) and `highlight_sql_lines` on the DDL body for SHOW CREATE
+(render.rs:1554-1555); both go through `highlight_shared`, which does
+`inner.reset()` + a cold full parse + full-tree block walk on EVERY call
+(highlight.rs:641-739, reset at :664). The query/DDL strings are stable across
+frames — only the cursor/diagnostic overlay changes. Frequency: per redraw
+(keystroke, mouse, resize, and every LSP event — multiplied by finding 8). Fix:
+cache `(source identity, dialect) → spans` in the TLS highlighter.
+
+#### 3. Completion pool rebuilt + re-filtered on every content publish (NEW)
+
+lib.rs:1164-1171 calls `completions_for_context(&ctx, "")` per publish (~75 ms
+trailing debounce while typing): `Any` context clones the whole identifier
+cache (state.rs:2195), `Table`/`Column` build a fresh Vec of `to_owned` names
+plus a dedup HashSet plus `out.sort()` (state.rs:2115-2204), then `Arc::new`
+wraps the fresh clone and the completion thread re-filters it with a
+`to_lowercase()` alloc + clone per identifier (completion_thread.rs:38-44).
+2-3 full passes over the schema's identifier list per keystroke-burst —
+thousands of String allocs per keystroke on a large schema (hundreds of tables
+× dozens of columns). `lazy_load_for_context` (lib.rs:1166) also walks the db
+list each publish. Fix: memoize the per-context pool as an
+`Arc<Vec<String>>` keyed on the schema-cache generation (the identifier cache
+is replaced wholesale via `apply_schema_cache_rebuild`, state.rs:756-766, so
+its Arc identity is a ready key), submit without cloning, and filter against
+pre-lowered data on the thread.
+
+#### 4. Highlight pass walks the ENTIRE retained tree + runs two full newline scans
+
+`highlight_range` collects block ranges over every node of the retained tree on
+every pass (highlight.rs:563-568) and `compute_newline_offsets` runs twice —
+once at highlight.rs:511 and again inside
+`promote_uncovered_dialect_keywords_in_range` at highlight.rs:823. Fires per
+keystroke and per scroll past the half-margin (lib.rs:963-973). O(tree nodes) +
+2×O(buffer) per keystroke on the render-loop thread; on a 2 MB buffer this is
+the dominant per-keystroke cost. Fix: cache block ranges keyed on a tree
+generation counter; thread the :511 offsets into the promotion pass.
+
+#### 5. Search label scans the whole buffer on every frame
+
+`search_label` materializes every line via `buffer_lines` and runs
+`re.find_iter` over each (render.rs:124-152), called from `draw_status_bar`
+every frame (render.rs:907) while a search pattern is installed. The regex
+recompile is already cached (render.rs:1325-1333); the scan is not. Fix: cache
+`(total, current)` keyed on buffer `dirty_gen` + pattern + cursor so
+steady-state frames skip the scan.
+
+#### 6. Ctrl+Enter / Ctrl+Shift+Enter pay a full content clone + 1-2 cold full-buffer parses
+
+`run_statement_under_cursor` (exec.rs:83-141): `editor.content()` full join
+(:88), `buffer_lines` whole-buffer materialization for `row_col_to_byte`
+(:92-96), `statement_at_byte` cold parse (:97 → highlight.rs:994-1029), then
+`first_syntax_error` second cold parse (:123 → highlight.rs:1108-1115).
+`run_all_statements` (exec.rs:149-190): content clone (:154), `split_statements`
+cold parse (:155), `first_syntax_error` over the whole buffer (:167). The
+`Highlighter` already maintains an incremental tree of this exact buffer
+(lib.rs:965-1037). Fix: route statement-finding and syntax-error detection
+through the retained tree; rope-walk the cursor row instead of materializing
+all lines (`buffer_lines` at syntax.rs:359-364 has the same shape at lib.rs:1140
+per publish, lib.rs:3997 per `K`, lib.rs:4072 per `gd`, render.rs:202 per
+visual-mode run).
+
+#### 7. K-hover does two linear schema scans with a per-name lowercase alloc
+
+lib.rs:3997-4022 (`K` in Normal): `buffer_lines` + `word_at_cursor`, then
+`hover_table_from_cache` (state.rs:1327-1409) and, on miss, `find_table`
+(state.rs:1296-1320) — each loops every db × table with a `to_lowercase()`
+alloc per name. Fix: lowercase-name → table map built in `rebuild_schema_cache`
+(off the render loop).
+
+#### 8. Every LSP event forces a full frame redraw
+
+lib.rs:1397 sets `needs_redraw` for every drained event BEFORE the match —
+including diagnostics-only publishes (sqls re-publishes diagnostics after each
+didChange, i.e. per keystroke while typing) and stale-id hover/definition
+events that are then dropped. Each redraw re-runs every per-frame cost
+(findings 2, 4, 5, 10). Fix: redraw only when the event changes visible state
+(e.g. diagnostics differ from what's painted).
+
+#### 9. Frame-global lock serializes all per-frame work
+
+lib.rs:1567-1568 holds `state` across the whole `terminal.draw`, so every cost
+above serializes under one mutex and any background holder (finding 1) blocks
+frames. Fix after 1-8: snapshot render inputs outside the lock.
+
+#### 10. Schema filter re-runs per frame with per-label lowercase allocs
+
+`draw_schema` calls `filter_items` every frame while the filter box is active
+(render.rs:1135-1136); `label_matches` does a `trim().to_lowercase()` alloc per
+label (schema.rs:454-458) and the result is never cached. Fix: pre-lower labels
+and cache the filtered list keyed on query + schema generation.
+
+### Minor
+
+- `tmux_navigate` spawns a `tmux` process per nav keystroke (exec.rs:192-198).
+- `merge_db_list` sorts by `position()` — O(D²) per db-list load
+  (state.rs:2704-2709).
+- `results_find`/`hover_find` allocate `to_lowercase()` per cell over the whole
+  grid per `/` keystroke (state.rs:1838, 1880) — user-initiated.
+
+### Coverage
+
+Traced to a named frequency: draw-frame path (search label, schema filter,
+results grid + query-line highlight, status bar), highlight resubmit path
+(keystroke / scroll past half-margin / dialect flip), completion publish path
+(~75 ms debounce: buffer_lines + parse_context + pool build + thread filter),
+run path (Ctrl+Enter / Ctrl+Shift+Enter), hover path (K), LSP event drain (per
+message), executor task (per query: decode off-lock, persist + col-widths
+under lock), schema refresh (per load + 1 s stale sweep), db.rs
+execute/decode (per query, row-bounded; DuckDB uses spawn_blocking, sqlx paths
+async). Verified NOT hot: ddl/safety (per run), completion_ctx (statement scan
+capped at 64 KB), persistence load paths (per tab load), sqeel-config
+(startup), picker/host/ex (user-initiated or delegated to hjkl crates),
+splash (startup only). GAPS: hjkl-engine/buffer/tui internals (buffer render,
+wrap segments, search regex, `content_arc` — read the editor.rs API surface,
+not the buffer render path); tree-sitter parse costs (could not settle without
+profiling which of parse vs. block-ranges walk vs. newline scans dominates on
+large buffers — same gap as the 06-06 pass); the operative assumption that sqls
+publishes a diagnostics message per didChange (standard LSP behaviour, not
+exercised against a live server); mouse-move event rates (would inflate every
+per-frame cost). Test suite NOT run per task instruction (11 PTY e2e tests fail
+environmentally in this sandbox; CI runs them).
