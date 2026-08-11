@@ -66,6 +66,31 @@ fn copy_to_clipboard(clipboard: &Clipboard, toasts: &mut Vec<Toast>, text: &str,
     );
 }
 
+/// Refresh the schema cache and toast the outcome: an Info toast naming the
+/// active connection, or an Error toast when there is no active connection.
+fn refresh_schema_with_toast(state: &Arc<Mutex<AppState>>, toasts: &mut Vec<Toast>) {
+    let conn_name = state
+        .lock()
+        .unwrap()
+        .active_connection
+        .clone()
+        .unwrap_or_else(|| "database".into());
+    let triggered = state.lock().unwrap().refresh_schema();
+    if triggered {
+        toast(
+            toasts,
+            ToastKind::Info,
+            format!("Refreshing schema for {conn_name}…"),
+        );
+    } else {
+        toast(
+            toasts,
+            ToastKind::Error,
+            "No active connection to refresh".to_string(),
+        );
+    }
+}
+
 /// Result of a synchronous tree-sitter highlight pass over a viewport
 /// window. Mirrors the shape of the old `highlight_thread::HighlightResult`
 /// — `start_row` + `row_count` define the absolute window inside the
@@ -2133,26 +2158,7 @@ async fn run_loop(
                             (key.modifiers, key.code),
                             (KeyModifiers::SHIFT, KeyCode::Char('R'))
                         ) {
-                            let conn_name = state
-                                .lock()
-                                .unwrap()
-                                .active_connection
-                                .clone()
-                                .unwrap_or_else(|| "database".into());
-                            let triggered = state.lock().unwrap().refresh_schema();
-                            if triggered {
-                                toast(
-                                    &mut toasts,
-                                    ToastKind::Info,
-                                    format!("Refreshing schema for {conn_name}…"),
-                                );
-                            } else {
-                                toast(
-                                    &mut toasts,
-                                    ToastKind::Error,
-                                    "No active connection to refresh".to_string(),
-                                );
-                            }
+                            refresh_schema_with_toast(&state, &mut toasts);
                             continue;
                         }
                         if key.modifiers == KeyModifiers::NONE {
@@ -2624,26 +2630,7 @@ async fn run_loop(
                                         toast(&mut toasts, kind, text);
                                     }
                                 } else if c == "refreshschema" || c == "refresh" {
-                                    let conn_name = state
-                                        .lock()
-                                        .unwrap()
-                                        .active_connection
-                                        .clone()
-                                        .unwrap_or_else(|| "database".into());
-                                    let triggered = state.lock().unwrap().refresh_schema();
-                                    if triggered {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Info,
-                                            format!("Refreshing schema for {conn_name}…"),
-                                        );
-                                    } else {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Error,
-                                            "No active connection to refresh".to_string(),
-                                        );
-                                    }
+                                    refresh_schema_with_toast(&state, &mut toasts);
                                 } else if c.starts_with("describe")
                                     || c.starts_with("desc ")
                                     || c == "desc"
