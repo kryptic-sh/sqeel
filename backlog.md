@@ -514,15 +514,6 @@ loads; each redraw runs `draw` while holding the global `state` mutex
 
 ### Findings
 
-#### 5. Search label scans the whole buffer on every frame
-
-`search_label` materializes every line via `buffer_lines` and runs
-`re.find_iter` over each (render.rs:124-152), called from `draw_status_bar`
-every frame (render.rs:907) while a search pattern is installed. The regex
-recompile is already cached (render.rs:1325-1333); the scan is not. Fix: cache
-`(total, current)` keyed on buffer `dirty_gen` + pattern + cursor so
-steady-state frames skip the scan.
-
 #### 6. Ctrl+Enter / Ctrl+Shift+Enter pay a full content clone + 1-2 cold full-buffer parses
 
 `run_statement_under_cursor` (exec.rs:83-141): `editor.content()` full join
