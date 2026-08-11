@@ -686,6 +686,26 @@ pub struct AppState {
     pub pgpass_picker_cursor: usize,
 }
 
+/// Display width per column (longest cell in char count + 2 padding) for a
+/// table's header and rows. Uses `chars().count()` — char semantics, not byte
+/// `.len()` — so non-ASCII cells size correctly; `QueryResult::compute_col_widths`
+/// is byte-based and must not be used here.
+fn grid_col_widths(header: &[String], rows: &[Vec<String>]) -> Vec<u16> {
+    let mut col_widths: Vec<u16> = header
+        .iter()
+        .map(|c| (c.chars().count() as u16).saturating_add(2))
+        .collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            let w = (cell.chars().count() as u16).saturating_add(2);
+            if w > col_widths[i] {
+                col_widths[i] = w;
+            }
+        }
+    }
+    col_widths
+}
+
 impl AppState {
     pub fn new() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
@@ -1264,18 +1284,7 @@ impl AppState {
         for row in &mut rows {
             row.resize(header.len(), String::new());
         }
-        let mut col_widths: Vec<u16> = header
-            .iter()
-            .map(|c| (c.chars().count() as u16).saturating_add(2))
-            .collect();
-        for row in &rows {
-            for (i, cell) in row.iter().enumerate() {
-                let w = (cell.chars().count() as u16).saturating_add(2);
-                if w > col_widths[i] {
-                    col_widths[i] = w;
-                }
-            }
-        }
+        let col_widths = grid_col_widths(&header, &rows);
         // Markdown-sourced tables have no SQL NULLs — every cell is text.
         let rows = rows
             .into_iter()
@@ -1380,18 +1389,7 @@ impl AppState {
                 if rows.is_empty() {
                     return None;
                 }
-                let mut col_widths: Vec<u16> = header
-                    .iter()
-                    .map(|c: &String| (c.chars().count() as u16).saturating_add(2))
-                    .collect();
-                for row in &rows {
-                    for (i, cell) in row.iter().enumerate() {
-                        let w = (cell.chars().count() as u16).saturating_add(2);
-                        if w > col_widths[i] {
-                            col_widths[i] = w;
-                        }
-                    }
-                }
+                let col_widths = grid_col_widths(&header, &rows);
                 // Markdown-sourced tables have no SQL NULLs.
                 let rows = rows
                     .into_iter()
