@@ -55,7 +55,8 @@ pub(crate) fn dispatch_pending_run(state: &Arc<Mutex<AppState>>, pending: Pendin
             let tab_idx = s.push_loading_tab(stmt.clone());
             let sent = s.send_query(stmt.clone(), tab_idx);
             if !sent {
-                s.push_history(&stmt);
+                let conn = s.active_connection.clone();
+                s.push_history(&stmt, conn);
                 s.dismiss_results();
                 s.set_error(NO_DB_MSG.into());
             }

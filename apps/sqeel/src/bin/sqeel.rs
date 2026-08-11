@@ -1015,7 +1015,9 @@ fn spawn_executor(
                     };
                     let mut s = state.lock().unwrap();
                     s.batch_in_progress = false;
-                    let _ = apply_exec_outcome(&mut s, tab_idx, &query, &conn_slug, outcome);
+                    let _ = apply_exec_outcome(
+                        &mut s, tab_idx, &query, &conn_slug, &conn_name, outcome,
+                    );
                 }
                 QueryRequest::Batch(queries, start_idx) => {
                     let cleanup_slug = conn_slug.clone();
@@ -1038,7 +1040,9 @@ fn spawn_executor(
                         };
                         let stop = {
                             let mut s = state.lock().unwrap();
-                            match apply_exec_outcome(&mut s, tab_idx, &query, &conn_slug, outcome) {
+                            match apply_exec_outcome(
+                                &mut s, tab_idx, &query, &conn_slug, &conn_name, outcome,
+                            ) {
                                 ExecDisposition::Ok => false,
                                 ExecDisposition::Err => stop_on_error,
                                 ExecDisposition::Cancelled => true,
@@ -1089,12 +1093,13 @@ fn apply_exec_outcome(
     tab_idx: usize,
     query: &str,
     conn_slug: &str,
+    conn_name: &str,
     outcome: Option<anyhow::Result<sqeel_core::db::ExecOutcome>>,
 ) -> ExecDisposition {
     let disposition = match outcome {
         Some(Ok(sqeel_core::db::ExecOutcome::Rows(mut r))) => {
             let filename = s.persist_result(query, &r, conn_slug);
-            s.push_history(query);
+            s.push_history(query, Some(conn_name.to_string()));
             r.compute_col_widths();
             s.finish_result_tab(tab_idx, ResultsPane::Results(r));
             if let Some(tab) = s.result_tabs.get_mut(tab_idx) {
@@ -1109,7 +1114,7 @@ fn apply_exec_outcome(
             verb,
             rows_affected,
         })) => {
-            s.push_history(query);
+            s.push_history(query, Some(conn_name.to_string()));
             s.finish_result_tab(
                 tab_idx,
                 ResultsPane::NonQuery {

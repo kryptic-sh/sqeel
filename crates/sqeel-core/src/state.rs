@@ -3977,7 +3977,14 @@ impl AppState {
     }
 
     /// Record a query in history (dedup consecutive identical entries, max 100).
-    pub fn push_history(&mut self, query: &str) {
+    ///
+    /// `connection` is the connection the query RAN on, supplied by the
+    /// executor. It must NOT come from [`Self::active_connection`]: that can
+    /// change while a query is in flight, which would file the entry under
+    /// the wrong connection (the same mid-flight-switch defect
+    /// [`Self::persist_result`] guards against) and hide it from that
+    /// connection's Ctrl-P/N recall.
+    pub fn push_history(&mut self, query: &str, connection: Option<String>) {
         let trimmed = query.trim().to_string();
         if trimmed.is_empty() {
             return;
@@ -3986,7 +3993,7 @@ impl AppState {
             self.query_history.push(HistoryEntry {
                 query: trimmed,
                 timestamp: SystemTime::now(),
-                connection: self.active_connection.clone(),
+                connection,
             });
         }
         if self.query_history.len() > 100 {
@@ -4764,9 +4771,9 @@ trailing prose ignored";
     fn history_push_and_recall() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
-        s.push_history("SELECT 1");
-        s.push_history("SELECT 2");
-        s.push_history("SELECT 3");
+        s.push_history("SELECT 1", None);
+        s.push_history("SELECT 2", None);
+        s.push_history("SELECT 3", None);
         assert_eq!(s.query_history.len(), 3);
         // Each entry has a query string and a timestamp.
         assert!(s.query_history.iter().all(|e| !e.query.is_empty()));
@@ -4786,9 +4793,9 @@ trailing prose ignored";
     fn history_deduplicates_consecutive() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
-        s.push_history("SELECT 1");
-        s.push_history("SELECT 1");
-        s.push_history("SELECT 1");
+        s.push_history("SELECT 1", None);
+        s.push_history("SELECT 1", None);
+        s.push_history("SELECT 1", None);
         assert_eq!(s.query_history.len(), 1);
     }
 
@@ -4797,10 +4804,10 @@ trailing prose ignored";
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         s.active_connection = Some("a".into());
-        s.push_history("SELECT a1");
-        s.push_history("SELECT a2");
+        s.push_history("SELECT a1", Some("a".into()));
+        s.push_history("SELECT a2", Some("a".into()));
         s.active_connection = Some("b".into());
-        s.push_history("SELECT b1");
+        s.push_history("SELECT b1", Some("b".into()));
 
         // Recall under b only sees b's entries.
         assert_eq!(s.history_prev(), Some("SELECT b1"));
@@ -4818,11 +4825,27 @@ trailing prose ignored";
     }
 
     #[test]
+    fn history_stamps_connection_that_ran_not_active() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        // A query run on "a" that finishes after a switch to "b" must be
+        // recorded under "a" — the executor threads its own connection name
+        // in, mirroring persist_result. The old code stamped the *active*
+        // connection, so the entry vanished from a's per-connection recall.
+        s.active_connection = Some("b".into());
+        s.push_history("SELECT slow", Some("a".into()));
+        s.active_connection = Some("a".into());
+        assert_eq!(s.history_prev(), Some("SELECT slow"));
+        s.active_connection = Some("b".into());
+        assert_eq!(s.history_prev(), None);
+    }
+
+    #[test]
     fn history_max_100() {
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         for i in 0..110 {
-            s.push_history(&format!("SELECT {i}"));
+            s.push_history(&format!("SELECT {i}"), None);
         }
         assert_eq!(s.query_history.len(), 100);
         // Oldest entries evicted; last entry is SELECT 109.
