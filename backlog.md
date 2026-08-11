@@ -499,11 +499,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-core/src/highlight.rs` — `promote_uncovered_dialect_keywords`
-  (867-936) and its `_in_range` variant (788-862) share the covered-ranges
-  sort/merge + gap-walk skeleton (~50 lines, identical modulo the range clip and
-  cursor bounds). Extract `scan_gaps(source, dialect, covered, start, end)` with
-  the full version calling it as `0..source.len()`.
 - `crates/sqeel-core/src/state.rs` — header+rows column-width computation
   duplicated at 1267-1278 (`parse_hover_table`) and 1383-1394
   (`hover_table_from_cache`). Extract `grid_col_widths(header, rows)` using
