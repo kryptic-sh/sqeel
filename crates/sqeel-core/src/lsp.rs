@@ -209,18 +209,16 @@ impl LspClient {
     /// a didOpen with `text`; subsequent calls full-text-sync it.
     pub async fn open_document(&mut self, uri: Uri, text: &str) -> anyhow::Result<()> {
         let already_open = self.inner.docs.lock().unwrap().contains_key(uri.as_str());
-        let doc = self.inner.doc_for(&uri, text);
         if already_open {
-            self.inner
-                .manager
-                .notify_change(doc, Arc::new(text.to_string()));
+            self.inner.sync_document(&uri, text);
+        } else {
+            self.inner.doc_for(&uri, text);
         }
         Ok(())
     }
 
     pub async fn change_document(&mut self, uri: Uri, text: &str) -> anyhow::Result<()> {
-        self.inner.sync_document(&uri, text);
-        Ok(())
+        self.writer().change_document(uri, text).await
     }
 
     /// Close the LSP document for `uri` — didClose on the server side —
