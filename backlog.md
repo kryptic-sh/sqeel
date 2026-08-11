@@ -484,11 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-- `crates/sqeel-tui/src/lib.rs` + `crates/sqeel-core/src/lsp.rs` — the
-  `SQEEL_DEBUG_HL_DUMP` append-dump block (env var → `OpenOptions::append` →
-  `writeln!`) is copied 4× in lib.rs (834-848, 1199-1213, 1291-1311, 1405-1425)
-  and 2× in lsp.rs (360-369, 384-393). Per-file `lsp_debug_dump(msg: &str)`
-  helper (the multi-line diagnostics dump formats one string).
 - `crates/sqeel-core/src/persistence.rs:63-85` and
   `crates/sqeel-config/src/lib.rs:433-454` — `write_private` (0600 create +
   chmod-down) is a byte-identical copy in two crates (sqeel-config's is private;
