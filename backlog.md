@@ -134,8 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-tui/src/lib.rs` — schema-refresh-with-toast block duplicated at
-  2119-2138 and 2608-2628; extract `refresh_schema_with_toast`.
 - `crates/sqeel-tui/src/lib.rs` — Anvil `ToolSpec` literal tripled (679-687,
   2358-2368, 2397-2407); Install/Update arms share the unknown-tool and
   already-in-progress toasts.
@@ -481,10 +479,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/lib.rs` — schema-refresh-with-toast block (conn_name
-  clone → `refresh_schema()` → Info/Error toast) byte-identical at 2126-2157
-  (`<leader>R`) and 2624-2644 (`:refreshschema`). Extract
-  `refresh_schema_with_toast(state, &mut toasts)`.
 - `crates/sqeel-tui/src/lib.rs` — Anvil `ToolSpec` literal tripled (698-706,
   2375-2386, 2414-2425) and the Install/Update arms (2359-2433) share the
   unknown-tool toast, already-in-progress toast and install-kickoff. Extract
