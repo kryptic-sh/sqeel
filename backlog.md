@@ -473,11 +473,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/lib.rs` — "open a saved query into a tab" (position by
-  name, else push `TabEntry` + `switch_to_tab`) duplicated at `:e` 2819-2840 and
-  the file-picker OpenPath arm 2971-2994. Extract
-  `open_saved_query_tab(state, name) -> bool`; `:e` toasts when it returns false
-  (the picker already swallows).
 - `crates/sqeel-tui/src/lib.rs` — results-tab-bar hit-test inline at 1793-1805
   (`format!(" {} ", i+1)` per tab + separator) duplicates the width-accumulation
   walk in `tab_bar_click_index` (4229-4239) against the renderer's
