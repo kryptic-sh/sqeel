@@ -768,64 +768,12 @@ fn promote_uncovered_dialect_keywords_in_range(
     let range_end = byte_range.end.min(total);
     let range_start = byte_range.start.min(range_end);
 
-    let mut covered: Vec<(usize, usize)> = spans
+    let covered: Vec<(usize, usize)> = spans
         .iter()
         .filter(|s| s.start_byte < range_end && s.end_byte > range_start)
         .map(|s| (s.start_byte.max(range_start), s.end_byte.min(range_end)))
         .collect();
-    covered.sort_by_key(|&(s, _)| s);
-
-    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(covered.len());
-    for (s, e) in covered {
-        if let Some(last) = merged.last_mut()
-            && s <= last.1
-        {
-            last.1 = last.1.max(e);
-        } else {
-            merged.push((s, e));
-        }
-    }
-
-    let bytes = source.as_bytes();
-    let nl_offsets = compute_newline_offsets(source);
-    let mut cursor = range_start;
-    let mut gap_iter = merged.iter().peekable();
-    let mut additions: Vec<HighlightSpan> = Vec::new();
-    while cursor < range_end {
-        match gap_iter.peek().copied() {
-            Some(&(gs, ge)) if gs <= cursor => {
-                cursor = ge.min(range_end);
-                gap_iter.next();
-            }
-            Some(&(gs, _)) => {
-                let stop = gs.min(range_end);
-                scan_gap_for_keywords(
-                    source,
-                    bytes,
-                    cursor,
-                    stop,
-                    dialect,
-                    &nl_offsets,
-                    &mut additions,
-                );
-                cursor = stop;
-            }
-            None => {
-                scan_gap_for_keywords(
-                    source,
-                    bytes,
-                    cursor,
-                    range_end,
-                    dialect,
-                    &nl_offsets,
-                    &mut additions,
-                );
-                cursor = range_end;
-            }
-        }
-    }
-    spans.extend(additions);
-    spans.sort_by_key(|s| s.start_byte);
+    scan_gaps(source, dialect, covered, range_start, range_end, spans);
 }
 
 /// Find identifier-shaped words in regions that tree-sitter didn't
@@ -845,8 +793,21 @@ fn promote_uncovered_dialect_keywords(
     }
 
     // Build sorted list of covered byte ranges.
-    let mut covered: Vec<(usize, usize)> =
-        spans.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+    let covered: Vec<(usize, usize)> = spans.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+    scan_gaps(source, dialect, covered, 0, total, spans);
+}
+
+/// Shared gap-walk for [`promote_uncovered_dialect_keywords`] and its
+/// range-scoped variant: merge `covered` ranges, then scan each uncovered
+/// gap in `start..end` for keywords, appending the results to `spans`.
+fn scan_gaps(
+    source: &str,
+    dialect: Dialect,
+    mut covered: Vec<(usize, usize)>,
+    start: usize,
+    end: usize,
+    spans: &mut Vec<HighlightSpan>,
+) {
     covered.sort_by_key(|&(s, _)| s);
 
     // Merge overlapping/adjacent ranges.
@@ -863,38 +824,39 @@ fn promote_uncovered_dialect_keywords(
 
     let bytes = source.as_bytes();
     let nl_offsets = compute_newline_offsets(source);
-    let mut cursor = 0usize;
+    let mut cursor = start;
     let mut gap_iter = merged.iter().peekable();
     let mut additions: Vec<HighlightSpan> = Vec::new();
-    while cursor < total {
+    while cursor < end {
         match gap_iter.peek().copied() {
             Some(&(gs, ge)) if gs <= cursor => {
-                cursor = ge;
+                cursor = ge.min(end);
                 gap_iter.next();
             }
             Some(&(gs, _)) => {
+                let stop = gs.min(end);
                 scan_gap_for_keywords(
                     source,
                     bytes,
                     cursor,
-                    gs,
+                    stop,
                     dialect,
                     &nl_offsets,
                     &mut additions,
                 );
-                cursor = gs;
+                cursor = stop;
             }
             None => {
                 scan_gap_for_keywords(
                     source,
                     bytes,
                     cursor,
-                    total,
+                    end,
                     dialect,
                     &nl_offsets,
                     &mut additions,
                 );
-                cursor = total;
+                cursor = end;
             }
         }
     }
