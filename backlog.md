@@ -514,22 +514,6 @@ loads; each redraw runs `draw` while holding the global `state` mutex
 
 ### Findings
 
-#### 3. Completion pool rebuilt + re-filtered on every content publish (NEW)
-
-lib.rs:1164-1171 calls `completions_for_context(&ctx, "")` per publish (~75 ms
-trailing debounce while typing): `Any` context clones the whole identifier cache
-(state.rs:2195), `Table`/`Column` build a fresh Vec of `to_owned` names plus a
-dedup HashSet plus `out.sort()` (state.rs:2115-2204), then `Arc::new` wraps the
-fresh clone and the completion thread re-filters it with a `to_lowercase()`
-alloc + clone per identifier (completion_thread.rs:38-44). 2-3 full passes over
-the schema's identifier list per keystroke-burst — thousands of String allocs
-per keystroke on a large schema (hundreds of tables × dozens of columns).
-`lazy_load_for_context` (lib.rs:1166) also walks the db list each publish. Fix:
-memoize the per-context pool as an `Arc<Vec<String>>` keyed on the schema-cache
-generation (the identifier cache is replaced wholesale via
-`apply_schema_cache_rebuild`, state.rs:756-766, so its Arc identity is a ready
-key), submit without cloning, and filter against pre-lowered data on the thread.
-
 #### 5. Search label scans the whole buffer on every frame
 
 `search_label` materializes every line via `buffer_lines` and runs
