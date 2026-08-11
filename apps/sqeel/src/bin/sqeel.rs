@@ -977,9 +977,7 @@ fn spawn_executor(
         // lazy loads for them so the user sees fresh data for whatever was
         // open last time. Collect first so we don't hold the lock across sends.
         let pending: Vec<SchemaLoadRequest> = collect_expanded_load_requests(&s.schema_nodes);
-        for req in pending {
-            s.request_schema_load(req);
-        }
+        s.request_schema_loads(pending);
     }
 
     let schema_conn = conn.clone();

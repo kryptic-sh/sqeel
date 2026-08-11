@@ -2306,9 +2306,7 @@ impl AppState {
                         _ => vec![],
                     })
                     .collect();
-                for req in reqs {
-                    self.request_schema_load(req);
-                }
+                self.request_schema_loads(reqs);
             }
             _ => {}
         }
@@ -2356,9 +2354,7 @@ impl AppState {
                 }
             }
         }
-        for req in reqs {
-            self.request_schema_load(req);
-        }
+        self.request_schema_loads(reqs);
     }
 
     pub fn visible_schema_items(&self) -> &[SchemaTreeItem] {
@@ -2547,6 +2543,14 @@ impl AppState {
         }
     }
 
+    /// Send multiple lazy-load requests, one at a time. Dedup and channel
+    /// behaviour are per-request, as in `request_schema_load`.
+    pub fn request_schema_loads(&mut self, reqs: Vec<SchemaLoadRequest>) {
+        for req in reqs {
+            self.request_schema_load(req);
+        }
+    }
+
     /// Called by the loader task after each request finishes. Removes the
     /// request from the in-flight set so later TTL-driven refreshes can
     /// re-fire it.
@@ -2625,9 +2629,7 @@ impl AppState {
                         _ => vec![],
                     })
                     .collect();
-                for req in reqs {
-                    self.request_schema_load(req);
-                }
+                self.request_schema_loads(reqs);
             }
         }
     }
@@ -2677,9 +2679,7 @@ impl AppState {
                 }
             }
         }
-        for req in reqs {
-            self.request_schema_load(req);
-        }
+        self.request_schema_loads(reqs);
     }
 
     pub fn set_schema_nodes(&mut self, nodes: Vec<SchemaNode>) {
