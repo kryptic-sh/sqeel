@@ -134,9 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-tui/src/lib.rs` — tab-content apply block (set_content +
-  take_dirty + reset last_highlight_top) ×5 at 1759-1764, 2153-2158, 2994-2999,
-  3404-3409, 3424-3428.
 - `crates/sqeel-tui/src/ex.rs:289-305` — inline `~/` expansion duplicates
   `syntax.rs` `expand_tilde`, but NOT a drop-in: ex.rs errors on
   `home_dir() == None` and leaves bare `~` literal, `expand_tilde` passes
@@ -476,13 +473,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/lib.rs` — tab-content apply block (`set_content` +
-  `take_dirty` + `editor_dirty = false` + `last_highlight_top = usize::MAX`) ×5
-  at 1776-1781, 2170-2175, 3010-3015, 3420-3425, 3440-3445. Extract
-  `apply_tab_content(editor, &mut editor_dirty, &mut last_highlight_top, c)`.
-  Related: the editor-dirty sync (`editor_content = content_arc()` +
-  `mark_active_dirty()` + `editor_dirty = false`) is triplicated at 1768-1771,
-  2820-2823, 2972-2975.
 - `crates/sqeel-tui/src/lib.rs` — "open a saved query into a tab" (position by
   name, else push `TabEntry` + `switch_to_tab`) duplicated at `:e` 2819-2840 and
   the file-picker OpenPath arm 2971-2994. Extract
