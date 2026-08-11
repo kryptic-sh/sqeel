@@ -484,10 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-- `crates/sqeel-core/src/persistence.rs` —
-  `queries_dir().ok_or_else(|| anyhow!("cannot determine data dir"))?` ×6 (90,
-  103, 111, 121, 133, 139) and `results_dir_for(..).ok_or_else(...)` ×2 (184,
-  201). Extract `queries_dir_or_err()` / `results_dir_or_err(conn)`.
 - `crates/sqeel-config/src/lib.rs` —
   `config_dir().ok_or_else(|| anyhow!("cannot determine config dir"))?.join("conns")`
   ×4 (307-309, 414-416, 466-469, 512-515). Extract
