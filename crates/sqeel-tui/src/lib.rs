@@ -1854,19 +1854,16 @@ async fn run_loop(
                             let rel_x = mouse.column.saturating_sub(rtb.x) as usize;
                             let clicked = {
                                 let s = state.lock().unwrap();
-                                let mut offset = 0usize;
-                                let mut found = None;
-                                for (i, _tab) in s.result_tabs.iter().enumerate() {
-                                    let label_w = format!(" {} ", i + 1).chars().count();
-                                    let w =
-                                        label_w + if i + 1 < s.result_tabs.len() { 1 } else { 0 };
-                                    if rel_x < offset + w {
-                                        found = Some(i);
-                                        break;
+                                tab_bar_click_index_with(s.result_tabs.len(), rel_x, |i| {
+                                    // `" {n} "` — digits of the 1-based tab number + 2 spaces.
+                                    let mut n = i + 1;
+                                    let mut digits = 0;
+                                    while n > 0 {
+                                        n /= 10;
+                                        digits += 1;
                                     }
-                                    offset += w;
-                                }
-                                found
+                                    digits + 2
+                                })
                             };
                             if let Some(idx) = clicked {
                                 let mut s = state.lock().unwrap();
@@ -4221,20 +4218,33 @@ async fn commit_pending_saves(
     failed
 }
 
-/// Map a tab-bar x offset (cells from the bar's left edge) to the tab under
-/// the cursor. Widths mirror `render::build_tab_title`: `" {name} "` per tab
-/// plus a `│` separator between tabs, names measured in chars — ratatui lays
-/// spans out by chars, so a byte count would mis-hit multi-byte tab names.
-fn tab_bar_click_index(tabs: &[TabEntry], rel_x: usize) -> Option<usize> {
+/// Shared tab-bar hit-test: map a bar x offset (cells from the bar's left
+/// edge) to the tab under the cursor. `label_width(i)` reports the rendered
+/// width of tab `i`'s label (`" {label} "`); the walk adds a `│` separator
+/// between tabs, matching how `render` lays the bar out. Widths are measured
+/// in chars — ratatui lays spans out by chars, so a byte count would mis-hit
+/// multi-byte labels.
+fn tab_bar_click_index_with(
+    len: usize,
+    rel_x: usize,
+    label_width: impl Fn(usize) -> usize,
+) -> Option<usize> {
     let mut offset = 0usize;
-    for (i, tab) in tabs.iter().enumerate() {
-        let w = tab.name.chars().count() + 2 + if i + 1 < tabs.len() { 1 } else { 0 };
+    for i in 0..len {
+        let w = label_width(i) + if i + 1 < len { 1 } else { 0 };
         if rel_x < offset + w {
             return Some(i);
         }
         offset += w;
     }
     None
+}
+
+/// Top tab bar: map an x offset to the tab under the cursor. Widths mirror
+/// `render::build_tab_title`: `" {name} "` per tab plus a `│` separator
+/// between tabs, names measured in chars.
+fn tab_bar_click_index(tabs: &[TabEntry], rel_x: usize) -> Option<usize> {
+    tab_bar_click_index_with(tabs.len(), rel_x, |i| tabs[i].name.chars().count() + 2)
 }
 
 #[cfg(test)]
