@@ -24,6 +24,47 @@ by the full gate plus a test that goes red on the old code):
 Still open: the Review/Audit "Hardening" blocks below (deliberate fragility —
 each needs a decision before touching), and the Tidy / Perf passes' findings.
 
+## Work 2026-08-11 (evening): Tidy + Perf passes
+
+Worked the backlog again: all 22 actionable `Tidy 2026-08-10` items (the
+duplication extractions + the dead-branch collapse) and 9 of the 10 numbered
+`Perf 2026-08-10` findings landed (commits `caf480a`..`58b4c00`, one code
+commit + one backlog-prune per slice, every slice gate-verified; all pushed to
+origin/main). Each perf slice shipped a test where the mechanism is observable
+(persistence file still lands, cache hits match fresh parses, block ranges
+recompute after an edit, pools refresh after a schema mutation, tree-vs-cold
+error parity, no-alloc matcher vs the naive version).
+
+Tidy: `harvest_parse_errors`, `scan_gaps`, `grid_col_widths`, `find_in_grid`,
+`col_at_x`/`drag_step_toward_edge`, `highlight_spans`, `col_scroll_char_offset`,
+`refresh_schema_with_toast`, `sqls_tool_spec`/`unknown_tool_toast`/
+`kick_off_install`, `apply_tab_content`/`sync_editor_content`,
+`open_saved_query_tab`, `tab_bar_click_index_with`, `lsp_col_for`,
+`request_schema_loads`, lsp `open_document`/`change_document` dedupe,
+`queries_dir_or_err`/ `results_dir_or_err`, `conns_dir`, pgpass fold,
+`lsp_debug_dump`, single `write_private` (sqeel-config owns it, sqeel-core
+re-exports), `evict_old_results` spawn hoist, `conn_slug` dead-branch collapse.
+
+Perf: 1 persistence off the state lock (spawn_blocking + deduped eviction), 2
+query-line/DDL span cache, 4 block-range cache on a tree generation + threaded
+newline offsets, 3 completion-pool memoization on a schema generation +
+pre-lowered filter, 5 search-label scan cache, 7 lowercase table index for
+hover, 8 LSP-event redraws gated on visible-state changes, 10 pre-lowered schema
+labels + filter cache, plus the `merge_db_list` O(D) sort and the no-alloc find
+matcher (minors).
+
+Deferred (left in place, still actionable):
+
+- **Perf finding 9** (snapshot render inputs outside the lock): the lock sits
+  inside the `terminal.draw` closure (the CPU buffer render; the terminal flush
+  already runs lock-free), and findings 1 + 8 removed the dominant background
+  lock-holder and the redraw amplification. The prescribed snapshot would clone
+  most of AppState per frame or restructure the whole draw path — high risk for
+  the remaining gain. Revisit only if lock contention resurfaces.
+- **Minor: `tmux_navigate`** spawns a `tmux` process per nav keystroke — no
+  viable fix (select-pane is inherently a subprocess; the DCS passthrough covers
+  terminal escapes, not tmux commands).
+
 ## Release pipeline 2026-08-06 (v0.6.1)
 
 Cut v0.6.1; GitHub release + homebrew published. Three tag-run jobs failed.
