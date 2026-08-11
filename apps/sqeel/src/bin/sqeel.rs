@@ -939,11 +939,7 @@ fn spawn_executor(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<QueryRequest>(8);
     state.lock().unwrap().query_tx = Some(tx.clone());
 
-    let conn_slug = if conn_name.is_empty() {
-        sanitize_conn_slug("default")
-    } else {
-        sanitize_conn_slug(&conn_name)
-    };
+    let conn_slug = sanitize_conn_slug(&conn_name);
     let query_tx_for_registry = tx;
 
     // ── Lazy schema loader ───────────────────────────────────────────────────
