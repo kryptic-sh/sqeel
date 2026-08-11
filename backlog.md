@@ -473,12 +473,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/lib.rs` — results-tab-bar hit-test inline at 1793-1805
-  (`format!(" {} ", i+1)` per tab + separator) duplicates the width-accumulation
-  walk in `tab_bar_click_index` (4229-4239) against the renderer's
-  `results_tab_bar` (render.rs:2036-2072). Generalize `tab_bar_click_index` to
-  take a width callback (or add `results_tab_click_index`) and call it from both
-  sites — also kills the per-tab `format!` alloc on every click.
 - `crates/sqeel-core/src/state.rs` — the add-connection caret methods
   (`add_connection_type_char`/`backspace`/`delete`/`left`/`right`/`home`/`end`,
   3335-3408) reimplement `TextInput`'s char-index arithmetic (lib.rs:195-287)
