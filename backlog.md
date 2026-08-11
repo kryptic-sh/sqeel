@@ -530,17 +530,6 @@ generation (the identifier cache is replaced wholesale via
 `apply_schema_cache_rebuild`, state.rs:756-766, so its Arc identity is a ready
 key), submit without cloning, and filter against pre-lowered data on the thread.
 
-#### 4. Highlight pass walks the ENTIRE retained tree + runs two full newline scans
-
-`highlight_range` collects block ranges over every node of the retained tree on
-every pass (highlight.rs:563-568) and `compute_newline_offsets` runs twice —
-once at highlight.rs:511 and again inside
-`promote_uncovered_dialect_keywords_in_range` at highlight.rs:823. Fires per
-keystroke and per scroll past the half-margin (lib.rs:963-973). O(tree nodes) +
-2×O(buffer) per keystroke on the render-loop thread; on a 2 MB buffer this is
-the dominant per-keystroke cost. Fix: cache block ranges keyed on a tree
-generation counter; thread the :511 offsets into the promotion pass.
-
 #### 5. Search label scans the whole buffer on every frame
 
 `search_label` materializes every line via `buffer_lines` and runs
