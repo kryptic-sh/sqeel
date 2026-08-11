@@ -484,10 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-- `crates/sqeel-config/src/pgpass.rs:136-150` — the
-  `match default_pgpass_path() { Some(p) => p, None => return vec![] }` arm is
-  duplicated for the PGPASSFILE-empty and env-absent branches. Fold into one
-  `if let` chain.
 - `crates/sqeel-tui/src/lib.rs` + `crates/sqeel-core/src/lsp.rs` — the
   `SQEEL_DEBUG_HL_DUMP` append-dump block (env var → `OpenOptions::append` →
   `writeln!`) is copied 4× in lib.rs (834-848, 1199-1213, 1291-1311, 1405-1425)
