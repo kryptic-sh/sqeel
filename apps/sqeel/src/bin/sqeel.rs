@@ -718,7 +718,15 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
                     .trim_end()
                     .to_string()
             };
-            println!("{}", fmt_row(&r.columns));
+            println!(
+                "{}",
+                fmt_row(
+                    &r.columns
+                        .iter()
+                        .map(|c| sanitize_cell(c))
+                        .collect::<Vec<_>>()
+                )
+            );
             println!(
                 "{}",
                 widths
@@ -745,7 +753,7 @@ fn print_result(r: &sqeel_core::state::QueryResult, format: OutputFormat) {
                 "{}",
                 r.columns
                     .iter()
-                    .map(|c| esc(c))
+                    .map(|c| esc(&sanitize_cell(c)))
                     .collect::<Vec<_>>()
                     .join(",")
             );

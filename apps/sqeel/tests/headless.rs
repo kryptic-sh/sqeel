@@ -268,3 +268,56 @@ fn control_chars_in_cells_do_not_reach_stdout() {
         "ESC should render as the ␛ Control Picture: {text}"
     );
 }
+
+#[test]
+fn control_chars_in_column_names_do_not_reach_stdout() {
+    let (_dir, url) = db_url("esc_hdr");
+    // A column NAME carrying a raw ESC byte (server-controlled schema, e.g.
+    // a hostile view definition) must not inject into the terminal — the
+    // same guarantee the cell path gives
+    // (control_chars_in_cells_do_not_reach_stdout), applied to the header
+    // row in both the table and CSV formatters.
+    let evil = "\x1b]0;hi\x1b";
+    let seed = sqeel()
+        .args([
+            "--url",
+            &url,
+            "-e",
+            &format!("CREATE TABLE t (\"{evil}\" TEXT); INSERT INTO t VALUES ('v');"),
+        ])
+        .output()
+        .expect("spawn sqeel");
+    assert!(
+        seed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    for format in ["table", "csv"] {
+        let out = sqeel()
+            .args([
+                "--url",
+                &url,
+                "-e",
+                &format!("SELECT \"{evil}\" FROM t;"),
+                "--format",
+                format,
+            ])
+            .output()
+            .expect("spawn sqeel");
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = out.stdout;
+        assert!(
+            !stdout.contains(&0x1b),
+            "{format}: raw ESC byte must not reach stdout: {stdout:?}"
+        );
+        let text = String::from_utf8_lossy(&stdout);
+        assert!(
+            text.contains('\u{241b}'),
+            "{format}: ESC should render as the ␛ Control Picture: {text}"
+        );
+    }
+}
