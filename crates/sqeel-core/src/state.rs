@@ -6184,4 +6184,31 @@ trailing prose ignored";
         );
         let _ = crate::config::delete_connection("no_tls_sqlite");
     }
+
+    #[test]
+    fn set_diagnostics_ignores_identical_publish() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        let d1 = Diagnostic {
+            line: 1,
+            col: 2,
+            end_line: 3,
+            end_col: 4,
+            message: "syntax error".into(),
+            severity: DiagnosticSeverity::ERROR,
+        };
+        s.set_diagnostics(vec![d1.clone()]);
+        // TUI diagnostics arm: `if s.lsp_diagnostics != diags` — an identical
+        // re-publish (sqls re-publishes after every didChange) must compare
+        // equal so the guard skips the write + redraw.
+        assert_eq!(s.lsp_diagnostics, vec![d1.clone()]);
+        s.set_diagnostics(vec![d1.clone()]);
+        assert_eq!(s.lsp_diagnostics, vec![d1.clone()]);
+        // A real change compares unequal, so the guard still redraws.
+        let d2 = Diagnostic {
+            message: "different message".into(),
+            ..d1
+        };
+        assert_ne!(s.lsp_diagnostics, vec![d2]);
+    }
 }

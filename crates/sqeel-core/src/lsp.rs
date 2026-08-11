@@ -92,7 +92,7 @@ fn sqls_driver_and_dsn(url: &str) -> anyhow::Result<(&'static str, String)> {
 
 // ── Domain types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub line: u32,
     pub col: u32,

@@ -1431,7 +1431,6 @@ async fn run_loop(
         // Drain LSP events
         if let Some(ref mut client) = lsp {
             while let Ok(event) = client.events.try_recv() {
-                needs_redraw = true;
                 match event {
                     LspEvent::Diagnostics(diag_uri, diags) => {
                         // A publish that raced a tab switch describes the
@@ -1452,7 +1451,14 @@ async fn run_loop(
                             }
                             lsp_debug_dump(&dump);
                         }
-                        state.lock().unwrap().set_diagnostics(diags);
+                        // Identical re-publishes (sqls re-publishes after every
+                        // didChange, often unchanged) must not force a full
+                        // redraw — compare first, write + redraw only on change.
+                        let mut s = state.lock().unwrap();
+                        if s.lsp_diagnostics != diags {
+                            s.set_diagnostics(diags);
+                            needs_redraw = true;
+                        }
                     }
                     LspEvent::Definition(id, uri, line, col) => {
                         if Some(id) == last_definition_id {
@@ -1509,6 +1515,9 @@ async fn run_loop(
                                 .collect();
                             merged.extend(extras);
                             state.lock().unwrap().set_completions(merged);
+                            // The completion popup is visible state; the
+                            // removed unconditional drain redraw used to cover it.
+                            needs_redraw = true;
                         }
                     }
                     LspEvent::SignatureHelp(id, text) => {
