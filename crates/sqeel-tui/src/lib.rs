@@ -2796,23 +2796,7 @@ async fn run_loop(
                                 } else {
                                     let mut s = state.lock().unwrap();
                                     sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
-                                    if let Some(idx) = s.tabs.iter().position(|t| t.name == name) {
-                                        s.switch_to_tab(idx);
-                                    } else if let Ok(content) =
-                                        sqeel_core::persistence::load_query(&name)
-                                    {
-                                        let conn_bind = s.active_connection.clone();
-                                        s.tabs.push(sqeel_core::state::TabEntry {
-                                            name,
-                                            content: Some(content),
-                                            last_accessed: Some(Instant::now()),
-                                            cursor: None,
-                                            dirty: false,
-                                            connection: conn_bind,
-                                        });
-                                        let idx = s.tabs.len() - 1;
-                                        s.switch_to_tab(idx);
-                                    } else {
+                                    if !open_saved_query_tab(&mut s, &name) {
                                         toast(
                                             &mut toasts,
                                             ToastKind::Error,
@@ -2944,25 +2928,7 @@ async fn run_loop(
                                     if !name.is_empty() {
                                         let mut s = state.lock().unwrap();
                                         sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
-                                        if let Some(idx) =
-                                            s.tabs.iter().position(|t| t.name == name)
-                                        {
-                                            s.switch_to_tab(idx);
-                                        } else if let Ok(content) =
-                                            sqeel_core::persistence::load_query(&name)
-                                        {
-                                            let conn_bind = s.active_connection.clone();
-                                            s.tabs.push(sqeel_core::state::TabEntry {
-                                                name,
-                                                content: Some(content),
-                                                last_accessed: Some(Instant::now()),
-                                                cursor: None,
-                                                dirty: false,
-                                                connection: conn_bind,
-                                            });
-                                            let idx = s.tabs.len() - 1;
-                                            s.switch_to_tab(idx);
-                                        }
+                                        open_saved_query_tab(&mut s, &name);
                                     }
                                     None
                                 }
@@ -4180,6 +4146,33 @@ fn sync_editor_content(
         s.editor_content = editor.content_arc();
         s.mark_active_dirty();
         *editor_dirty = false;
+    }
+}
+
+/// Open a saved query by `name` into a tab: switch to an existing tab with
+/// that name, else load the query from the saved-queries dir, push a new
+/// `TabEntry`, and switch to it. Returns `false` when neither a tab nor a
+/// saved query with that name exists, so the caller decides how to surface
+/// the failure.
+fn open_saved_query_tab(s: &mut AppState, name: &str) -> bool {
+    if let Some(idx) = s.tabs.iter().position(|t| t.name == name) {
+        s.switch_to_tab(idx);
+        true
+    } else if let Ok(content) = sqeel_core::persistence::load_query(name) {
+        let conn_bind = s.active_connection.clone();
+        s.tabs.push(sqeel_core::state::TabEntry {
+            name: name.to_owned(),
+            content: Some(content),
+            last_accessed: Some(Instant::now()),
+            cursor: None,
+            dirty: false,
+            connection: conn_bind,
+        });
+        let idx = s.tabs.len() - 1;
+        s.switch_to_tab(idx);
+        true
+    } else {
+        false
     }
 }
 
