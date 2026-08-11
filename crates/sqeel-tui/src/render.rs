@@ -2128,23 +2128,42 @@ pub(crate) fn highlight_sql_lines(source: &str, dialect: Dialect) -> Vec<Line<'s
 
 /// Syntax-highlight `source` with the shared TLS tree-sitter `Highlighter`.
 /// Returns raw spans in source order; callers map them onto their own layout.
+///
+/// The two per-frame callers re-highlight the same stable `(source, dialect)`
+/// pairs every frame (the active query line and the SHOW CREATE DDL body), so
+/// the last two parse results are cached and a hit skips the parse entirely.
 fn highlight_spans(source: &str, dialect: Dialect) -> Vec<sqeel_core::highlight::HighlightSpan> {
     use std::cell::RefCell;
     thread_local! {
         static HL: RefCell<Option<Highlighter>> = const { RefCell::new(None) };
+        // Two slots: draw_results alternates between the query line and the
+        // SHOW CREATE DDL body every frame, so a single slot would thrash.
+        static SPAN_CACHE: RefCell<Vec<(String, Dialect, Vec<sqeel_core::highlight::HighlightSpan>)>> =
+            const { RefCell::new(Vec::new()) };
     }
 
-    HL.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(Highlighter::new_async());
+    SPAN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((_, _, spans)) = cache.iter().find(|(s, d, _)| s == source && *d == dialect) {
+            return spans.clone();
         }
-        if let Some(h) = slot.as_mut() {
-            h.try_upgrade();
-            h.highlight(source, dialect)
-        } else {
-            vec![]
+        let spans = HL.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(Highlighter::new_async());
+            }
+            if let Some(h) = slot.as_mut() {
+                h.try_upgrade();
+                h.highlight(source, dialect)
+            } else {
+                vec![]
+            }
+        });
+        if cache.len() == 2 {
+            cache.remove(0);
         }
+        cache.push((source.to_string(), dialect, spans.clone()));
+        spans
     })
 }
 
@@ -3712,5 +3731,98 @@ mod grid_lines_tests {
     #[test]
     fn cap_never_exceeds_remaining_rows() {
         assert_eq!(grid(100, 98, 5).len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod highlight_spans_tests {
+    use super::*;
+
+    /// `HighlightSpan` doesn't derive `PartialEq`; compare field-by-field.
+    fn spans_equal(
+        a: &[sqeel_core::highlight::HighlightSpan],
+        b: &[sqeel_core::highlight::HighlightSpan],
+    ) -> bool {
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(x, y)| {
+                x.start_byte == y.start_byte
+                    && x.end_byte == y.end_byte
+                    && x.start_row == y.start_row
+                    && x.start_col == y.start_col
+                    && x.end_row == y.end_row
+                    && x.end_col == y.end_col
+                    && x.capture == y.capture
+            })
+    }
+
+    /// Populate the shared grammar cache (blocking) so `highlight_spans`'s
+    /// non-blocking `new_async()` has a grammar to parse with instead of
+    /// returning empty spans while the async load is still in flight.
+    fn warm_grammar() {
+        let _ = Highlighter::new().unwrap();
+    }
+
+    #[test]
+    fn highlight_spans_cache_hit_equals_fresh_parse() {
+        warm_grammar();
+        let first = highlight_spans("SELECT 1", Dialect::Generic);
+        let second = highlight_spans("SELECT 1", Dialect::Generic);
+        assert!(
+            spans_equal(&first, &second),
+            "cache hit must return spans identical to a fresh parse"
+        );
+    }
+
+    #[test]
+    fn highlight_spans_evicts_and_reparses_changed_source() {
+        warm_grammar();
+        let a1 = highlight_spans("SELECT 1", Dialect::Generic);
+        let _b = highlight_spans("SELECT 2", Dialect::Generic);
+        // Still cached: this A is served without a re-parse.
+        let a2 = highlight_spans("SELECT 1", Dialect::Generic);
+        // A third source evicts the older "SELECT 1" entry (cache holds two).
+        let _c = highlight_spans("SELECT 3", Dialect::Generic);
+        // Evicted: this A must be re-parsed and still equal the first result.
+        let a3 = highlight_spans("SELECT 1", Dialect::Generic);
+        assert!(
+            spans_equal(&a1, &a2),
+            "repeat of A after B must equal the first"
+        );
+        assert!(
+            spans_equal(&a1, &a3),
+            "A must re-parse to the same spans after its entry was evicted"
+        );
+    }
+
+    #[test]
+    fn highlight_spans_key_includes_dialect() {
+        warm_grammar();
+        let src = "SHOW TABLES";
+        let generic = highlight_spans(src, Dialect::Generic);
+        let mysql = highlight_spans(src, Dialect::MySql);
+        // Repeat after the MySql entry: must hit the Generic entry, not MySql's.
+        let generic_again = highlight_spans(src, Dialect::Generic);
+
+        let mut h = Highlighter::new().unwrap();
+        let fresh_generic = h.highlight(src, Dialect::Generic);
+        let mut h = Highlighter::new().unwrap();
+        let fresh_mysql = h.highlight(src, Dialect::MySql);
+
+        assert!(
+            spans_equal(&generic, &fresh_generic),
+            "Generic call must return Generic spans, not the cached MySql ones"
+        );
+        assert!(
+            spans_equal(&mysql, &fresh_mysql),
+            "MySql call must return MySql spans, not the cached Generic ones"
+        );
+        assert!(
+            spans_equal(&generic, &generic_again),
+            "a repeat Generic call must keep returning Generic spans"
+        );
+        assert!(
+            !spans_equal(&generic, &mysql),
+            "the two dialects must differ for {src:?} so the key matters"
+        );
     }
 }
