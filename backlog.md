@@ -134,10 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-core/src/highlight.rs` — the parse-error harvesting `filter_map`
-  block (skip native statements → byte→row/col → `ParseError`) is byte-identical
-  at 538-561, 588-611, 698-722. Extract
-  `harvest_parse_errors(source, dialect, errors, nl_offsets)`.
 - `crates/sqeel-core/src/state.rs` — header+rows column-width computation
   duplicated at 1262-1273 (`parse_hover_table`) and 1378-1389
   (`hover_table_from_cache`). Extract `grid_col_widths(header, rows)`. Do NOT
@@ -503,10 +499,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-core/src/highlight.rs` — the parse-error harvesting `filter_map`
-  (skip native statement → byte→row/col → `ParseError`) is byte-identical at
-  538-561, 588-611, 695-720 (two callers already share `nl_offsets`). Extract
-  `harvest_parse_errors(source, dialect, &nl_offsets, errors)`.
 - `crates/sqeel-core/src/highlight.rs` — `promote_uncovered_dialect_keywords`
   (867-936) and its `_in_range` variant (788-862) share the covered-ranges
   sort/merge + gap-walk skeleton (~50 lines, identical modulo the range clip and
