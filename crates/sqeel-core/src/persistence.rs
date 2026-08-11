@@ -54,6 +54,16 @@ pub fn results_dir_for(conn_slug: &str) -> Option<PathBuf> {
     data_dir().map(|d| d.join("results").join(conn_slug))
 }
 
+/// Resolve the queries dir, failing with the standard data-dir error.
+fn queries_dir_or_err() -> anyhow::Result<PathBuf> {
+    queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))
+}
+
+/// Resolve a connection's results dir, failing with the standard data-dir error.
+fn results_dir_or_err(conn_slug: &str) -> anyhow::Result<PathBuf> {
+    results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))
+}
+
 /// Write `content` to `path` owner-only (0600). State files can hold
 /// query text, row data and (in the keyring-fallback case) passwords;
 /// `std::fs::write` defaults to 0644 under the 0755 config/data dirs.
@@ -87,7 +97,7 @@ pub fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<(
 /// Returns next available `scratch_NNN.sql` name in the global
 /// queries dir. Scratch buffers are connection-agnostic.
 pub fn next_scratch_name() -> anyhow::Result<String> {
-    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = queries_dir_or_err()?;
     std::fs::create_dir_all(&dir)?;
     for i in 1..=999u32 {
         let name = format!("scratch_{:03}.sql", i);
@@ -100,7 +110,7 @@ pub fn next_scratch_name() -> anyhow::Result<String> {
 
 /// Save a SQL buffer to the queries dir.
 pub fn save_query(name: &str, content: &str) -> anyhow::Result<()> {
-    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = queries_dir_or_err()?;
     std::fs::create_dir_all(&dir)?;
     write_private(&dir.join(name), content.as_bytes())?;
     Ok(())
@@ -108,7 +118,7 @@ pub fn save_query(name: &str, content: &str) -> anyhow::Result<()> {
 
 /// Delete a saved SQL buffer. No-op if the file doesn't exist.
 pub fn delete_query(name: &str) -> anyhow::Result<()> {
-    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = queries_dir_or_err()?;
     let path = dir.join(name);
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -118,7 +128,7 @@ pub fn delete_query(name: &str) -> anyhow::Result<()> {
 
 /// Rename a saved SQL buffer. Fails if the destination already exists.
 pub fn rename_query(old: &str, new: &str) -> anyhow::Result<()> {
-    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = queries_dir_or_err()?;
     let from = dir.join(old);
     let to = dir.join(new);
     if to.exists() {
@@ -130,13 +140,13 @@ pub fn rename_query(old: &str, new: &str) -> anyhow::Result<()> {
 
 /// Load a SQL buffer from the queries dir.
 pub fn load_query(name: &str) -> anyhow::Result<String> {
-    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = queries_dir_or_err()?;
     Ok(std::fs::read_to_string(dir.join(name))?)
 }
 
 /// List all saved SQL files, sorted by name.
 pub fn list_queries() -> anyhow::Result<Vec<String>> {
-    let dir = queries_dir().ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = queries_dir_or_err()?;
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -180,8 +190,7 @@ fn unix_timestamp() -> u64 {
 /// Persist a successful query result under the connection's results subdir.
 /// Returns the filename the result was saved as.
 pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow::Result<String> {
-    let dir =
-        results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = results_dir_or_err(conn_slug)?;
     std::fs::create_dir_all(&dir)?;
 
     let ts = unix_timestamp();
@@ -197,8 +206,7 @@ pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow
 
 /// Load a saved result by filename from a specific connection's results subdir.
 pub fn load_result_for(conn_slug: &str, name: &str) -> anyhow::Result<QueryResult> {
-    let dir =
-        results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))?;
+    let dir = results_dir_or_err(conn_slug)?;
     let content = std::fs::read_to_string(dir.join(name))?;
     let mut result: QueryResult = serde_json::from_str(&content)?;
     result.compute_col_widths();
