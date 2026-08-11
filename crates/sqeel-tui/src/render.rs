@@ -1173,7 +1173,31 @@ pub(crate) fn draw_schema(
     };
 
     let items: Vec<&SchemaTreeItem> = if has_filter {
-        schema::filter_items(state.all_schema_items(), query)
+        let all = state.all_schema_items();
+        let lowered = state.all_schema_items_lowered();
+        let cur_gen = state.schema_gen();
+        let query_str = query.to_string();
+        use std::cell::RefCell;
+        thread_local! {
+            // (schema generation, query, matched indices into `all_schema_items`)
+            static SCHEMA_FILTER_CACHE: RefCell<Option<(u64, String, Vec<usize>)>> =
+                const { RefCell::new(None) };
+        }
+        // Steady-state frames (same schema generation + query) skip the
+        // filter entirely; only a schema change or a new query re-runs it.
+        let indices = SCHEMA_FILTER_CACHE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if let Some((g, q, idx)) = slot.as_ref()
+                && *g == cur_gen
+                && q == &query_str
+            {
+                return idx.clone();
+            }
+            let idx = schema::filter_items(all, lowered, &query_str);
+            *slot = Some((cur_gen, query_str, idx.clone()));
+            idx
+        });
+        indices.iter().map(|&i| &all[i]).collect()
     } else {
         state.visible_schema_items().iter().collect()
     };

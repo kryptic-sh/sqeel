@@ -1866,13 +1866,16 @@ async fn run_loop(
                                     let idx = rel + last_draw_areas.schema_list_offset;
                                     if last_draw_areas.schema_list_filtered {
                                         let query = schema_search.query().unwrap_or("");
-                                        let filtered =
-                                            schema::filter_items(s.all_schema_items(), query);
+                                        let filtered = schema::filter_items(
+                                            s.all_schema_items(),
+                                            s.all_schema_items_lowered(),
+                                            query,
+                                        );
                                         if idx < filtered.len() {
                                             schema_search.cursor = idx;
                                             schema_search.focused = false;
                                             let path_str = schema::path_to_string(
-                                                &filtered[idx].node_path,
+                                                &s.all_schema_items()[filtered[idx]].node_path,
                                                 &s.schema_nodes,
                                             );
                                             s.restore_schema_cursor_by_path(&path_str);

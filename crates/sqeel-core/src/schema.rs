@@ -457,28 +457,44 @@ pub fn label_matches(label: &str, query_lower: &str) -> bool {
     query_lower.chars().all(|qc| chars.any(|lc| lc == qc))
 }
 
+/// Subsequence (fuzzy) match against a PRE-LOWERED label: every char of
+/// `query_lower` appears in `label_lower` in order. No trim/lowercase alloc —
+/// the caller pre-lowers labels once with the schema cache.
+pub fn label_matches_lowered(label_lower: &str, query_lower: &str) -> bool {
+    let mut chars = label_lower.chars();
+    query_lower.chars().all(|qc| chars.any(|lc| lc == qc))
+}
+
 /// Filter `all` to items whose label fuzzy-matches `query`, plus all ancestors
 /// (so the tree stays navigable) and all descendants of matches (so matching a
-/// table keeps its columns visible). Returns items in original order.
-pub fn filter_items<'a>(all: &'a [SchemaTreeItem], query: &str) -> Vec<&'a SchemaTreeItem> {
+/// table keeps its columns visible). Returns indices into `all` in original
+/// order. `lowered` holds a pre-lowered label parallel to `all` (a caller
+/// invariant: if they mismatch, the zip ends at the shorter).
+pub fn filter_items(all: &[SchemaTreeItem], lowered: &[String], query: &str) -> Vec<usize> {
     let q = query.to_lowercase();
     let mut ancestors: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
-    let mut matched: Vec<Vec<usize>> = Vec::new();
-    for item in all.iter().filter(|it| label_matches(&it.label, &q)) {
-        for len in 1..=item.node_path.len() {
-            ancestors.insert(item.node_path[..len].to_vec());
+    let mut matched: Vec<usize> = Vec::new();
+    for (i, (item, lowered_label)) in all.iter().zip(lowered.iter()).enumerate() {
+        if label_matches_lowered(lowered_label, &q) {
+            for len in 1..=item.node_path.len() {
+                ancestors.insert(item.node_path[..len].to_vec());
+            }
+            matched.push(i);
         }
-        matched.push(item.node_path.clone());
     }
     // Descendant test as prefix probes into the matched-path set:
     // O(depth) lookups per item instead of a linear scan of every
     // match (tree depth is ≤ 5).
-    let matched_set: std::collections::HashSet<&[usize]> =
-        matched.iter().map(|p| p.as_slice()).collect();
+    let matched_set: std::collections::HashSet<&[usize]> = matched
+        .iter()
+        .map(|&i| all[i].node_path.as_slice())
+        .collect();
     let is_descendant =
         |path: &[usize]| (1..path.len()).any(|len| matched_set.contains(&path[..len]));
     all.iter()
-        .filter(|it| ancestors.contains(&it.node_path) || is_descendant(&it.node_path))
+        .enumerate()
+        .filter(|(_, it)| ancestors.contains(&it.node_path) || is_descendant(&it.node_path))
+        .map(|(i, _)| i)
         .collect()
 }
 
@@ -889,39 +905,55 @@ mod tests {
     #[test]
     fn filter_items_includes_ancestors() {
         let all = flatten_all(&sample_tree());
-        let filtered = filter_items(&all, "id");
+        let lowered: Vec<String> = all
+            .iter()
+            .map(|it| it.label.trim().to_lowercase())
+            .collect();
+        let filtered = filter_items(&all, &lowered, "id");
         // Match on "id" column must pull in mydb + users ancestors.
         assert_eq!(filtered.len(), 3);
-        assert!(filtered[0].label.contains("mydb"));
-        assert!(filtered[1].label.contains("users"));
-        assert!(filtered[2].label.contains("id"));
+        assert!(all[filtered[0]].label.contains("mydb"));
+        assert!(all[filtered[1]].label.contains("users"));
+        assert!(all[filtered[2]].label.contains("id"));
     }
 
     #[test]
     fn filter_items_includes_descendants_of_match() {
         let all = flatten_all(&sample_tree());
-        let filtered = filter_items(&all, "users");
+        let lowered: Vec<String> = all
+            .iter()
+            .map(|it| it.label.trim().to_lowercase())
+            .collect();
+        let filtered = filter_items(&all, &lowered, "users");
         // Match on "users" table must keep its "id" column visible too.
         assert_eq!(filtered.len(), 3);
-        assert!(filtered[0].label.contains("mydb"));
-        assert!(filtered[1].label.contains("users"));
-        assert!(filtered[2].label.contains("id"));
+        assert!(all[filtered[0]].label.contains("mydb"));
+        assert!(all[filtered[1]].label.contains("users"));
+        assert!(all[filtered[2]].label.contains("id"));
     }
 
     #[test]
     fn filter_items_empty_on_no_match() {
         let all = flatten_all(&sample_tree());
-        assert!(filter_items(&all, "zzz").is_empty());
+        let lowered: Vec<String> = all
+            .iter()
+            .map(|it| it.label.trim().to_lowercase())
+            .collect();
+        assert!(filter_items(&all, &lowered, "zzz").is_empty());
     }
 
     #[test]
     fn filter_items_excludes_sibling_of_match() {
         let all = flatten_all(&sample_tree_with_relations());
-        let filtered = filter_items(&all, "users");
+        let lowered: Vec<String> = all
+            .iter()
+            .map(|it| it.label.trim().to_lowercase())
+            .collect();
+        let filtered = filter_items(&all, &lowered, "users");
         // "roles" is a sibling of the matched "users" table: not an
         // ancestor, not a descendant — it must stay out.
-        assert!(filtered.iter().all(|it| !it.label.contains("roles")));
-        assert!(filtered.iter().any(|it| it.label.contains("users")));
+        assert!(filtered.iter().all(|&i| !all[i].label.contains("roles")));
+        assert!(filtered.iter().any(|&i| all[i].label.contains("users")));
     }
 
     #[test]

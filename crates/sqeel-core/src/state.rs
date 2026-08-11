@@ -660,6 +660,9 @@ pub struct AppState {
     pub results_dirty: bool,
     schema_items_cache: Vec<SchemaTreeItem>,
     all_schema_items_cache: Vec<SchemaTreeItem>,
+    /// Pre-lowered labels parallel to `all_schema_items_cache` — the schema
+    /// filter matches against these instead of lowercasing every label per frame.
+    all_schema_items_lowered: Vec<String>,
     /// Sorted, deduplicated identifier names for completion. Rebuilt on schema changes
     /// so hot-path completion submissions only clone an `Arc`.
     schema_identifier_cache: Arc<Vec<String>>,
@@ -828,6 +831,11 @@ impl AppState {
     fn rebuild_schema_cache(&mut self) {
         self.schema_items_cache = flatten_tree(&self.schema_nodes);
         self.all_schema_items_cache = flatten_all(&self.schema_nodes);
+        self.all_schema_items_lowered = self
+            .all_schema_items_cache
+            .iter()
+            .map(|it| it.label.trim().to_lowercase())
+            .collect();
         let mut ids = Vec::new();
         let mut stack: Vec<&SchemaNode> = self.schema_nodes.iter().collect();
         while let Some(node) = stack.pop() {
@@ -940,6 +948,17 @@ impl AppState {
     ) {
         self.schema_items_cache = items;
         self.all_schema_items_cache = all;
+        self.all_schema_items_lowered = self
+            .all_schema_items_cache
+            .iter()
+            .map(|it| it.label.trim().to_lowercase())
+            .collect();
+        // The items cache was replaced wholesale, so the render-side schema
+        // filter cache keyed on `schema_gen` must invalidate. The completion
+        // pools' extra invalidation is harmless: the non-Any pools derive from
+        // `schema_nodes`, which this call doesn't change, so they rebuild to
+        // the same values.
+        self.schema_gen += 1;
         self.schema_identifier_cache = Arc::new(ids);
         self.schema_identifier_cache_lowered = Arc::new(
             self.schema_identifier_cache
@@ -2446,6 +2465,19 @@ impl AppState {
 
     pub fn all_schema_items(&self) -> &[SchemaTreeItem] {
         &self.all_schema_items_cache
+    }
+
+    /// Pre-lowered labels parallel to `all_schema_items()` — the schema filter
+    /// matches against these instead of lowercasing every label per frame.
+    pub fn all_schema_items_lowered(&self) -> &[String] {
+        &self.all_schema_items_lowered
+    }
+
+    /// Bumped on every schema change (mutations via `mark_schema_cache_dirty`,
+    /// cache rebuilds, and `apply_schema_cache_rebuild`). Keys the render-side
+    /// schema-filter cache.
+    pub fn schema_gen(&self) -> u64 {
+        self.schema_gen
     }
 
     /// Returns path strings for every expanded node, e.g. `["mydb", "mydb/users"]`.
@@ -5814,6 +5846,34 @@ trailing prose ignored";
         s.apply_schema_cache_rebuild(items.clone(), items.clone(), vec!["x".into()]);
         assert!(!s.schema_rebuild_in_flight);
         assert_eq!(s.schema_identifier_cache.len(), 1);
+    }
+
+    #[test]
+    fn apply_schema_cache_rebuild_bumps_gen_and_prelowers() {
+        use crate::schema::{SchemaItemKind, SchemaTreeItem};
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        let g0 = s.schema_gen();
+        let items = vec![SchemaTreeItem {
+            label: "My DB".into(),
+            depth: 0,
+            node_path: vec![0],
+            name: "My DB".into(),
+            kind: SchemaItemKind::Database,
+        }];
+        let all = items.clone();
+        s.apply_schema_cache_rebuild(items, all.clone(), vec!["My DB".into()]);
+        // The wholesale items-cache replacement must invalidate the render-side
+        // filter cache keyed on the generation.
+        assert!(s.schema_gen() > g0);
+        // The pre-lowered list parallels `all_schema_items()`: same length,
+        // each entry the trimmed, lowercased label.
+        let lowered = s.all_schema_items_lowered();
+        assert_eq!(lowered, ["my db".to_string()].as_slice());
+        assert_eq!(lowered.len(), s.all_schema_items().len());
+        for (i, item) in all.iter().enumerate() {
+            assert_eq!(item.label.trim().to_lowercase(), lowered[i]);
+        }
     }
 
     #[test]
