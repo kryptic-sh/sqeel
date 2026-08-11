@@ -480,9 +480,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   sqeel-core and storing it for the add-connection fields removes ~30 lines of
   duplicated caret math (AppState is not Serialize, so no wire impact —
   cross-crate decision).
-- `crates/sqeel-tui/src/lib.rs` — `lsp_col` UTF-16 conversion
-  (`buf_lines.get(row).map(|l| char_col_to_utf16(l, col)).unwrap_or(col)`) ×3 at
-  1221-1224, 4025-4028, 4072-4075. Extract `lsp_col_for(lines, row, col)`.
 - `crates/sqeel-core/src/state.rs` —
   `for req in reqs { self.request_schema_load(req) }` ×3 (2286-2288, 2605-2607,
   2657-2659) plus the same loop in `apps/sqeel/src/bin/sqeel.rs:972-974`.
