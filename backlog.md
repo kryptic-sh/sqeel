@@ -484,13 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-### Dead branch
-
-- `apps/sqeel/src/bin/sqeel.rs:934-938` —
-  `let conn_slug = if conn_name.is_empty() { sanitize_conn_slug("default") } else { sanitize_conn_slug(&conn_name) };`.
-  `sanitize_conn_slug` already returns `"default"` for an empty input
-  (persistence.rs:46-50), so both arms produce identical values — collapse to
-  `sanitize_conn_slug(&conn_name)`.
 
 ### Coverage
 
