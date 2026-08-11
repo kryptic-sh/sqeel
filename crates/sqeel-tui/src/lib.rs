@@ -1284,10 +1284,7 @@ async fn run_loop(
                         // in a spawned task.
                         // LSP character is UTF-16 code units, not the
                         // engine's char index.
-                        let lsp_col = buf_lines
-                            .get(row)
-                            .map(|l| char_col_to_utf16(l, col))
-                            .unwrap_or(col);
+                        let lsp_col = lsp_col_for(&buf_lines, row, col);
                         let id = client.writer().request_completion(
                             active_lsp_uri.clone(),
                             row as u32,
@@ -3961,10 +3958,7 @@ async fn run_loop(
                             }
                         }
                         if !handled && let Some(ref client) = lsp {
-                            let lsp_col = buf_lines
-                                .get(row)
-                                .map(|l| char_col_to_utf16(l, col))
-                                .unwrap_or(col);
+                            let lsp_col = lsp_col_for(&buf_lines, row, col);
                             last_hover_id = Some(client.writer().request_hover(
                                 active_lsp_uri.clone(),
                                 row as u32,
@@ -4008,10 +4002,7 @@ async fn run_loop(
                             && let Some(ref client) = lsp
                         {
                             let (row, col) = editor.cursor();
-                            let lsp_col = buffer_lines(editor.buffer())
-                                .get(row)
-                                .map(|l| char_col_to_utf16(l, col))
-                                .unwrap_or(col);
+                            let lsp_col = lsp_col_for(&buffer_lines(editor.buffer()), row, col);
                             last_definition_id = Some(client.writer().request_definition(
                                 active_lsp_uri.clone(),
                                 row as u32,
@@ -4245,6 +4236,16 @@ fn tab_bar_click_index_with(
 /// between tabs, names measured in chars.
 fn tab_bar_click_index(tabs: &[TabEntry], rel_x: usize) -> Option<usize> {
     tab_bar_click_index_with(tabs.len(), rel_x, |i| tabs[i].name.chars().count() + 2)
+}
+
+/// LSP character is UTF-16 code units, not the engine's char index:
+/// convert `col` within `lines[row]`, keeping the raw column when the
+/// row isn't materialized.
+fn lsp_col_for(lines: &[String], row: usize, col: usize) -> usize {
+    lines
+        .get(row)
+        .map(|l| char_col_to_utf16(l, col))
+        .unwrap_or(col)
 }
 
 #[cfg(test)]
@@ -5673,5 +5674,16 @@ mod tests {
         let then = SystemTime::UNIX_EPOCH + Duration::from_secs(week);
         let s = format_relative_time(now, then);
         assert_eq!(s, "1w ago");
+    }
+
+    #[test]
+    fn lsp_col_for_converts_utf16_and_falls_back() {
+        let lines = vec!["héllo".to_string(), "a😀b".to_string()];
+        // BMP: char col == UTF-16 col.
+        assert_eq!(super::lsp_col_for(&lines, 0, 4), 4);
+        // Astral char widens to two code units.
+        assert_eq!(super::lsp_col_for(&lines, 1, 2), 3);
+        // Row past the end keeps the raw column.
+        assert_eq!(super::lsp_col_for(&lines, 2, 7), 7);
     }
 }
