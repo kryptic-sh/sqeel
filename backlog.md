@@ -480,12 +480,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   sqeel-core and storing it for the add-connection fields removes ~30 lines of
   duplicated caret math (AppState is not Serialize, so no wire impact —
   cross-crate decision).
-- `crates/sqeel-core/src/lsp.rs` — `open_document`'s already-open branch
-  (210-219) re-implements `Inner::sync_document` (130-133); and
-  `LspClient::change_document` (221-224) is a byte-identical wrapper of
-  `LspWriter::change_document` (254-257). Have `open_document` call
-  `sync_document` in the open branch; one of the two `change_document`s can
-  delegate to the other.
 - `crates/sqeel-tui/src/ex.rs:286-299` — inline `~/` expansion still duplicates
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
