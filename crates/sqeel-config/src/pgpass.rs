@@ -133,20 +133,12 @@ pub fn load_pgpass_from(path: &Path) -> Vec<PgpassEntry> {
 /// Returns an empty `Vec` on missing file, bad permissions, or any I/O error.
 /// Never panics.
 pub fn load_pgpass() -> Vec<PgpassEntry> {
-    let path = if let Ok(v) = std::env::var("PGPASSFILE") {
-        if v.is_empty() {
-            match default_pgpass_path() {
-                Some(p) => p,
-                None => return vec![],
-            }
-        } else {
-            PathBuf::from(v)
-        }
-    } else {
-        match default_pgpass_path() {
+    let path = match std::env::var("PGPASSFILE") {
+        Ok(v) if !v.is_empty() => PathBuf::from(v),
+        _ => match default_pgpass_path() {
             Some(p) => p,
             None => return vec![],
-        }
+        },
     };
     load_pgpass_from(&path)
 }
