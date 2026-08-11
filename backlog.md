@@ -535,13 +535,6 @@ lib.rs:1567-1568 holds `state` across the whole `terminal.draw`, so every cost
 above serializes under one mutex and any background holder (finding 1) blocks
 frames. Fix after 1-8: snapshot render inputs outside the lock.
 
-#### 10. Schema filter re-runs per frame with per-label lowercase allocs
-
-`draw_schema` calls `filter_items` every frame while the filter box is active
-(render.rs:1135-1136); `label_matches` does a `trim().to_lowercase()` alloc per
-label (schema.rs:454-458) and the result is never cached. Fix: pre-lower labels
-and cache the filtered list keyed on query + schema generation.
-
 ### Minor
 
 - `tmux_navigate` spawns a `tmux` process per nav keystroke (exec.rs:192-198).
