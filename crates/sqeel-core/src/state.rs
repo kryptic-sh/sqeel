@@ -434,6 +434,49 @@ pub(crate) fn scroll_cols_into_view_slice(
     }
 }
 
+/// Walk columns from `col_scroll`, accumulating each column's width
+/// plus the 1-cell separator, until the accumulated width covers
+/// `rel_x`. Returns the column under `rel_x`, or `None`. Shared
+/// between the results pane and hover popup click handlers.
+fn col_at_x(col_widths: &[u16], col_scroll: usize, rel_x: u32, col_count: usize) -> Option<usize> {
+    let mut acc: u32 = 0;
+    let mut col = col_scroll;
+    while col < col_count {
+        let w = col_widths.get(col).copied().unwrap_or(0) as u32 + 1;
+        if rel_x < acc + w {
+            return Some(col);
+        }
+        acc += w;
+        col += 1;
+    }
+    None
+}
+
+/// Step a drag cursor one cell toward the edge the pointer crossed
+/// (up/left saturate, down/right clamp to the grid bounds). Shared
+/// between the results pane and hover popup drag handlers.
+fn drag_step_toward_edge(
+    (row, col): (usize, usize),
+    (mx, my): (u16, u16),
+    (body_x, body_y, body_w, body_h): (u16, u16, u16, u16),
+    row_count: usize,
+    col_count: usize,
+) -> (usize, usize) {
+    let mut row = row;
+    let mut col = col;
+    if my < body_y {
+        row = row.saturating_sub(1);
+    } else if my >= body_y + body_h {
+        row = (row + 1).min(row_count.saturating_sub(1));
+    }
+    if mx < body_x {
+        col = col.saturating_sub(1);
+    } else if mx >= body_x + body_w {
+        col = (col + 1).min(col_count.saturating_sub(1));
+    }
+    (row, col)
+}
+
 /// A query request sent over the executor channel — single statement or batch.
 #[derive(Debug, Clone)]
 pub enum QueryRequest {
@@ -1593,19 +1636,13 @@ impl AppState {
             ResultsCursor::Header(c) => (0, c),
             _ => (0, 0),
         };
-        let mut row = cur_row;
-        let mut col = cur_col;
-        if my < body_y {
-            row = row.saturating_sub(1);
-        } else if my >= body_y + body_h {
-            row = (row + 1).min(r.rows.len().saturating_sub(1));
-        }
-        if mx < body_x {
-            col = col.saturating_sub(1);
-        } else if mx >= body_x + body_w {
-            col = (col + 1).min(r.columns.len().saturating_sub(1));
-        }
-        Some((row, col))
+        Some(drag_step_toward_edge(
+            (cur_row, cur_col),
+            (mx, my),
+            (body_x, body_y, body_w, body_h),
+            r.rows.len(),
+            r.columns.len(),
+        ))
     }
 
     /// Translate a terminal-space mouse click into a `(row, col)` on
@@ -1634,17 +1671,7 @@ impl AppState {
             return None;
         }
         let rel_x = (mx - body_x) as u32;
-        let mut acc: u32 = 0;
-        let mut col = tab.col_scroll;
-        while col < r.columns.len() {
-            let w = r.col_widths.get(col).copied().unwrap_or(0) as u32 + 1;
-            if rel_x < acc + w {
-                return Some((row, col));
-            }
-            acc += w;
-            col += 1;
-        }
-        None
+        col_at_x(&r.col_widths, tab.col_scroll, rel_x, r.columns.len()).map(|col| (row, col))
     }
 
     /// Drag-extended variant of [`Self::hover_click_to_cell`] — when
@@ -1671,19 +1698,13 @@ impl AppState {
             ResultsCursor::Cell { row, col } => (row, col),
             _ => (0, 0),
         };
-        let mut row = cur_row;
-        let mut col = cur_col;
-        if my < body_y {
-            row = row.saturating_sub(1);
-        } else if my >= body_y + body_h {
-            row = (row + 1).min(t.rows.len().saturating_sub(1));
-        }
-        if mx < body_x {
-            col = col.saturating_sub(1);
-        } else if mx >= body_x + body_w {
-            col = (col + 1).min(t.columns.len().saturating_sub(1));
-        }
-        Some((row, col))
+        Some(drag_step_toward_edge(
+            (cur_row, cur_col),
+            (mx, my),
+            (body_x, body_y, body_w, body_h),
+            t.rows.len(),
+            t.columns.len(),
+        ))
     }
 
     /// Translate a terminal-space mouse click into a `(row, col)` on
@@ -1708,20 +1729,8 @@ impl AppState {
         if row >= t.rows.len() {
             return None;
         }
-        // Walk columns from `hover_col_scroll`, accumulating widths +
-        // the 1-cell separator, until we cover the click's x offset.
         let rel_x = (mx - body_x) as u32;
-        let mut acc: u32 = 0;
-        let mut col = self.hover_col_scroll;
-        while col < t.columns.len() {
-            let w = t.col_widths.get(col).copied().unwrap_or(0) as u32 + 1;
-            if rel_x < acc + w {
-                return Some((row, col));
-            }
-            acc += w;
-            col += 1;
-        }
-        None
+        col_at_x(&t.col_widths, self.hover_col_scroll, rel_x, t.columns.len()).map(|col| (row, col))
     }
 
     /// Re-clamp the hover row + column scroll offsets so the cursor
