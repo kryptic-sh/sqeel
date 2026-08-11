@@ -2076,26 +2076,10 @@ pub(crate) fn results_tab_bar(state: &AppState) -> Line<'static> {
 /// highlighter refer to the original (multiline) source — we remap them onto
 /// the flattened string so spans stay aligned.
 /// Render `source` as syntax-highlighted lines. Spans crossing line breaks
-/// are split per row. Shared tree-sitter parser kept in TLS (same pattern as
-/// `highlight_query_line`).
+/// are split per row. Shared tree-sitter parser kept in TLS (see
+/// `highlight_spans`).
 pub(crate) fn highlight_sql_lines(source: &str, dialect: Dialect) -> Vec<Line<'static>> {
-    use std::cell::RefCell;
-    thread_local! {
-        static HL: RefCell<Option<Highlighter>> = const { RefCell::new(None) };
-    }
-
-    let spans = HL.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(Highlighter::new_async());
-        }
-        if let Some(h) = slot.as_mut() {
-            h.try_upgrade();
-            h.highlight(source, dialect)
-        } else {
-            vec![]
-        }
-    });
+    let spans = highlight_spans(source, dialect);
 
     let bytes = source.as_bytes();
     let plain = Style::default().fg(ui().sql_plain);
@@ -2147,28 +2131,34 @@ pub(crate) fn highlight_sql_lines(source: &str, dialect: Dialect) -> Vec<Line<'s
         .collect()
 }
 
-pub(crate) fn highlight_query_line(query: &str, dialect: Dialect) -> Line<'static> {
+/// Syntax-highlight `source` with the shared TLS tree-sitter `Highlighter`.
+/// Returns raw spans in source order; callers map them onto their own layout.
+fn highlight_spans(source: &str, dialect: Dialect) -> Vec<sqeel_core::highlight::HighlightSpan> {
     use std::cell::RefCell;
     thread_local! {
         static HL: RefCell<Option<Highlighter>> = const { RefCell::new(None) };
     }
 
-    if query.is_empty() {
-        return Line::from(vec![Span::raw(" ")]);
-    }
-
-    let spans = HL.with(|cell| {
+    HL.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
             *slot = Some(Highlighter::new_async());
         }
         if let Some(h) = slot.as_mut() {
             h.try_upgrade();
-            h.highlight(query, dialect)
+            h.highlight(source, dialect)
         } else {
             vec![]
         }
-    });
+    })
+}
+
+pub(crate) fn highlight_query_line(query: &str, dialect: Dialect) -> Line<'static> {
+    if query.is_empty() {
+        return Line::from(vec![Span::raw(" ")]);
+    }
+
+    let spans = highlight_spans(query, dialect);
 
     let bytes = query.as_bytes();
     let mut out: Vec<Span<'static>> = vec![Span::raw(" ")];
