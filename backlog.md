@@ -134,8 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-core/src/state.rs` — find-scan loop duplicated at `results_find`
-  1823-1838 and `hover_find` 1864-1881. Extract one `find_in_grid` helper.
 - `crates/sqeel-core/src/state.rs` — mouse-hit column walk duplicated at
   `results_click_to_cell` 1600-1611 vs `hover_click_to_cell` 1677-1688; drag
   edge-stepping at `results_drag_to_cell` 1560-1571 vs `hover_drag_to_cell`
@@ -494,11 +492,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-core/src/state.rs` — find-scan loop duplicated at `results_find`
-  1828-1843 and `hover_find` 1868-1885 (same `(start + i·step) % total` walk +
-  `cell_display().to_lowercase().contains`). Extract
-  `find_in_grid(rows, cols, cur, needle_lc, forward, skip_current) -> Option<(row, col)>`;
-  callers keep their cursor move + `clamp_hover_scroll`.
 - `crates/sqeel-core/src/state.rs` — mouse-hit column walk duplicated at
   `results_click_to_cell` 1605-1616 vs `hover_click_to_cell` 1682-1693
   (prefix-sum through `col_widths` + 1 separator). Extract
