@@ -480,10 +480,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   sqeel-core and storing it for the add-connection fields removes ~30 lines of
   duplicated caret math (AppState is not Serialize, so no wire impact —
   cross-crate decision).
-- `crates/sqeel-core/src/state.rs` —
-  `for req in reqs { self.request_schema_load(req) }` ×3 (2286-2288, 2605-2607,
-  2657-2659) plus the same loop in `apps/sqeel/src/bin/sqeel.rs:972-974`.
-  Extract `AppState::request_schema_loads(Vec<SchemaLoadRequest>)`.
 - `crates/sqeel-core/src/lsp.rs` — `open_document`'s already-open branch
   (210-219) re-implements `Inner::sync_document` (130-133); and
   `LspClient::change_document` (221-224) is a byte-identical wrapper of
