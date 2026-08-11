@@ -272,12 +272,54 @@ fn find_in_grid(
         let col = probe % cols;
         let cell = rows.get(row).and_then(|r| r.get(col));
         if let Some(v) = cell
-            && cell_display(v).to_lowercase().contains(needle_lc)
+            && contains_lowercase(cell_display(v), needle_lc)
         {
             return Some((row, col));
         }
     }
     None
+}
+
+/// Case-insensitive `haystack.to_lowercase().contains(needle_lc)` without
+/// allocating: lowercases haystack chars lazily as the needle is walked, so
+/// multi-char Unicode lowercase expansions (e.g. `İ` → `i̇`) still match.
+///
+/// `needle_lc` is expected to already be lowercased (the caller lowercases
+/// the `/` input once), matching the old
+/// `haystack.to_lowercase().contains(needle_lc)` semantics.
+fn contains_lowercase(haystack: &str, needle_lc: &str) -> bool {
+    if needle_lc.is_empty() {
+        return true;
+    }
+    // The lowered string is the concatenation of every char's lowercase
+    // expansion, and a substring may begin at ANY char of it — including
+    // mid-expansion — so every (hay char, expansion offset) is a candidate
+    // start. For each, walk the needle against the lazily generated
+    // expansion stream from that point.
+    for (start_byte, hc) in haystack.char_indices() {
+        for offset in 0..hc.to_lowercase().count() {
+            let mut rest = haystack[start_byte..].chars();
+            rest.next(); // discard `hc` itself; its expansion is seeded below
+            let mut stream = hc
+                .to_lowercase()
+                .skip(offset)
+                .chain(rest.flat_map(char::to_lowercase));
+            let mut matched = true;
+            for nc in needle_lc.chars() {
+                match stream.next() {
+                    Some(sc) if sc == nc => {}
+                    _ => {
+                        matched = false;
+                        break;
+                    }
+                }
+            }
+            if matched {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Replace the password in `url` with `***` for display (status bar,
@@ -2809,7 +2851,7 @@ impl AppState {
     /// left untouched; databases missing from the new list are removed.
     /// Returns true if anything changed.
     pub fn merge_db_list(&mut self, new_names: &[String]) -> bool {
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
         let new_set: HashSet<&str> = new_names.iter().map(String::as_str).collect();
 
         let before = self.schema_nodes.len();
@@ -2839,12 +2881,13 @@ impl AppState {
         }
 
         // Preserve new-list order.
-        self.schema_nodes.sort_by_key(|n| {
-            new_names
-                .iter()
-                .position(|x| x == n.name())
-                .unwrap_or(usize::MAX)
-        });
+        let pos_map: HashMap<&str, usize> = new_names
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (x.as_str(), i))
+            .collect();
+        self.schema_nodes
+            .sort_by_key(|n| pos_map.get(n.name()).copied().unwrap_or(usize::MAX));
 
         if changed {
             self.mark_schema_cache_dirty();
@@ -6270,5 +6313,78 @@ trailing prose ignored";
             ..d1
         };
         assert_ne!(s.lsp_diagnostics, vec![d2]);
+    }
+
+    #[test]
+    fn merge_db_list_orders_by_new_list() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(vec![
+            SchemaNode::Database {
+                name: "a".into(),
+                expanded: false,
+                tables: vec![],
+                tables_loaded_at: None,
+            },
+            SchemaNode::Database {
+                name: "b".into(),
+                expanded: false,
+                tables: vec![],
+                tables_loaded_at: None,
+            },
+            SchemaNode::Database {
+                name: "c".into(),
+                expanded: false,
+                tables: vec![],
+                tables_loaded_at: None,
+            },
+            SchemaNode::Database {
+                name: "d".into(),
+                expanded: false,
+                tables: vec![],
+                tables_loaded_at: None,
+            },
+        ]);
+
+        // Reversed + reordered new list; `d` is missing from it and must be
+        // dropped by the retain, so the sort only ever sees list members.
+        let new_names: Vec<String> = ["b", "a", "c"].iter().map(|n| (*n).into()).collect();
+        assert!(s.merge_db_list(&new_names));
+
+        let got: Vec<&str> = s.schema_nodes.iter().map(|n| n.name()).collect();
+        assert_eq!(got, vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn contains_lowercase_matches_naive() {
+        let cases: &[(&str, &str)] = &[
+            ("", ""),             // empty needle
+            ("", "x"),            // empty hay, non-empty needle
+            ("SELECT", "select"), // ASCII mixed case
+            ("select", "SELECT"), // non-lowercase needle matches nothing
+            ("abc", "abcd"),      // needle longer than hay
+            ("a😀b", "😀"),       // astral hay char
+            ("😀a", "a"),
+            ("İ", "i\u{307}"),   // İ → "i" + U+0307, full expansion
+            ("İ", "\u{307}"),    // match starting mid-expansion
+            ("İx", "i\u{307}x"), // expansion spanning into next hay char
+            ("İİ", "i\u{307}i\u{307}"),
+            ("STRAẞE", "straße"), // ẞ → "ss": lowered is "strasse"
+            ("straße", "STRAẞE"),
+            ("SELECTION", "select"), // partial-word match
+            ("abc", "bc"),
+            ("abc", "abc"), // needle equal to hay
+            ("ab", "abc"),  // hay shorter than needle
+            ("xİ", "İ"),
+            ("aaa", "a"),
+            ("aaa", "aa"),
+        ];
+        for (hay, needle) in cases {
+            assert_eq!(
+                contains_lowercase(hay, needle),
+                hay.to_lowercase().contains(needle),
+                "hay={hay:?} needle={needle:?}",
+            );
+        }
     }
 }
