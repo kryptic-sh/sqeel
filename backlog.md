@@ -134,9 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-tui/src/lib.rs` — Anvil `ToolSpec` literal tripled (679-687,
-  2358-2368, 2397-2407); Install/Update arms share the unknown-tool and
-  already-in-progress toasts.
 - `crates/sqeel-tui/src/lib.rs` — tab-content apply block (set_content +
   take_dirty + reset last_highlight_top) ×5 at 1759-1764, 2153-2158, 2994-2999,
   3404-3409, 3424-3428.
@@ -479,12 +476,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/lib.rs` — Anvil `ToolSpec` literal tripled (698-706,
-  2375-2386, 2414-2425) and the Install/Update arms (2359-2433) share the
-  unknown-tool toast, already-in-progress toast and install-kickoff. Extract
-  `sqls_tool_spec()` + one
-  `kick_off_install(install_pool, &mut active_install, &mut toasts, "installing"|"updating")`
-  arm.
 - `crates/sqeel-tui/src/lib.rs` — tab-content apply block (`set_content` +
   `take_dirty` + `editor_dirty = false` + `last_highlight_top = usize::MAX`) ×5
   at 1776-1781, 2170-2175, 3010-3015, 3420-3425, 3440-3445. Extract
