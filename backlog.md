@@ -529,14 +529,6 @@ lines (`buffer_lines` at syntax.rs:359-364 has the same shape at lib.rs:1140 per
 publish, lib.rs:3997 per `K`, lib.rs:4072 per `gd`, render.rs:202 per
 visual-mode run).
 
-#### 7. K-hover does two linear schema scans with a per-name lowercase alloc
-
-lib.rs:3997-4022 (`K` in Normal): `buffer_lines` + `word_at_cursor`, then
-`hover_table_from_cache` (state.rs:1327-1409) and, on miss, `find_table`
-(state.rs:1296-1320) — each loops every db × table with a `to_lowercase()` alloc
-per name. Fix: lowercase-name → table map built in `rebuild_schema_cache` (off
-the render loop).
-
 #### 8. Every LSP event forces a full frame redraw
 
 lib.rs:1397 sets `needs_redraw` for every drained event BEFORE the match —
