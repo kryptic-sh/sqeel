@@ -484,12 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-- `crates/sqeel-core/src/persistence.rs:63-85` and
-  `crates/sqeel-config/src/lib.rs:433-454` — `write_private` (0600 create +
-  chmod-down) is a byte-identical copy in two crates (sqeel-config's is private;
-  sqeel-core's is `pub(crate)`). Expose sqeel-config's as `pub` and call it from
-  sqeel-core, or move to one crate — the copies can drift (the audit's
-  0644-export finding shows the write path is exactly where that matters).
 - `apps/sqeel/src/bin/sqeel.rs:999-1002` vs `1013-1016` — the
   `evict_old_results` spawn
   (`let cleanup_slug = conn_slug.clone(); tokio::spawn(...)`) is duplicated in
