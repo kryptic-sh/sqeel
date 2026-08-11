@@ -536,29 +536,7 @@ impl Highlighter {
         );
 
         let inner_errors = inner.parse_errors_range(bytes, byte_range);
-        self.last_errors = inner_errors
-            .into_iter()
-            .filter_map(|e| {
-                let start_byte = e.byte_range.start;
-                let end_byte = e.byte_range.end;
-                if let Some(slice) = source.get(start_byte..end_byte)
-                    && dialect.is_native_statement(slice.trim_start())
-                {
-                    return None;
-                }
-                let (start_row, start_col) = byte_to_rowcol_with_offsets(&nl_offsets, start_byte);
-                let (end_row, end_col) = byte_to_rowcol_with_offsets(&nl_offsets, end_byte);
-                Some(ParseError {
-                    start_byte,
-                    end_byte,
-                    start_row,
-                    start_col,
-                    end_row,
-                    end_col,
-                    message: e.message,
-                })
-            })
-            .collect();
+        self.last_errors = harvest_parse_errors(source, dialect, &nl_offsets, inner_errors);
 
         if let Some(tree) = self.inner.as_ref().and_then(|i| i.tree()) {
             let mut block_ranges = Vec::new();
@@ -586,29 +564,7 @@ impl Highlighter {
         let bytes = source.as_bytes();
         let nl_offsets = compute_newline_offsets(source);
         let inner_errors = inner.parse_errors_range(bytes, 0..bytes.len());
-        inner_errors
-            .into_iter()
-            .filter_map(|e| {
-                let start_byte = e.byte_range.start;
-                let end_byte = e.byte_range.end;
-                if let Some(slice) = source.get(start_byte..end_byte)
-                    && dialect.is_native_statement(slice.trim_start())
-                {
-                    return None;
-                }
-                let (start_row, start_col) = byte_to_rowcol_with_offsets(&nl_offsets, start_byte);
-                let (end_row, end_col) = byte_to_rowcol_with_offsets(&nl_offsets, end_byte);
-                Some(ParseError {
-                    start_byte,
-                    end_byte,
-                    start_row,
-                    start_col,
-                    end_row,
-                    end_col,
-                    message: e.message,
-                })
-            })
-            .collect()
+        harvest_parse_errors(source, dialect, &nl_offsets, inner_errors)
     }
 
     /// Parse-error nodes collected on the most recent highlight call.
@@ -694,30 +650,7 @@ impl Highlighter {
 
         // Harvest parse errors.
         let inner_errors: Vec<InnerError> = inner.parse_errors(bytes);
-        self.last_errors = inner_errors
-            .into_iter()
-            .filter_map(|e| {
-                let start_byte = e.byte_range.start;
-                let end_byte = e.byte_range.end;
-                // Filter out dialect-native statement starts (same logic as before).
-                if let Some(slice) = source.get(start_byte..end_byte)
-                    && dialect.is_native_statement(slice.trim_start())
-                {
-                    return None;
-                }
-                let (start_row, start_col) = byte_to_rowcol_with_offsets(&nl_offsets, start_byte);
-                let (end_row, end_col) = byte_to_rowcol_with_offsets(&nl_offsets, end_byte);
-                Some(ParseError {
-                    start_byte,
-                    end_byte,
-                    start_row,
-                    start_col,
-                    end_row,
-                    end_col,
-                    message: e.message,
-                })
-            })
-            .collect();
+        self.last_errors = harvest_parse_errors(source, dialect, &nl_offsets, inner_errors);
 
         // Collect block ranges from a fresh parse of the same source.
         // Re-borrow inner (can't hold from above because self.last_errors was borrowed).
@@ -781,6 +714,40 @@ fn byte_to_rowcol_with_offsets(newline_offsets: &[usize], byte: usize) -> (usize
         None => byte,
     };
     (row, col)
+}
+
+/// Filter dialect-native statement starts out of parse errors and enrich the
+/// rest with row/col via pre-built newline offsets.
+fn harvest_parse_errors(
+    source: &str,
+    dialect: Dialect,
+    nl_offsets: &[usize],
+    errors: Vec<InnerError>,
+) -> Vec<ParseError> {
+    errors
+        .into_iter()
+        .filter_map(|e| {
+            let start_byte = e.byte_range.start;
+            let end_byte = e.byte_range.end;
+            // Filter out dialect-native statement starts (same logic as before).
+            if let Some(slice) = source.get(start_byte..end_byte)
+                && dialect.is_native_statement(slice.trim_start())
+            {
+                return None;
+            }
+            let (start_row, start_col) = byte_to_rowcol_with_offsets(nl_offsets, start_byte);
+            let (end_row, end_col) = byte_to_rowcol_with_offsets(nl_offsets, end_byte);
+            Some(ParseError {
+                start_byte,
+                end_byte,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                message: e.message,
+            })
+        })
+        .collect()
 }
 
 /// Range-scoped variant of [`promote_uncovered_dialect_keywords`]: only
