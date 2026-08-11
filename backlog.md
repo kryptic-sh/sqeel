@@ -142,9 +142,6 @@ below remain open.
 - `crates/sqeel-tui/src/lib.rs` — tab-content apply block (set_content +
   take_dirty + reset last_highlight_top) ×5 at 1759-1764, 2153-2158, 2994-2999,
   3404-3409, 3424-3428.
-- `crates/sqeel-tui/src/render.rs` — column-scroll char-offset prefix sum ×3
-  (752-757, 1653-1658, 2346-2351); extract
-  `col_scroll_char_offset(col_widths, skip)`.
 - `crates/sqeel-tui/src/ex.rs:289-305` — inline `~/` expansion duplicates
   `syntax.rs` `expand_tilde`, but NOT a drop-in: ex.rs errors on
   `home_dir() == None` and leaves bare `~` literal, `expand_tilde` passes
@@ -484,10 +481,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/render.rs` — column-scroll char-offset prefix sum
-  (`.take(skip).map(|w| w + 1).sum()`) ×3 at 734-739 (mouse hit-test, usize),
-  1615-1620 (results scroll, u16), 2322-2327 (hover scroll, u16). Extract
-  `col_scroll_char_offset(col_widths, skip)` and cast at the call sites.
 - `crates/sqeel-tui/src/lib.rs` — schema-refresh-with-toast block (conn_name
   clone → `refresh_schema()` → Info/Error toast) byte-identical at 2126-2157
   (`<leader>R`) and 2624-2644 (`:refreshschema`). Extract
