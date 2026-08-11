@@ -108,7 +108,6 @@ pub(crate) fn apply_window_spans<H: Host>(
         }
         buffer_lines.get(row - seed_start).map(String::as_str)
     };
-    let line_len_at = |row: usize| -> usize { line_at(row).map(str::len).unwrap_or(0) };
     for s in &result.spans {
         // Marker spans are handled in the dedicated overlay pass below.
         if s.capture.starts_with("comment.marker.") {
@@ -170,7 +169,7 @@ pub(crate) fn apply_window_spans<H: Host>(
     // on top of the keyword / marker overlays; we preserve the existing
     // span's fg and just layer on an error-coloured underline.
     for d in diagnostics {
-        apply_diagnostic_underline(&mut by_row, d, &line_len_at, buffer_rows);
+        apply_diagnostic_underline(&mut by_row, d, &line_at, buffer_rows);
     }
     // Sort each touched row so `line_spans` sees them in start-byte order.
     for row_spans in by_row.iter_mut().take(window_end).skip(window_start) {
@@ -184,10 +183,15 @@ pub(crate) fn apply_window_spans<H: Host>(
 /// and their fg preserved — we only add the `UNDERLINED` modifier and
 /// paint the underline colour with the diagnostic severity colour, so
 /// keyword / marker colouring inside the range still renders.
-pub(crate) fn apply_diagnostic_underline(
+///
+/// The diagnostic's columns are LSP positions (UTF-16 code units, the
+/// wire encoding sqeel's request side assumes) and are converted to byte
+/// offsets against the line before merging, so multi-byte text before the
+/// range no longer shifts the underline left.
+pub(crate) fn apply_diagnostic_underline<'a>(
     by_row: &mut [Vec<(usize, usize, EngineStyle)>],
     d: &sqeel_core::lsp::Diagnostic,
-    line_len: &impl Fn(usize) -> usize,
+    line: &impl Fn(usize) -> Option<&'a str>,
     buffer_rows: usize,
 ) {
     let u = ui();
@@ -203,10 +207,15 @@ pub(crate) fn apply_diagnostic_underline(
     }
     let stop = end_row.min(buffer_rows.saturating_sub(1));
     for (row, row_spans) in by_row.iter_mut().enumerate().take(stop + 1).skip(start_row) {
-        let line_len = line_len(row);
-        let start_col = if row == start_row { d.col as usize } else { 0 };
+        let line_str = line(row);
+        let line_len = line_str.map(str::len).unwrap_or(0);
+        let start_col = if row == start_row {
+            utf16_col_to_byte(line_str, d.col as usize)
+        } else {
+            0
+        };
         let mut end_col = if row == end_row {
-            d.end_col as usize
+            utf16_col_to_byte(line_str, d.end_col as usize)
         } else {
             line_len
         };
@@ -429,6 +438,26 @@ pub(crate) fn char_col_to_utf16(line: &str, col: usize) -> usize {
     line.chars().take(col).map(|c| c.len_utf16()).sum()
 }
 
+/// Byte offset in `line` of the character at UTF-16 code-unit column
+/// `utf16_col` — the inverse of [`char_col_to_utf16`], used to convert LSP
+/// server positions (UTF-16) into the byte indices the syntax spans use. A
+/// col past the end of the line clamps to `line.len()`. `None` (line not
+/// materialized in the highlight window) keeps the raw value, the old
+/// byte-typed behaviour — such rows produce no visible spans anyway.
+pub(crate) fn utf16_col_to_byte(line: Option<&str>, utf16_col: usize) -> usize {
+    let Some(line) = line else {
+        return utf16_col;
+    };
+    let mut units = 0;
+    for (i, c) in line.char_indices() {
+        if units >= utf16_col {
+            return i;
+        }
+        units += c.len_utf16();
+    }
+    line.len()
+}
+
 /// Convert a `(row, col)` character position into a byte offset in the
 /// joined source (`\n` between lines). Used to feed cursor position into
 /// `completion_ctx::parse_context`, which operates on a single string.
@@ -506,6 +535,22 @@ mod tests {
         // Past EOL clamps to the full unit count.
         assert_eq!(char_col_to_utf16("a😀b", 99), 4);
         assert_eq!(char_col_to_utf16("", 0), 0);
+    }
+
+    #[test]
+    fn utf16_col_to_byte_is_inverse_of_char_col_to_utf16() {
+        // ASCII: UTF-16 units == bytes.
+        assert_eq!(utf16_col_to_byte(Some("abc"), 3), 3);
+        // BMP multi-byte (α = 1 unit, 2 bytes): unit 1 → byte 1, unit 2 → byte 3.
+        assert_eq!(utf16_col_to_byte(Some("aαb"), 2), 3);
+        // Astral (😀 = 2 units, 4 bytes): unit 3 ('b') → byte 5.
+        assert_eq!(utf16_col_to_byte(Some("a😀b"), 3), 5);
+        // Past EOL clamps to the byte length.
+        assert_eq!(utf16_col_to_byte(Some("a😀b"), 99), 6);
+        assert_eq!(utf16_col_to_byte(Some(""), 0), 0);
+        // None (line not materialized) keeps the raw column — the old
+        // byte-typed behaviour for rows outside the highlight window.
+        assert_eq!(utf16_col_to_byte(None, 42), 42);
     }
 
     #[test]

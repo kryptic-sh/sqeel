@@ -4728,7 +4728,7 @@ mod tests {
         super::apply_diagnostic_underline(
             by_row,
             &diag,
-            &|row| lines.get(row).map(String::len).unwrap_or(0),
+            &|row| lines.get(row).map(String::as_str),
             1,
         );
 
@@ -4779,7 +4779,7 @@ mod tests {
         super::apply_diagnostic_underline(
             by_row,
             &diag,
-            &|row| lines.get(row).map(String::len).unwrap_or(0),
+            &|row| lines.get(row).map(String::as_str),
             1,
         );
 
@@ -4814,10 +4814,43 @@ mod tests {
         super::apply_diagnostic_underline(
             by_row,
             &diag,
-            &|row| lines.get(row).map(String::len).unwrap_or(0),
+            &|row| lines.get(row).map(String::as_str),
             1,
         );
         assert!(!row.is_empty(), "zero-width diag produced no spans");
+    }
+
+    #[test]
+    fn diagnostic_underline_converts_utf16_columns_to_bytes() {
+        use hjkl_engine::types::Style as EngineStyle;
+        use sqeel_core::lsp::Diagnostic;
+        let _ = super::theme::load();
+
+        // "SELECT 日本語 bad FROM t": each CJK char is 1 UTF-16 unit but 3
+        // bytes, so the server's UTF-16 columns for "bad" (11..14) differ
+        // from the byte columns (17..20). The old code underlined bytes
+        // 11..14 — inside the second 日本語 character.
+        let mut row: Vec<(usize, usize, EngineStyle)> = Vec::new();
+        let by_row = std::slice::from_mut(&mut row);
+        let diag = Diagnostic {
+            line: 0,
+            col: 11,
+            end_line: 0,
+            end_col: 14,
+            message: "nope".into(),
+            severity: lsp_types::DiagnosticSeverity::ERROR,
+        };
+        let lines = ["SELECT 日本語 bad FROM t".to_string()];
+        super::apply_diagnostic_underline(
+            by_row,
+            &diag,
+            &|row| lines.get(row).map(String::as_str),
+            1,
+        );
+        assert!(
+            row.iter().any(|&(s, e, _)| s == 17 && e == 20),
+            "underline must land on 'bad' (bytes 17..20), got: {row:?}"
+        );
     }
 
     #[test]
