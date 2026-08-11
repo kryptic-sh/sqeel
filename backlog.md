@@ -514,21 +514,6 @@ loads; each redraw runs `draw` while holding the global `state` mutex
 
 ### Findings
 
-#### 6. Ctrl+Enter / Ctrl+Shift+Enter pay a full content clone + 1-2 cold full-buffer parses
-
-`run_statement_under_cursor` (exec.rs:83-141): `editor.content()` full join
-(:88), `buffer_lines` whole-buffer materialization for `row_col_to_byte`
-(:92-96), `statement_at_byte` cold parse (:97 → highlight.rs:994-1029), then
-`first_syntax_error` second cold parse (:123 → highlight.rs:1108-1115).
-`run_all_statements` (exec.rs:149-190): content clone (:154), `split_statements`
-cold parse (:155), `first_syntax_error` over the whole buffer (:167). The
-`Highlighter` already maintains an incremental tree of this exact buffer
-(lib.rs:965-1037). Fix: route statement-finding and syntax-error detection
-through the retained tree; rope-walk the cursor row instead of materializing all
-lines (`buffer_lines` at syntax.rs:359-364 has the same shape at lib.rs:1140 per
-publish, lib.rs:3997 per `K`, lib.rs:4072 per `gd`, render.rs:202 per
-visual-mode run).
-
 #### 9. Frame-global lock serializes all per-frame work
 
 lib.rs:1567-1568 holds `state` across the whole `terminal.draw`, so every cost
