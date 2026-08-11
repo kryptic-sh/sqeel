@@ -484,11 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-- `apps/sqeel/src/bin/sqeel.rs:999-1002` vs `1013-1016` — the
-  `evict_old_results` spawn
-  (`let cleanup_slug = conn_slug.clone(); tokio::spawn(...)`) is duplicated in
-  the Single and Batch executor arms. Hoist above the `match req`.
-
 ### Dead branch
 
 - `apps/sqeel/src/bin/sqeel.rs:934-938` —
