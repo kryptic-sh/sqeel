@@ -171,6 +171,53 @@ fn w_path_exports_buffer_to_file() {
         written.contains("CREATE TABLE IF NOT EXISTS users"),
         "exported content wrong: {written}"
     );
+    // Buffer dumps are state files too — owner-only, like every other sqeel
+    // write (audit: `:w <path>` landed 0644).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, ":w <path> must write owner-only");
+    }
+    let _ = std::fs::remove_file(&out);
+}
+
+/// `:export csv <path>` must write owner-only (0600) — exported rows are
+/// sensitive data landing beside the 0600 `.json` result files.
+#[test]
+fn export_csv_writes_owner_only_file() {
+    let mut s = TerminalSession::spawn_sandbox();
+    assert!(
+        s.wait_for_text("CREATE TABLE", 5_000),
+        "editor never rendered\n{}",
+        s.screen_dump()
+    );
+    // Run the seeded buffer so the results pane holds a QueryResult.
+    s.keys("<Space><Tab>");
+    assert!(
+        s.wait_for_text("alice@example.com", 10_000),
+        "seed run never produced results\n{}",
+        s.screen_dump()
+    );
+    let out = std::env::temp_dir().join(format!("sqeel-e2e-export-{}.csv", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    s.keys(&format!(":export csv {}<Enter>", out.display()));
+    assert!(
+        s.wait_for_text("Exported", 5_000),
+        "export toast never appeared\n{}",
+        s.screen_dump()
+    );
+    let written = std::fs::read_to_string(&out).expect("exported csv missing");
+    assert!(
+        written.contains("alice@example.com"),
+        "exported csv wrong: {written}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, ":export csv must write owner-only");
+    }
     let _ = std::fs::remove_file(&out);
 }
 

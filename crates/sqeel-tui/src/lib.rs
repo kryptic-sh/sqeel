@@ -2679,13 +2679,17 @@ async fn run_loop(
                                 let path = expand_tilde(&path);
                                 let content = editor.content();
                                 let write = tokio::task::spawn_blocking(move || {
-                                    std::fs::write(&path, content).map(|()| path)
+                                    // Owner-only, like every other sqeel state
+                                    // file (audit: `:w <path>` was 0644).
+                                    sqeel_core::persistence::write_private(
+                                        &path,
+                                        content.as_bytes(),
+                                    )
+                                    .map(|()| path)
                                 })
                                 .await
                                 .unwrap_or_else(|e| {
-                                    Err(std::io::Error::other(format!(
-                                        "spawn_blocking join error: {e}"
-                                    )))
+                                    Err(anyhow::anyhow!("spawn_blocking join error: {e}"))
                                 });
                                 match write {
                                     Ok(path) => toast(

@@ -336,8 +336,9 @@ pub(crate) fn handle_export_cmd(cmd: &str, state: &AppState) -> Option<(String, 
         _ => unreachable!(),
     };
 
-    // Write to disk.
-    if let Err(e) = std::fs::write(&path, &content) {
+    // Write to disk — owner-only, matching the 0600 result files this
+    // export sits beside in the results dir (audit: exported data was 0644).
+    if let Err(e) = sqeel_core::persistence::write_private(&path, content.as_bytes()) {
         return Some((format!("write failed: {e}"), ToastKind::Error));
     }
 

@@ -60,7 +60,7 @@ pub fn results_dir_for(conn_slug: &str) -> Option<PathBuf> {
 /// On Unix the mode is applied at creation, so there is no window where a
 /// fresh file is world-readable; a pre-existing (legacy 0644) file is
 /// chmodded down after writing. Non-Unix keeps the default (Windows ACLs).
-pub(crate) fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
+pub fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
