@@ -484,10 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
   `syntax.rs:402` `expand_tilde` (still open from 2026-08-06). NOT a drop-in:
   ex.rs errors on `home_dir() == None` / leaves bare `~` literal, `expand_tilde`
   passes through. Unify only if the error path is kept.
-- `crates/sqeel-config/src/lib.rs` —
-  `config_dir().ok_or_else(|| anyhow!("cannot determine config dir"))?.join("conns")`
-  ×4 (307-309, 414-416, 466-469, 512-515). Extract
-  `conns_dir() -> anyhow::Result<PathBuf>`.
 - `crates/sqeel-config/src/pgpass.rs:136-150` — the
   `match default_pgpass_path() { Some(p) => p, None => return vec![] }` arm is
   duplicated for the PGPASSFILE-empty and env-absent branches. Fold into one
