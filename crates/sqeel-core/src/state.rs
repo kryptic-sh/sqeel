@@ -513,6 +513,16 @@ pub struct HistoryEntry {
 /// `None` until first use; only the empty-prefix path reads or writes it.
 type CompletionPool = Option<(u64, CompletionCtx, Arc<Vec<String>>, Arc<Vec<String>>)>;
 
+/// Schema-order snapshot of one table for the K-hover fast path, indexed by
+/// lowercase name. Rebuilt with the schema cache so hover resolution is O(1)
+/// instead of scanning every db × table with a per-name lowercase alloc.
+struct TableHoverIndex {
+    db: String,
+    columns_loaded: bool,
+    /// (name, type_name, is_pk, nullable) in schema column order.
+    columns: Vec<(String, String, bool, bool)>,
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub editor_content: Arc<String>,
@@ -660,6 +670,10 @@ pub struct AppState {
     /// Lowercased parallel to `schema_identifier_cache` — the completion thread
     /// filters against this instead of lowercasing every name per keystroke.
     schema_identifier_cache_lowered: Arc<Vec<String>>,
+    /// K-hover fast path: lowercase table name → schema-order table snapshot.
+    /// Rebuilt with the schema cache so hover resolution is O(1) instead of
+    /// scanning every db × table with a per-name lowercase alloc.
+    schema_table_index: std::collections::HashMap<String, TableHoverIndex>,
     /// Memoized per-context completion pool — see [`CompletionPool`].
     completion_pool: CompletionPool,
     /// Set by schema mutators that want to defer the O(N log N) cache rebuild.
@@ -835,6 +849,52 @@ impl AppState {
                 .map(|i| i.to_lowercase())
                 .collect(),
         );
+        // K-hover fast path: lowercase table name → table snapshot, first-wins
+        // in schema order (matching the linear scans this replaces).
+        let mut table_index: std::collections::HashMap<String, TableHoverIndex> =
+            std::collections::HashMap::new();
+        for node in &self.schema_nodes {
+            let SchemaNode::Database {
+                name: db, tables, ..
+            } = node
+            else {
+                continue;
+            };
+            for t in tables {
+                let SchemaNode::Table {
+                    name: tname,
+                    columns,
+                    columns_loaded_at,
+                    ..
+                } = t
+                else {
+                    continue;
+                };
+                table_index
+                    .entry(tname.to_lowercase())
+                    .or_insert(TableHoverIndex {
+                        db: db.clone(),
+                        columns_loaded: columns_loaded_at.is_some(),
+                        columns: columns
+                            .iter()
+                            .filter_map(|c| {
+                                if let SchemaNode::Column {
+                                    name,
+                                    type_name,
+                                    nullable,
+                                    is_pk,
+                                } = c
+                                {
+                                    Some((name.clone(), type_name.clone(), *is_pk, *nullable))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect(),
+                    });
+            }
+        }
+        self.schema_table_index = table_index;
         self.schema_gen += 1;
         // Schema changed — any memoized non-Any pool is stale.
         self.completion_pool = None;
@@ -1408,29 +1468,8 @@ impl AppState {
     /// to render from cache, queue a column load, or fall back to LSP.
     /// Case-insensitive.
     pub fn find_table(&self, name: &str) -> Option<(String, bool)> {
-        let lower = name.to_lowercase();
-        for node in &self.schema_nodes {
-            let SchemaNode::Database {
-                name: db, tables, ..
-            } = node
-            else {
-                continue;
-            };
-            for t in tables {
-                let SchemaNode::Table {
-                    name: tname,
-                    columns_loaded_at,
-                    ..
-                } = t
-                else {
-                    continue;
-                };
-                if tname.to_lowercase() == lower {
-                    return Some((db.clone(), columns_loaded_at.is_some()));
-                }
-            }
-        }
-        None
+        let entry = self.schema_table_index.get(&name.to_lowercase())?;
+        Some((entry.db.clone(), entry.columns_loaded))
     }
 
     /// Synthesise a hover table from the schema cache when the word
@@ -1439,76 +1478,48 @@ impl AppState {
     /// table's columns haven't been loaded yet — callers fall back
     /// to a real LSP hover in those cases. Case-insensitive.
     pub fn hover_table_from_cache(&self, name: &str) -> Option<QueryResult> {
-        let lower = name.to_lowercase();
-        for node in &self.schema_nodes {
-            let SchemaNode::Database { tables, .. } = node else {
-                continue;
-            };
-            for t in tables {
-                let SchemaNode::Table {
-                    name: tname,
-                    columns,
-                    columns_loaded_at,
-                    ..
-                } = t
-                else {
-                    continue;
-                };
-                if tname.to_lowercase() != lower {
-                    continue;
-                }
-                // Columns must have been fetched already — otherwise
-                // we'd render an empty grid. Fall through to LSP in
-                // that case.
-                columns_loaded_at.as_ref()?;
-                if columns.is_empty() {
-                    return None;
-                }
-                let header = vec![
-                    "Column".into(),
-                    "Type".into(),
-                    "PK".into(),
-                    "Nullable".into(),
-                ];
-                let rows: Vec<Vec<String>> = columns
-                    .iter()
-                    .filter_map(|c| {
-                        if let SchemaNode::Column {
-                            name,
-                            type_name,
-                            nullable,
-                            is_pk,
-                        } = c
-                        {
-                            Some(vec![
-                                name.clone(),
-                                type_name.clone(),
-                                if *is_pk { "✓" } else { "" }.into(),
-                                if *nullable { "✓" } else { "" }.into(),
-                            ])
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if rows.is_empty() {
-                    return None;
-                }
-                let col_widths = grid_col_widths(&header, &rows);
-                // Markdown-sourced tables have no SQL NULLs.
-                let rows = rows
-                    .into_iter()
-                    .map(|r| r.into_iter().map(Some).collect())
-                    .collect();
-                return Some(QueryResult {
-                    columns: header,
-                    rows,
-                    col_widths,
-                    limited: false,
-                });
-            }
+        let entry = self.schema_table_index.get(&name.to_lowercase())?;
+        // Columns must have been fetched already — otherwise we'd render
+        // an empty grid. Fall through to LSP in that case.
+        if !entry.columns_loaded {
+            return None;
         }
-        None
+        if entry.columns.is_empty() {
+            return None;
+        }
+        let header = vec![
+            "Column".into(),
+            "Type".into(),
+            "PK".into(),
+            "Nullable".into(),
+        ];
+        let rows: Vec<Vec<String>> = entry
+            .columns
+            .iter()
+            .map(|(name, type_name, is_pk, nullable)| {
+                vec![
+                    name.clone(),
+                    type_name.clone(),
+                    if *is_pk { "✓" } else { "" }.into(),
+                    if *nullable { "✓" } else { "" }.into(),
+                ]
+            })
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        let col_widths = grid_col_widths(&header, &rows);
+        // Markdown-sourced tables have no SQL NULLs.
+        let rows = rows
+            .into_iter()
+            .map(|r| r.into_iter().map(Some).collect())
+            .collect();
+        Some(QueryResult {
+            columns: header,
+            rows,
+            col_widths,
+            limited: false,
+        })
     }
 
     /// K-on-table fast path that needs a column fetch: queue a lazy
@@ -5001,6 +5012,58 @@ trailing prose ignored";
                 tables: vec![],
             },
         ]
+    }
+
+    #[test]
+    fn hover_table_index_resolves_after_rebuild() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+
+        // First match in schema order, case-insensitive, columns loaded.
+        let expected = Some(("deepci_maindb".to_string(), true));
+        assert_eq!(s.find_table("users"), expected);
+        assert_eq!(s.find_table("USERS"), expected);
+
+        // `users` has columns_loaded_at set — hover renders a grid from the
+        // index with the ✓/"" PK and nullable markers.
+        let hover = s.hover_table_from_cache("users").unwrap();
+        assert_eq!(hover.columns, vec!["Column", "Type", "PK", "Nullable"]);
+        let cells: Vec<Vec<String>> = hover
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.clone().unwrap()).collect())
+            .collect();
+        assert_eq!(
+            cells,
+            vec![
+                vec!["id".into(), "INT".into(), "✓".into(), String::new()],
+                vec!["email".into(), "TEXT".into(), String::new(), String::new()],
+            ]
+        );
+
+        // `orders` matches but its columns aren't loaded — the whole call
+        // returns None (the original early return), not a later scan.
+        assert_eq!(s.hover_table_from_cache("orders"), None);
+
+        // First-wins: a later table whose lowercase name collides (here in
+        // the `analytics` db, with no columns loaded) must not shadow the
+        // first match — the hover would be None if it did.
+        s.set_db_tables("analytics", &["Users".into()]);
+        s.rebuild_schema_cache_if_dirty();
+        assert_eq!(s.find_table("users"), expected);
+        assert_eq!(s.hover_table_from_cache("Users").unwrap().rows.len(), 2);
+
+        // Rebuild refresh: a table added after the initial rebuild resolves.
+        s.set_db_tables(
+            "deepci_maindb",
+            &["users".into(), "orders".into(), "brand_new".into()],
+        );
+        s.rebuild_schema_cache_if_dirty();
+        assert_eq!(
+            s.find_table("brand_new"),
+            Some(("deepci_maindb".to_string(), false))
+        );
     }
 
     #[test]
