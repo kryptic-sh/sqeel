@@ -110,11 +110,8 @@ pub(crate) fn run_statement_under_cursor(
     let stmt = if let Some(sel) = visual_selection_text(editor) {
         sel
     } else {
-        let cursor_byte = row_col_to_byte(
-            &buffer_lines(editor.buffer()),
-            editor.cursor().0,
-            editor.cursor().1,
-        );
+        let cursor_byte =
+            row_col_to_byte_in_content(&content, editor.cursor().0, editor.cursor().1);
         statement_at_byte(&content, cursor_byte)
             .map(|(s, e)| content[s..e].trim().to_string())
             .filter(|s| !s.is_empty())
@@ -172,6 +169,7 @@ pub(crate) fn run_all_statements(
     state: &Arc<Mutex<AppState>>,
     guard: bool,
     toasts: &mut Vec<Toast>,
+    hl: Option<(&sqeel_core::highlight::Highlighter, &str, bool)>,
 ) -> Option<PendingRun> {
     let content = editor.content();
     let stmts: Vec<String> = sqeel_core::highlight::split_statements(&content);
@@ -185,6 +183,10 @@ pub(crate) fn run_all_statements(
         let any_native = stmts.iter().any(|s| dialect.is_native_statement(s));
         let syntax_err = if any_native {
             None
+        } else if let Some((highlighter, hl_source, true)) = hl
+            && let Some(tree) = highlighter.tree()
+        {
+            sqeel_core::highlight::first_syntax_error_in_tree(hl_source, tree)
         } else {
             first_syntax_error(&content)
         };

@@ -2249,11 +2249,25 @@ async fn run_loop(
                                 // <leader><Tab> — run all statements in file
                                 // (tmux/SSH-friendly alt for Ctrl+Shift+Enter)
                                 KeyCode::Tab => {
+                                    // The retained tree mirrors the current
+                                    // buffer only when the last incremental
+                                    // parse covered the current dirty gen
+                                    // (same read the highlight pass uses).
+                                    let dg = <hjkl_buffer::View as hjkl_engine::Query>::dirty_gen(
+                                        editor.buffer(),
+                                    );
+                                    let hl_current = hl_parsed_dirty_gen == Some(dg);
+                                    let hl: Option<(&Highlighter, &str, bool)> = if hl_current {
+                                        Some((&highlighter, &hl_cache_source, true))
+                                    } else {
+                                        None
+                                    };
                                     destructive_confirm = run_all_statements(
                                         &mut editor,
                                         &state,
                                         confirm_destructive,
                                         &mut toasts,
+                                        hl,
                                     );
                                     continue;
                                 }
@@ -3845,11 +3859,23 @@ async fn run_loop(
                     (m, KeyCode::Enter)
                         if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) =>
                     {
+                        // The retained tree mirrors the current buffer only
+                        // when the last incremental parse covered the current
+                        // dirty gen (same read the highlight pass uses).
+                        let dg =
+                            <hjkl_buffer::View as hjkl_engine::Query>::dirty_gen(editor.buffer());
+                        let hl_current = hl_parsed_dirty_gen == Some(dg);
+                        let hl: Option<(&Highlighter, &str, bool)> = if hl_current {
+                            Some((&highlighter, &hl_cache_source, true))
+                        } else {
+                            None
+                        };
                         destructive_confirm = run_all_statements(
                             &mut editor,
                             &state,
                             confirm_destructive,
                             &mut toasts,
+                            hl,
                         );
                     }
                     // History navigation: Ctrl+P (prev) / Ctrl+N (next)

@@ -1077,6 +1077,14 @@ pub fn first_syntax_error(source: &str) -> Option<SyntaxError> {
         .set_language(&tree_sitter_sequel::LANGUAGE.into())
         .ok()?;
     let tree = parser.parse(source, None)?;
+    first_syntax_error_in_tree(source, &tree)
+}
+
+/// Walk an already-parsed `tree` (parsed from `source`) and return the
+/// first syntax error (line/col 1-based). Shared by the cold
+/// [`first_syntax_error`] and the TUI's retained-tree path so both report
+/// identical errors for the same source.
+pub fn first_syntax_error_in_tree(source: &str, tree: &tree_sitter::Tree) -> Option<SyntaxError> {
     let root = tree.root_node();
     if !root.has_error() {
         return None;
@@ -1217,6 +1225,47 @@ mod tests {
                 "expected no syntax error for {:?}, got: {:?}",
                 stmt,
                 err
+            );
+        }
+    }
+
+    #[test]
+    fn first_syntax_error_in_tree_matches_cold_path() {
+        // The retained-tree walk must agree with the cold full parse for
+        // valid, missing-token, error-node, multi-statement and comment
+        // sources — this pins the TUI's tree path to `first_syntax_error`.
+        let sources = [
+            "SELECT 1;",
+            "SELECT ;",
+            "SELEC * FROM;",
+            "SELECT * FROM",
+            "SELECT 1;\nSELECT 2;",
+            "SELECT 1;\nSELECT ;\nSELECT 2;",
+            "-- leading comment\nSELECT 1;",
+            "/* block comment */\nSELECT 1;\n-- trailing",
+        ];
+        for src in sources {
+            let mut h = Highlighter::new().unwrap();
+            h.parse_initial(src);
+            let from_tree =
+                first_syntax_error_in_tree(src, h.tree().expect("tree after parse_initial"));
+            let from_scratch = first_syntax_error(src);
+            assert_eq!(
+                from_tree, from_scratch,
+                "retained-tree walk drifted from cold parse for {src:?}"
+            );
+        }
+        // The error sources above must actually flag an error, or the
+        // equality assertions prove nothing.
+        for src in [
+            "SELECT ;",
+            "SELEC * FROM;",
+            "SELECT * FROM",
+            "SELECT 1;\nSELECT ;\nSELECT 2;",
+        ] {
+            assert!(
+                first_syntax_error(src).is_some(),
+                "expected the grammar to flag {src:?}"
             );
         }
     }

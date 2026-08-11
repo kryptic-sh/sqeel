@@ -472,6 +472,22 @@ pub(crate) fn row_col_to_byte(lines: &[String], row: usize, col: usize) -> usize
     offset
 }
 
+/// Byte offset of `(row, col)` in the joined `content` (lines separated by
+/// `\n`), scanning forward from the start without materializing the lines.
+/// Equivalent to `row_col_to_byte(&buffer_lines(..), row, col)` when
+/// `content` is the same joined string.
+pub(crate) fn row_col_to_byte_in_content(content: &str, row: usize, col: usize) -> usize {
+    let mut offset = 0usize;
+    for line in content.split('\n').take(row) {
+        offset += line.len() + 1; // `\n`
+    }
+    let line = content
+        .get(offset..)
+        .and_then(|s| s.split('\n').next())
+        .unwrap_or("");
+    offset + char_col_to_byte(line, col)
+}
+
 /// Returns the word (alphanumeric + `_`) ending at `col` on `line`.
 pub(crate) fn word_prefix_at(lines: &[String], row: usize, col: usize) -> String {
     let Some(line) = lines.get(row) else {
