@@ -529,15 +529,6 @@ lines (`buffer_lines` at syntax.rs:359-364 has the same shape at lib.rs:1140 per
 publish, lib.rs:3997 per `K`, lib.rs:4072 per `gd`, render.rs:202 per
 visual-mode run).
 
-#### 8. Every LSP event forces a full frame redraw
-
-lib.rs:1397 sets `needs_redraw` for every drained event BEFORE the match —
-including diagnostics-only publishes (sqls re-publishes diagnostics after each
-didChange, i.e. per keystroke while typing) and stale-id hover/definition events
-that are then dropped. Each redraw re-runs every per-frame cost (findings 2, 4,
-5, 10). Fix: redraw only when the event changes visible state (e.g. diagnostics
-differ from what's painted).
-
 #### 9. Frame-global lock serializes all per-frame work
 
 lib.rs:1567-1568 holds `state` across the whole `terminal.draw`, so every cost
