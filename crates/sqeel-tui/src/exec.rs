@@ -47,8 +47,27 @@ impl PendingRun {
 /// Actually dispatch a (possibly guard-confirmed) run to the executor.
 /// Shared by the direct path (guard off / statement safe) and the confirm
 /// modal's `y` arm.
-pub(crate) fn dispatch_pending_run(state: &Arc<Mutex<AppState>>, pending: PendingRun) {
+///
+/// Gated on [`AppState::query_in_flight`]: the executor spawns each
+/// `Single` request in its own task and both would write result-tab index
+/// 0 — whichever finishes last wins, so a fast second run could be
+/// overwritten by the first one's late outcome. The gate runs BEFORE
+/// `dismiss_results` so an in-flight run's tab survives; the user cancels
+/// with Ctrl-C.
+pub(crate) fn dispatch_pending_run(
+    state: &Arc<Mutex<AppState>>,
+    pending: PendingRun,
+    toasts: &mut Vec<Toast>,
+) {
     let mut s = state.lock().unwrap();
+    if s.query_in_flight() {
+        toast(
+            toasts,
+            ToastKind::Info,
+            "Query already running — Ctrl-C to cancel",
+        );
+        return;
+    }
     s.dismiss_results();
     match pending {
         PendingRun::Single(stmt) => {
@@ -85,6 +104,7 @@ pub(crate) fn run_statement_under_cursor(
     editor: &mut Editor<hjkl_buffer::View, SqeelHost>,
     state: &Arc<Mutex<AppState>>,
     guard: bool,
+    toasts: &mut Vec<Toast>,
 ) -> Option<PendingRun> {
     let content = editor.content();
     let stmt = if let Some(sel) = visual_selection_text(editor) {
@@ -137,7 +157,7 @@ pub(crate) fn run_statement_under_cursor(
     {
         return Some(pending);
     }
-    dispatch_pending_run(state, pending);
+    dispatch_pending_run(state, pending, toasts);
     None
 }
 
@@ -151,6 +171,7 @@ pub(crate) fn run_all_statements(
     editor: &mut Editor<hjkl_buffer::View, SqeelHost>,
     state: &Arc<Mutex<AppState>>,
     guard: bool,
+    toasts: &mut Vec<Toast>,
 ) -> Option<PendingRun> {
     let content = editor.content();
     let stmts: Vec<String> = sqeel_core::highlight::split_statements(&content);
@@ -186,7 +207,7 @@ pub(crate) fn run_all_statements(
     if guard && any_destructive {
         return Some(pending);
     }
-    dispatch_pending_run(state, pending);
+    dispatch_pending_run(state, pending, toasts);
     None
 }
 

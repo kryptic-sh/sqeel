@@ -2222,6 +2222,7 @@ async fn run_loop(
                                         &mut editor,
                                         &state,
                                         confirm_destructive,
+                                        &mut toasts,
                                     );
                                     continue;
                                 }
@@ -2232,6 +2233,7 @@ async fn run_loop(
                                         &mut editor,
                                         &state,
                                         confirm_destructive,
+                                        &mut toasts,
                                     );
                                     continue;
                                 }
@@ -2295,7 +2297,7 @@ async fn run_loop(
                         (KeyModifiers::NONE, KeyCode::Char('y'))
                         | (KeyModifiers::SHIFT, KeyCode::Char('Y')) => {
                             if let Some(pending) = destructive_confirm.take() {
-                                dispatch_pending_run(&state, pending);
+                                dispatch_pending_run(&state, pending, &mut toasts);
                             }
                         }
                         _ => {
@@ -3931,15 +3933,23 @@ async fn run_loop(
                     // selected text instead of the statement under
                     // cursor. Lets the user mark exactly what to run.
                     (KeyModifiers::CONTROL, KeyCode::Enter) => {
-                        destructive_confirm =
-                            run_statement_under_cursor(&mut editor, &state, confirm_destructive);
+                        destructive_confirm = run_statement_under_cursor(
+                            &mut editor,
+                            &state,
+                            confirm_destructive,
+                            &mut toasts,
+                        );
                     }
                     // Run all statements in the file: Ctrl+Shift+Enter
                     (m, KeyCode::Enter)
                         if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) =>
                     {
-                        destructive_confirm =
-                            run_all_statements(&mut editor, &state, confirm_destructive);
+                        destructive_confirm = run_all_statements(
+                            &mut editor,
+                            &state,
+                            confirm_destructive,
+                            &mut toasts,
+                        );
                     }
                     // History navigation: Ctrl+P (prev) / Ctrl+N (next)
                     (KeyModifiers::CONTROL, KeyCode::Char('p')) if focus == Focus::Editor => {

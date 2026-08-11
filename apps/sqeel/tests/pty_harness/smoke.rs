@@ -253,6 +253,42 @@ fn ctrl_c_cancels_running_query() {
     );
 }
 
+/// A second run while a query is in flight must be gated: the executor
+/// spawns each Single in its own task, so two overlapping runs would both
+/// write result-tab index 0 and whichever finished last would overwrite
+/// the newer run's tab. The gate toasts and leaves the in-flight tab up.
+#[test]
+fn run_while_query_in_flight_is_blocked() {
+    let mut s = TerminalSession::spawn_sandbox();
+    assert!(
+        s.wait_for_text("CREATE TABLE", 5_000),
+        "editor never rendered\n{}",
+        s.screen_dump()
+    );
+    // Start an unbounded recursive CTE (effectively infinite).
+    s.keys("ggVGc");
+    s.keys("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c;<Esc>");
+    s.keys("<Space><CR>");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    // A second run must be refused with a toast — not a new dispatch that
+    // would dismiss the first run's tab.
+    s.keys("ggVGc");
+    s.keys("SELECT 1;<Esc>");
+    s.keys("<Space><CR>");
+    assert!(
+        s.wait_for_text("Query already running", 5_000),
+        "in-flight gate never fired\n{}",
+        s.screen_dump()
+    );
+    // Cancel so the test terminates.
+    s.keys("<C-c>");
+    assert!(
+        s.wait_for_text("Query cancelled", 5_000),
+        "cancel never surfaced\n{}",
+        s.screen_dump()
+    );
+}
+
 /// A run-all batch (`<leader><Tab>`) containing a destructive statement
 /// must hit the guard as a whole: `n` cancels the ENTIRE batch (safe
 /// statements included), `y` runs it in order.
