@@ -134,11 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-core/src/state.rs` — header+rows column-width computation
-  duplicated at 1262-1273 (`parse_hover_table`) and 1378-1389
-  (`hover_table_from_cache`). Extract `grid_col_widths(header, rows)`. Do NOT
-  fold into `QueryResult::compute_col_widths` — that one uses byte `.len()`,
-  this uses `chars().count()`; they differ for non-ASCII cells.
 - `crates/sqeel-core/src/state.rs` — find-scan loop duplicated at `results_find`
   1823-1838 and `hover_find` 1864-1881. Extract one `find_in_grid` helper.
 - `crates/sqeel-core/src/state.rs` — mouse-hit column walk duplicated at
@@ -499,11 +494,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-core/src/state.rs` — header+rows column-width computation
-  duplicated at 1267-1278 (`parse_hover_table`) and 1383-1394
-  (`hover_table_from_cache`). Extract `grid_col_widths(header, rows)` using
-  `chars().count()` (NOT `QueryResult::compute_col_widths`, which uses byte
-  `.len()` — they differ for non-ASCII cells).
 - `crates/sqeel-core/src/state.rs` — find-scan loop duplicated at `results_find`
   1828-1843 and `hover_find` 1868-1885 (same `(start + i·step) % total` walk +
   `cell_display().to_lowercase().contains`). Extract
