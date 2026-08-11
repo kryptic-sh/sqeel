@@ -247,6 +247,39 @@ pub fn cell_display(cell: &Option<String>) -> &str {
     cell.as_deref().unwrap_or("NULL")
 }
 
+/// Walk the grid (row-major, `cols` columns) from `cur`, testing each
+/// cell's display text (via [`cell_display`]) for a case-insensitive
+/// `needle_lc` match, and return the first match. `forward` picks the
+/// step direction (`+1` vs `-1` modulo the cell count, wrapping around
+/// the grid end); `skip_current` starts one cell past `cur` so repeated
+/// find doesn't re-hit the current match. Shared by the results-pane and
+/// hover find scans so `/` behaves identically in both.
+fn find_in_grid(
+    rows: &[Vec<Option<String>>],
+    cols: usize,
+    cur: (usize, usize),
+    needle_lc: &str,
+    forward: bool,
+    skip_current: bool,
+) -> Option<(usize, usize)> {
+    let total = rows.len() * cols;
+    let start = cur.0 * cols + cur.1;
+    let step = if forward { 1 } else { total - 1 };
+    let skip = if skip_current { 1 } else { 0 };
+    for i in skip..total {
+        let probe = (start + i * step) % total;
+        let row = probe / cols;
+        let col = probe % cols;
+        let cell = rows.get(row).and_then(|r| r.get(col));
+        if let Some(v) = cell
+            && cell_display(v).to_lowercase().contains(needle_lc)
+        {
+            return Some((row, col));
+        }
+    }
+    None
+}
+
 /// Replace the password in `url` with `***` for display (status bar,
 /// connection switcher). `Url::password()` returns the percent-encoded
 /// slice, which matches the raw text for plain passwords and is what
@@ -1817,27 +1850,21 @@ impl AppState {
             return false;
         }
         let total_cols = r.columns.len();
-        let total_rows = r.rows.len();
         let (cur_row, cur_col) = match tab.cursor {
             ResultsCursor::Cell { row, col } => (row, col),
             ResultsCursor::Header(c) => (0, c),
             _ => (0, 0),
         };
-        let total = total_rows * total_cols;
-        let start = cur_row * total_cols + cur_col;
-        let step = if forward { 1 } else { total - 1 };
-        let skip = if skip_current { 1 } else { 0 };
-        for i in skip..total {
-            let probe = (start + i * step) % total;
-            let row = probe / total_cols;
-            let col = probe % total_cols;
-            let cell = r.rows.get(row).and_then(|r| r.get(col));
-            if let Some(v) = cell
-                && cell_display(v).to_lowercase().contains(&needle_lc)
-            {
-                tab.cursor = ResultsCursor::Cell { row, col };
-                return true;
-            }
+        if let Some((row, col)) = find_in_grid(
+            &r.rows,
+            total_cols,
+            (cur_row, cur_col),
+            &needle_lc,
+            forward,
+            skip_current,
+        ) {
+            tab.cursor = ResultsCursor::Cell { row, col };
+            return true;
         }
         false
     }
@@ -1859,29 +1886,18 @@ impl AppState {
                 return false;
             }
             let total_cols = t.columns.len();
-            let total_rows = t.rows.len();
             let (cur_row, cur_col) = match self.hover_cursor {
                 ResultsCursor::Cell { row, col } => (row, col),
                 _ => (0, 0),
             };
-            let total = total_rows * total_cols;
-            let start = cur_row * total_cols + cur_col;
-            let step = if forward { 1 } else { total - 1 };
-            let skip = if skip_current { 1 } else { 0 };
-            let mut found: Option<(usize, usize)> = None;
-            for i in skip..total {
-                let probe = (start + i * step) % total;
-                let row = probe / total_cols;
-                let col = probe % total_cols;
-                let cell = t.rows.get(row).and_then(|r| r.get(col));
-                if let Some(v) = cell
-                    && cell_display(v).to_lowercase().contains(&needle_lc)
-                {
-                    found = Some((row, col));
-                    break;
-                }
-            }
-            found
+            find_in_grid(
+                &t.rows,
+                total_cols,
+                (cur_row, cur_col),
+                &needle_lc,
+                forward,
+                skip_current,
+            )
         };
         match hit {
             Some((row, col)) => {
