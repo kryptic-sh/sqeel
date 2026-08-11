@@ -514,17 +514,6 @@ loads; each redraw runs `draw` while holding the global `state` mutex
 
 ### Findings
 
-#### 2. Per-frame cold tree-sitter parse of the query line / SHOW CREATE DDL
-
-`draw_results` calls `highlight_query_line` on every frame with a Results tab
-(render.rs:1674) and `highlight_sql_lines` on the DDL body for SHOW CREATE
-(render.rs:1554-1555); both go through `highlight_shared`, which does
-`inner.reset()` + a cold full parse + full-tree block walk on EVERY call
-(highlight.rs:641-739, reset at :664). The query/DDL strings are stable across
-frames — only the cursor/diagnostic overlay changes. Frequency: per redraw
-(keystroke, mouse, resize, and every LSP event — multiplied by finding 8). Fix:
-cache `(source identity, dialect) → spans` in the TLS highlighter.
-
 #### 3. Completion pool rebuilt + re-filtered on every content publish (NEW)
 
 lib.rs:1164-1171 calls `completions_for_context(&ctx, "")` per publish (~75 ms
