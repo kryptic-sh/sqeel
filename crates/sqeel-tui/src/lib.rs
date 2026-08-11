@@ -1831,19 +1831,17 @@ async fn run_loop(
                                 let content = {
                                     let mut s = state.lock().unwrap();
                                     s.focus = Focus::Editor;
-                                    if editor_dirty {
-                                        s.editor_content = editor.content_arc();
-                                        s.mark_active_dirty();
-                                        editor_dirty = false;
-                                    }
+                                    sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
                                     s.switch_to_tab(idx);
                                     s.tab_content_pending.take()
                                 };
                                 if let Some(c) = content {
-                                    editor.set_content(&c);
-                                    let _ = editor.take_dirty();
-                                    editor_dirty = false;
-                                    last_highlight_top = usize::MAX;
+                                    apply_tab_content(
+                                        &mut editor,
+                                        &mut editor_dirty,
+                                        &mut last_highlight_top,
+                                        &c,
+                                    );
                                 }
                             } else {
                                 state.lock().unwrap().focus = Focus::Editor;
@@ -2215,10 +2213,12 @@ async fn run_loop(
                                         s.tab_content_pending.take()
                                     };
                                     if let Some(c) = content {
-                                        editor.set_content(&c);
-                                        let _ = editor.take_dirty();
-                                        editor_dirty = false;
-                                        last_highlight_top = usize::MAX;
+                                        apply_tab_content(
+                                            &mut editor,
+                                            &mut editor_dirty,
+                                            &mut last_highlight_top,
+                                            &c,
+                                        );
                                     }
                                     continue;
                                 }
@@ -2795,11 +2795,7 @@ async fn run_loop(
                                     );
                                 } else {
                                     let mut s = state.lock().unwrap();
-                                    if editor_dirty {
-                                        s.editor_content = editor.content_arc();
-                                        s.mark_active_dirty();
-                                        editor_dirty = false;
-                                    }
+                                    sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
                                     if let Some(idx) = s.tabs.iter().position(|t| t.name == name) {
                                         s.switch_to_tab(idx);
                                     } else if let Ok(content) =
@@ -2947,11 +2943,7 @@ async fn run_loop(
                                         .unwrap_or_default();
                                     if !name.is_empty() {
                                         let mut s = state.lock().unwrap();
-                                        if editor_dirty {
-                                            s.editor_content = editor.content_arc();
-                                            s.mark_active_dirty();
-                                            editor_dirty = false;
-                                        }
+                                        sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
                                         if let Some(idx) =
                                             s.tabs.iter().position(|t| t.name == name)
                                         {
@@ -2986,10 +2978,12 @@ async fn run_loop(
                                     s.tab_content_pending.take()
                                 };
                                 if let Some(c) = content {
-                                    editor.set_content(&c);
-                                    let _ = editor.take_dirty();
-                                    editor_dirty = false;
-                                    last_highlight_top = usize::MAX;
+                                    apply_tab_content(
+                                        &mut editor,
+                                        &mut editor_dirty,
+                                        &mut last_highlight_top,
+                                        &c,
+                                    );
                                 }
                             }
                             file_picker = None;
@@ -3387,19 +3381,17 @@ async fn run_loop(
                     {
                         let content = {
                             let mut s = state.lock().unwrap();
-                            if editor_dirty {
-                                s.editor_content = editor.content_arc();
-                                s.mark_active_dirty();
-                                editor_dirty = false;
-                            }
+                            sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
                             s.next_tab();
                             s.tab_content_pending.take()
                         };
                         if let Some(c) = content {
-                            editor.set_content(&c);
-                            let _ = editor.take_dirty();
-                            editor_dirty = false;
-                            last_highlight_top = usize::MAX;
+                            apply_tab_content(
+                                &mut editor,
+                                &mut editor_dirty,
+                                &mut last_highlight_top,
+                                &c,
+                            );
                         }
                     }
                     (KeyModifiers::SHIFT, KeyCode::Char('H'))
@@ -3407,19 +3399,17 @@ async fn run_loop(
                     {
                         let content = {
                             let mut s = state.lock().unwrap();
-                            if editor_dirty {
-                                s.editor_content = editor.content_arc();
-                                s.mark_active_dirty();
-                                editor_dirty = false;
-                            }
+                            sync_editor_content(&mut s, &mut editor, &mut editor_dirty);
                             s.prev_tab();
                             s.tab_content_pending.take()
                         };
                         if let Some(c) = content {
-                            editor.set_content(&c);
-                            let _ = editor.take_dirty();
-                            editor_dirty = false;
-                            last_highlight_top = usize::MAX;
+                            apply_tab_content(
+                                &mut editor,
+                                &mut editor_dirty,
+                                &mut last_highlight_top,
+                                &c,
+                            );
                         }
                     }
                     // Command mode
@@ -4176,6 +4166,36 @@ fn close_tab_lsp_doc(lsp: &Option<LspClient>, identity: Option<(Option<String>, 
     if let (Some(client), Some((conn, name))) = (lsp, identity) {
         client.close_document(&tab_lsp_uri(conn.as_deref(), &name));
     }
+}
+
+/// Sync the live editor buffer into `editor_content` when it is dirty, and
+/// clear the flag. Callers do this just before switching tabs or opening a
+/// file so the tab being left records its unsaved edits.
+fn sync_editor_content(
+    s: &mut AppState,
+    editor: &mut hjkl_engine::Editor<hjkl_buffer::View, SqeelHost>,
+    editor_dirty: &mut bool,
+) {
+    if *editor_dirty {
+        s.editor_content = editor.content_arc();
+        s.mark_active_dirty();
+        *editor_dirty = false;
+    }
+}
+
+/// Apply freshly loaded tab content to the editor without marking the tab
+/// dirty: `set_content` flips the editor's dirty flag internally, so it is
+/// consumed here before the main loop's `take_dirty()` reads it.
+fn apply_tab_content(
+    editor: &mut hjkl_engine::Editor<hjkl_buffer::View, SqeelHost>,
+    editor_dirty: &mut bool,
+    last_highlight_top: &mut usize,
+    c: &str,
+) {
+    editor.set_content(c);
+    let _ = editor.take_dirty();
+    *editor_dirty = false;
+    *last_highlight_top = usize::MAX;
 }
 
 /// Commit each [`PendingSave`] on a blocking task so multi-MB writes
