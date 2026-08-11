@@ -134,9 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-tui/src/render.rs` — `highlight_sql_lines` (2113-2129) and
-  `highlight_query_line` (2183-2202) duplicate the TLS highlighter bootstrap;
-  extract one `highlight_spans(source, dialect)`.
 - `crates/sqeel-tui/src/lib.rs` — schema-refresh-with-toast block duplicated at
   2119-2138 and 2608-2628; extract `refresh_schema_with_toast`.
 - `crates/sqeel-tui/src/lib.rs` — Anvil `ToolSpec` literal tripled (679-687,
@@ -487,11 +484,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-tui/src/render.rs` — `highlight_sql_lines` (2081-2098) and
-  `highlight_query_line` (2150-2171) duplicate the TLS `Highlighter` bootstrap
-  (thread_local + borrow_mut + `new_async` + `try_upgrade` + `highlight`).
-  Extract `highlight_spans(source, dialect) -> Vec<HighlightSpan>`; the per-line
-  splitting / flattening that follows stays in each caller.
 - `crates/sqeel-tui/src/render.rs` — column-scroll char-offset prefix sum
   (`.take(skip).map(|w| w + 1).sum()`) ×3 at 734-739 (mouse hit-test, usize),
   1615-1620 (results scroll, u16), 2322-2327 (hover scroll, u16). Extract
