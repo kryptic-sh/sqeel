@@ -509,6 +509,10 @@ pub struct HistoryEntry {
     pub connection: Option<String>,
 }
 
+/// Memoized per-context completion pool: (schema_gen, ctx, names, lowered).
+/// `None` until first use; only the empty-prefix path reads or writes it.
+type CompletionPool = Option<(u64, CompletionCtx, Arc<Vec<String>>, Arc<Vec<String>>)>;
+
 #[derive(Default)]
 pub struct AppState {
     pub editor_content: Arc<String>,
@@ -649,6 +653,15 @@ pub struct AppState {
     /// Sorted, deduplicated identifier names for completion. Rebuilt on schema changes
     /// so hot-path completion submissions only clone an `Arc`.
     schema_identifier_cache: Arc<Vec<String>>,
+    /// Bumped by every schema-node mutation (`mark_schema_cache_dirty`) and by
+    /// `rebuild_schema_cache`, so completion pools memoized on it never go stale
+    /// when the schema tree changes.
+    schema_gen: u64,
+    /// Lowercased parallel to `schema_identifier_cache` — the completion thread
+    /// filters against this instead of lowercasing every name per keystroke.
+    schema_identifier_cache_lowered: Arc<Vec<String>>,
+    /// Memoized per-context completion pool — see [`CompletionPool`].
+    completion_pool: CompletionPool,
     /// Set by schema mutators that want to defer the O(N log N) cache rebuild.
     /// Consumers call `rebuild_schema_cache_if_dirty` once per tick.
     pub schema_cache_dirty: bool,
@@ -816,6 +829,15 @@ impl AppState {
         ids.sort();
         ids.dedup();
         self.schema_identifier_cache = Arc::new(ids);
+        self.schema_identifier_cache_lowered = Arc::new(
+            self.schema_identifier_cache
+                .iter()
+                .map(|i| i.to_lowercase())
+                .collect(),
+        );
+        self.schema_gen += 1;
+        // Schema changed — any memoized non-Any pool is stale.
+        self.completion_pool = None;
         self.schema_cache_dirty = false;
     }
 
@@ -824,6 +846,7 @@ impl AppState {
     /// many mutations into a single rebuild.
     fn mark_schema_cache_dirty(&mut self) {
         self.schema_cache_dirty = true;
+        self.schema_gen += 1;
     }
 
     pub fn rebuild_schema_cache_if_dirty(&mut self) {
@@ -858,6 +881,12 @@ impl AppState {
         self.schema_items_cache = items;
         self.all_schema_items_cache = all;
         self.schema_identifier_cache = Arc::new(ids);
+        self.schema_identifier_cache_lowered = Arc::new(
+            self.schema_identifier_cache
+                .iter()
+                .map(|i| i.to_lowercase())
+                .collect(),
+        );
         self.schema_rebuild_in_flight = false;
     }
 
@@ -2128,14 +2157,26 @@ impl AppState {
         self.status_message = None;
     }
 
-    /// Context-aware completion candidates. Returns names matching `prefix`
-    /// (case-insensitive), scoped to what `ctx` says makes sense at the cursor.
+    /// Context-aware completion candidates. Returns `(names, lowered)` — the
+    /// matching names plus a lowercased parallel copy the completion thread
+    /// filters against (no per-name lowercase on the hot path). Names match
+    /// `prefix` (case-insensitive), scoped to what `ctx` says makes sense at
+    /// the cursor.
     ///
     /// - `Qualified { parent }` — children of the named db or table.
     /// - `Table` — table names across all databases.
     /// - `Column { tables }` — columns of those tables (all columns if empty).
     /// - `Any` — every identifier in the tree (original behavior).
-    pub fn completions_for_context(&self, ctx: &CompletionCtx, prefix: &str) -> Vec<String> {
+    ///
+    /// The empty-prefix pool is memoized per `(schema_gen, ctx)`, so the
+    /// 75 ms debounce path submits `Arc` clones instead of rebuilding the
+    /// pool every keystroke; any schema mutation bumps `schema_gen` and the
+    /// next call rebuilds.
+    pub fn completions_for_context(
+        &mut self,
+        ctx: &CompletionCtx,
+        prefix: &str,
+    ) -> (Arc<Vec<String>>, Arc<Vec<String>>) {
         let p = prefix.to_lowercase();
         let no_prefix = prefix.is_empty();
         let mut seen: HashSet<String> = HashSet::new();
@@ -2147,83 +2188,114 @@ impl AppState {
                 out.push(name.to_owned());
             }
         };
-        match ctx {
-            CompletionCtx::Qualified { parent } => {
-                for node in &self.schema_nodes {
-                    if let SchemaNode::Database { name, tables, .. } = node {
-                        if name.eq_ignore_ascii_case(parent) {
+        let mut fill = |self_: &Self, out: &mut Vec<String>| {
+            match ctx {
+                CompletionCtx::Qualified { parent } => {
+                    for node in &self_.schema_nodes {
+                        if let SchemaNode::Database { name, tables, .. } = node {
+                            if name.eq_ignore_ascii_case(parent) {
+                                for t in tables {
+                                    push(t.name(), out, &mut seen);
+                                }
+                            }
+                            // `parent` might also be a bare table name (no db qualifier).
                             for t in tables {
-                                push(t.name(), &mut out, &mut seen);
-                            }
-                        }
-                        // `parent` might also be a bare table name (no db qualifier).
-                        for t in tables {
-                            if let SchemaNode::Table {
-                                name: tn, columns, ..
-                            } = t
-                                && tn.eq_ignore_ascii_case(parent)
-                            {
-                                for c in columns {
-                                    push(c.name(), &mut out, &mut seen);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            CompletionCtx::Table => {
-                for node in &self.schema_nodes {
-                    if let SchemaNode::Database { tables, .. } = node {
-                        for t in tables {
-                            push(t.name(), &mut out, &mut seen);
-                        }
-                    }
-                }
-            }
-            CompletionCtx::Column { tables } => {
-                if tables.is_empty() {
-                    for node in &self.schema_nodes {
-                        if let SchemaNode::Database { tables: ts, .. } = node {
-                            for t in ts {
-                                if let SchemaNode::Table { columns, .. } = t {
-                                    for c in columns {
-                                        push(c.name(), &mut out, &mut seen);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    let wanted: HashSet<String> = tables.iter().map(|t| t.to_lowercase()).collect();
-                    for node in &self.schema_nodes {
-                        if let SchemaNode::Database { tables: ts, .. } = node {
-                            for t in ts {
-                                if let SchemaNode::Table { name, columns, .. } = t
-                                    && wanted.contains(&name.to_lowercase())
+                                if let SchemaNode::Table {
+                                    name: tn, columns, ..
+                                } = t
+                                    && tn.eq_ignore_ascii_case(parent)
                                 {
                                     for c in columns {
-                                        push(c.name(), &mut out, &mut seen);
+                                        push(c.name(), out, &mut seen);
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            CompletionCtx::Any => {
-                // The identifier cache is already sorted and deduped
-                // (`rebuild_schema_cache`), so an unfiltered request can be
-                // served by cloning it wholesale — no per-name allocs, no sort.
-                if no_prefix {
-                    return self.schema_identifier_cache.as_ref().clone();
+                CompletionCtx::Table => {
+                    for node in &self_.schema_nodes {
+                        if let SchemaNode::Database { tables, .. } = node {
+                            for t in tables {
+                                push(t.name(), out, &mut seen);
+                            }
+                        }
+                    }
                 }
-                for name in self.schema_identifier_cache.iter() {
-                    push(name, &mut out, &mut seen);
+                CompletionCtx::Column { tables } => {
+                    if tables.is_empty() {
+                        for node in &self_.schema_nodes {
+                            if let SchemaNode::Database { tables: ts, .. } = node {
+                                for t in ts {
+                                    if let SchemaNode::Table { columns, .. } = t {
+                                        for c in columns {
+                                            push(c.name(), out, &mut seen);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        let wanted: HashSet<String> =
+                            tables.iter().map(|t| t.to_lowercase()).collect();
+                        for node in &self_.schema_nodes {
+                            if let SchemaNode::Database { tables: ts, .. } = node {
+                                for t in ts {
+                                    if let SchemaNode::Table { name, columns, .. } = t
+                                        && wanted.contains(&name.to_lowercase())
+                                    {
+                                        for c in columns {
+                                            push(c.name(), out, &mut seen);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                CompletionCtx::Any => {
+                    // The identifier cache is already sorted and deduped
+                    // (`rebuild_schema_cache`), so an unfiltered request can be
+                    // served by cloning it wholesale — no per-name allocs, no sort.
+                    if no_prefix {
+                        out.extend(self_.schema_identifier_cache.iter().cloned());
+                    } else {
+                        for name in self_.schema_identifier_cache.iter() {
+                            push(name, out, &mut seen);
+                        }
+                    }
+                }
+            }
+            out.sort();
+        };
+        if no_prefix {
+            match ctx {
+                CompletionCtx::Any => {
+                    return (
+                        self.schema_identifier_cache.clone(),
+                        self.schema_identifier_cache_lowered.clone(),
+                    );
+                }
+                other => {
+                    if let Some((cached_gen, cached_ctx, names, lowered)) = &self.completion_pool
+                        && *cached_gen == self.schema_gen
+                        && cached_ctx == other
+                    {
+                        return (names.clone(), lowered.clone());
+                    }
+                    fill(self, &mut out);
+                    let lowered: Vec<String> = out.iter().map(|s| s.to_lowercase()).collect();
+                    let names = Arc::new(out);
+                    let result = (names.clone(), Arc::new(lowered));
+                    self.completion_pool =
+                        Some((self.schema_gen, other.clone(), names, result.1.clone()));
+                    return result;
                 }
             }
         }
-        out.sort();
-        out
+        fill(self, &mut out);
+        let lowered: Vec<String> = out.iter().map(|s| s.to_lowercase()).collect();
+        (Arc::new(out), Arc::new(lowered))
     }
 
     /// Fire any lazy-load requests implied by `ctx` so the completion pool
@@ -4939,8 +5011,11 @@ trailing prose ignored";
         let ctx = CompletionCtx::Qualified {
             parent: "deepci_maindb".into(),
         };
-        let items = s.completions_for_context(&ctx, "");
-        assert_eq!(items, vec!["orders".to_string(), "users".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "");
+        assert_eq!(
+            items.as_slice(),
+            &["orders".to_string(), "users".to_string()]
+        );
     }
 
     #[test]
@@ -4951,8 +5026,8 @@ trailing prose ignored";
         let ctx = CompletionCtx::Qualified {
             parent: "DEEPCI_MAINDB".into(),
         };
-        let items = s.completions_for_context(&ctx, "use");
-        assert_eq!(items, vec!["users".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "use");
+        assert_eq!(items.as_slice(), &["users".to_string()]);
     }
 
     #[test]
@@ -4963,8 +5038,8 @@ trailing prose ignored";
         let ctx = CompletionCtx::Qualified {
             parent: "users".into(),
         };
-        let items = s.completions_for_context(&ctx, "");
-        assert_eq!(items, vec!["email".to_string(), "id".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "");
+        assert_eq!(items.as_slice(), &["email".to_string(), "id".to_string()]);
     }
 
     #[test]
@@ -4973,8 +5048,11 @@ trailing prose ignored";
         let mut s = state.lock().unwrap();
         s.set_schema_nodes(sample_schema());
         let ctx = CompletionCtx::Table;
-        let items = s.completions_for_context(&ctx, "");
-        assert_eq!(items, vec!["orders".to_string(), "users".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "");
+        assert_eq!(
+            items.as_slice(),
+            &["orders".to_string(), "users".to_string()]
+        );
     }
 
     #[test]
@@ -4985,8 +5063,8 @@ trailing prose ignored";
         let ctx = CompletionCtx::Column {
             tables: vec!["users".into()],
         };
-        let items = s.completions_for_context(&ctx, "");
-        assert_eq!(items, vec!["email".to_string(), "id".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "");
+        assert_eq!(items.as_slice(), &["email".to_string(), "id".to_string()]);
     }
 
     #[test]
@@ -4995,8 +5073,8 @@ trailing prose ignored";
         let mut s = state.lock().unwrap();
         s.set_schema_nodes(sample_schema());
         let ctx = CompletionCtx::Column { tables: vec![] };
-        let items = s.completions_for_context(&ctx, "");
-        assert_eq!(items, vec!["email".to_string(), "id".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "");
+        assert_eq!(items.as_slice(), &["email".to_string(), "id".to_string()]);
     }
 
     #[test]
@@ -5005,7 +5083,7 @@ trailing prose ignored";
         let mut s = state.lock().unwrap();
         s.set_schema_nodes(sample_schema());
         let ctx = CompletionCtx::Any;
-        let items = s.completions_for_context(&ctx, "");
+        let (items, _) = s.completions_for_context(&ctx, "");
         // Databases, tables, and columns — all deduped + sorted.
         assert!(items.contains(&"deepci_maindb".to_string()));
         assert!(items.contains(&"analytics".to_string()));
@@ -5019,8 +5097,39 @@ trailing prose ignored";
         let mut s = state.lock().unwrap();
         s.set_schema_nodes(sample_schema());
         let ctx = CompletionCtx::Table;
-        let items = s.completions_for_context(&ctx, "OR");
-        assert_eq!(items, vec!["orders".to_string()]);
+        let (items, _) = s.completions_for_context(&ctx, "OR");
+        assert_eq!(items.as_slice(), &["orders".to_string()]);
+    }
+
+    #[test]
+    fn completion_pool_refreshes_after_schema_mutation() {
+        let state = AppState::new();
+        let mut s = state.lock().unwrap();
+        s.set_schema_nodes(sample_schema());
+        let ctx = CompletionCtx::Table;
+        let (pool1, _) = s.completions_for_context(&ctx, "");
+
+        // Mutate WITHOUT a full rebuild: marks the cache dirty → bumps
+        // `schema_gen`, so a memo keyed on it must come up stale.
+        s.set_db_tables(
+            "deepci_maindb",
+            &["users".into(), "orders".into(), "brand_new".into()],
+        );
+
+        let (pool2, _) = s.completions_for_context(&ctx, "");
+        // A stale memo would miss the fresh table.
+        assert!(pool2.as_slice().contains(&"brand_new".to_string()));
+        assert_ne!(pool2.as_slice(), pool1.as_slice());
+
+        // A different ctx is respected: Any returns the identifier cache
+        // (which `set_db_tables` hasn't rebuilt), not the Table memo.
+        let (any_pool, _) = s.completions_for_context(&CompletionCtx::Any, "");
+        assert!(!any_pool.as_slice().contains(&"brand_new".to_string()));
+        assert_ne!(any_pool.as_slice(), pool2.as_slice());
+
+        // Repeat with no mutation → memo hit: the exact same Arc.
+        let (pool3, _) = s.completions_for_context(&ctx, "");
+        assert!(Arc::ptr_eq(&pool2, &pool3));
     }
 
     #[test]

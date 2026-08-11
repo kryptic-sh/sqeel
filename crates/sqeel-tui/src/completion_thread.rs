@@ -3,10 +3,16 @@ use std::sync::{Arc, Condvar, Mutex};
 
 /// Runs schema completion filtering on a dedicated thread.
 ///
-/// Submit `(prefix, identifiers)` with [`CompletionThread::submit`]; the thread
-/// always processes the latest submitted pair (older pending pairs are discarded).
+/// Submit `(prefix, identifiers, lowered)` with [`CompletionThread::submit`]; the
+/// thread always processes the latest submitted triple (older pending triples are
+/// discarded). `lowered` is the parallel lowercased form of `identifiers`, so the
+/// per-name lowercase that used to happen here per keystroke happens once,
+/// upstream, when the pool is built.
 /// Poll completed results with [`CompletionThread::try_recv`].
-type PendingSlot = Arc<(Mutex<Option<(String, Arc<Vec<String>>)>>, Condvar)>;
+type PendingSlot = Arc<(
+    Mutex<Option<(String, Arc<Vec<String>>, Arc<Vec<String>>)>>,
+    Condvar,
+)>;
 
 pub struct CompletionThread {
     pending: PendingSlot,
@@ -24,7 +30,7 @@ impl CompletionThread {
             .spawn(move || {
                 let (lock, cvar) = &*pending_thread;
                 loop {
-                    let (prefix, identifiers) = {
+                    let (prefix, identifiers, lowered) = {
                         let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
                         loop {
                             match guard.take() {
@@ -36,11 +42,14 @@ impl CompletionThread {
                         }
                     };
                     let prefix_lower = prefix.to_lowercase();
-                    // `identifiers` is already sorted + deduped upstream (AppState cache).
-                    let results: Vec<String> = identifiers
+                    // `identifiers` is already sorted + deduped upstream (AppState
+                    // cache); `lowered` mirrors it, so filter on the pre-lowered
+                    // copy instead of lowercasing every name per keystroke.
+                    let results: Vec<String> = lowered
                         .iter()
-                        .filter(|name| name.to_lowercase().starts_with(&prefix_lower))
-                        .cloned()
+                        .zip(identifiers.iter())
+                        .filter(|(l, _)| l.starts_with(&prefix_lower))
+                        .map(|(_, name)| name.clone())
                         .collect();
                     if result_tx.send(results).is_err() {
                         break;
@@ -51,10 +60,10 @@ impl CompletionThread {
         Ok(Self { pending, result_rx })
     }
 
-    /// Submit a new completion query. Replaces any not-yet-processed pair.
-    pub fn submit(&self, prefix: String, identifiers: Arc<Vec<String>>) {
+    /// Submit a new completion query. Replaces any not-yet-processed triple.
+    pub fn submit(&self, prefix: String, identifiers: Arc<Vec<String>>, lowered: Arc<Vec<String>>) {
         let (lock, cvar) = &*self.pending;
-        *lock.lock().unwrap_or_else(|p| p.into_inner()) = Some((prefix, identifiers));
+        *lock.lock().unwrap_or_else(|p| p.into_inner()) = Some((prefix, identifiers, lowered));
         cvar.notify_one();
     }
 

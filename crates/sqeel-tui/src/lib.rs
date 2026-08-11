@@ -1224,14 +1224,13 @@ async fn run_loop(
             } else {
                 // Context-scoped pool (unfiltered) fed to the prefix-filter
                 // thread; empty prefix returns the full sorted pool.
-                let (pool, _) = {
+                let (pool, lowered) = {
                     let mut s = state.lock().unwrap();
                     s.lazy_load_for_context(&ctx);
-                    let pool = s.completions_for_context(&ctx, "");
-                    (pool, ())
+                    s.completions_for_context(&ctx, "")
                 };
                 last_completion_ctx = Some((ctx, prefix.clone()));
-                completion_thread.submit(prefix, Arc::new(pool));
+                completion_thread.submit(prefix, pool, lowered);
 
                 if let Some(ref mut client) = lsp {
                     let too_big = content.len() > LSP_MAX_BYTES;
@@ -1543,7 +1542,8 @@ async fn run_loop(
                 && pending_loads < last_pending_loads
                 && let Some((ctx, prefix)) = last_completion_ctx.clone()
             {
-                Some((prefix, s.completions_for_context(&ctx, "")))
+                let (pool, lowered) = s.completions_for_context(&ctx, "");
+                Some((prefix, pool, lowered))
             } else {
                 None
             };
@@ -1562,8 +1562,8 @@ async fn run_loop(
             needs_redraw = true;
         }
         last_schema_loading = schema_loading;
-        if let Some((prefix, pool)) = lazy_pool {
-            completion_thread.submit(prefix, Arc::new(pool));
+        if let Some((prefix, pool, lowered)) = lazy_pool {
+            completion_thread.submit(prefix, pool, lowered);
         }
         last_pending_loads = pending_loads;
 
