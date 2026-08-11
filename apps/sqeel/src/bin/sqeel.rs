@@ -1000,12 +1000,12 @@ fn spawn_executor(
             // query doesn't abort before it starts.
             let cancel = state.lock().unwrap().cancel_control.clone();
             cancel.reset();
+            let cleanup_slug = conn_slug.clone();
+            tokio::spawn(async move {
+                evict_old_results(&cleanup_slug);
+            });
             match req {
                 QueryRequest::Single(query, tab_idx) => {
-                    let cleanup_slug = conn_slug.clone();
-                    tokio::spawn(async move {
-                        evict_old_results(&cleanup_slug);
-                    });
                     let row_limit = state.lock().unwrap().default_row_limit;
                     let outcome = tokio::select! {
                         r = conn.execute_with_limit(&query, row_limit) => Some(r),
@@ -1018,10 +1018,6 @@ fn spawn_executor(
                     );
                 }
                 QueryRequest::Batch(queries, start_idx) => {
-                    let cleanup_slug = conn_slug.clone();
-                    tokio::spawn(async move {
-                        evict_old_results(&cleanup_slug);
-                    });
                     let (stop_on_error, batch_start, row_limit) = {
                         let mut s = state.lock().unwrap();
                         (s.stop_on_error, s.start_batch(), s.default_row_limit)
