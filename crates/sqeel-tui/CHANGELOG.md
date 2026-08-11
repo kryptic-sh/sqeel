@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- LSP diagnostic underlines convert the server's UTF-16 columns to byte offsets
+  before painting, so multi-byte text before the range no longer shifts the
+  underline left of the true position.
+- `:export csv|json` and `:w <path>` write owner-only (0600) output like the
+  other sqeel state files, instead of the default 0644.
+- Runs are gated on `query_in_flight()`: a second run while one is in flight
+  toasts "Query already running" instead of two overlapping runs aliasing
+  result-tab index 0.
+
 ## [0.6.0] - 2026-08-06
 
 ### Changed

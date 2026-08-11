@@ -17,6 +17,20 @@ patch bumps.
 
 ### Fixed
 
+- Headless `-e` table and CSV **header rows** now pass through the same
+  control-character sanitizer as cell values — a column name carrying a raw ESC
+  byte (server-controlled alias or hostile view definition) no longer reaches
+  stdout.
+- `:export csv|json <path>` and `:w <path>` write owner-only (0600) output,
+  matching the result JSON files beside them, instead of the default 0644.
+- Query history records the connection the query **ran on**, not the one active
+  when it finished — a query that completes after a connection switch stays in
+  the right connection's Ctrl-P/N recall instead of vanishing.
+- LSP diagnostic underlines no longer shift left on multi-byte lines: the
+  server's UTF-16 columns are converted to byte offsets before painting.
+- A second run is refused while a query is in flight (toast; Ctrl-C cancels)
+  instead of two overlapping runs aliasing result-tab index 0 and the last
+  finisher overwriting the newer run's result.
 - The Alpine `.apk` package builds again — the man page is gzipped before
   install (abuild rejects uncompressed man pages).
 - `cargo publish` ships all four crates (`sqeel-config`, `sqeel-core`,

@@ -3,17 +3,26 @@
 Open work items, findings and deferred decisions. Finished items are deleted
 (see `git log` for the record).
 
-## Work 2026-08-07
+## Work 2026-08-11
 
-Worked from the backlog above; completed items deleted (see `git log`, commits
-def5889..f8c5ef9). One related finding surfaced and left open:
+Worked from the backlog: all five open correctness/security findings from the
+2026-08-10 Review/Audit passes landed (commits 9b7fc16..3cff1eb; each verified
+by the full gate plus a test that goes red on the old code):
 
-- `push_history` stamps `connection: self.active_connection` at completion time
-  (state.rs `push_history`) — the same mid-query-switch defect fixed in
-  `persist_result` this session. A query run on connection A while the user
-  switched to B is recorded under B, so it disappears from A's per-connection
-  history (Ctrl-P/N and the picker). Fix mirrors `persist_result`: thread the
-  executor's connection name through `apply_exec_outcome` into `push_history`.
+- Headless `-e` table/CSV **header rows** now run through `sanitize_cell` — a
+  raw ESC byte in a column name no longer reaches stdout (Review-3 / Audit-1).
+- `:export csv|json` and `:w <path>` write via `write_private` (0600) instead of
+  bare `std::fs::write` (0644) (Audit-2).
+- `push_history` stamps the connection the query RAN on (threaded through
+  `apply_exec_outcome`), not `active_connection` at completion time (Work
+  2026-08-07 / Review re-verified / Audit-5).
+- LSP diagnostic underlines convert the server's UTF-16 columns to byte offsets
+  against the line before painting (Review-2 / Audit-4).
+- Runs are gated on `query_in_flight()` — a second run while one is in flight
+  toasts instead of both aliasing result-tab index 0 (Review-1 / Audit-3).
+
+Still open: the Review/Audit "Hardening" blocks below (deliberate fragility —
+each needs a decision before touching), and the Tidy / Perf passes' findings.
 
 ## Release pipeline 2026-08-06 (v0.6.1)
 
@@ -283,79 +292,9 @@ are enabled (which would inflate every per-frame cost above).
 ## Review 2026-08-10
 
 Correctness review of the whole codebase (4 crates + app + tests; clean tree,
-depth low). 3 findings; the 2026-08-07 `push_history` item re-verified still
-open. No code changed.
-
-### Findings
-
-#### 1. Concurrent runs alias result-tab index 0 — an in-flight run's outcome overwrites the newer run's tab
-
-`dispatch_pending_run` calls `s.dismiss_results()` (exec.rs:52), which clears
-every result tab (state.rs:904-908) — including the previous run's still-
-Loading tab — before `push_loading_tab` re-creates a tab at index 0. The
-executor spawns each `Single` request in its own task and immediately awaits the
-next `rx.recv()` (sqeel.rs:990-1010), so two runs genuinely overlap, and both
-hold the same `tab_idx`. Nothing gates a run on `query_in_flight()`.
-
-```
-Repro: on a slow table, Ctrl+Enter "SELECT slow_join(...)" (run A), then
-       while A is still running Ctrl+Enter "SELECT 1" (run B, fast).
-Expect: the results pane shows B's rows (the last run the user issued).
-Actual: whichever executor finishes LAST wins tab 0. If A finishes after B,
-        A's apply_exec_outcome writes A's rows over B's tab and the user
-        sees A's result — labeled with A's query — while their last action
-        ran B. Batch runs (Ctrl+Shift+Enter twice) alias identically: both
-        batches write indices 0..N-1.
-```
-
-#### 2. LSP diagnostic underline interprets UTF-16 columns as byte offsets
-
-`translate_event` copies the server's `range.start.character` verbatim into
-`Diagnostic::col` (lsp.rs:322-325). LSP positions are UTF-16 code units, and
-sqeel itself assumes a UTF-16 wire on the request side (`char_col_to_utf16`,
-lib.rs:1221-1229). But `apply_diagnostic_underline` uses `d.col` as a byte index
-into the line — `line_len(row)` is `str::len` bytes and the spans slice byte
-ranges (syntax.rs:199-224). On any line with multi-byte characters before the
-diagnostic, the underline lands left of the true position, often inside a
-character. (If the server instead honors the client's negotiated `utf-8`
-encoding, the request-side conversion at lib.rs:1221-1229 is the mismatched side
-— either way one side of the wire conversion is wrong for multi-byte lines.)
-
-```
-Repro: buffer line "SELECT 日本語 bad FROM t", sqls publishes a diagnostic
-       whose character is the token after 日本語.
-Expect: underline under "bad" (bytes 17..20).
-Actual: underline at byte 10..13 — inside the second 日本語 character
-        (each CJK char is 1 UTF-16 unit / 3 bytes, so UTF-16 col 10 ≠
-        byte 10).
-```
-
-#### 3. Headless table/CSV headers bypass the control-char sanitizer (rows don't)
-
-`sanitize_cell`'s contract says it is "applied to table and CSV cell output"
-(sqeel.rs:20-22), and the data rows are: table body at sqeel.rs:732, CSV rows at
-sqeel.rs:756. The header rows are not: table header `fmt_row(&r.columns)` at
-sqeel.rs:721 and the CSV header `r.columns.iter().map(|c| esc(c))` at
-sqeel.rs:744-750 run through only plain formatting / CSV quoting. A column name
-carrying ESC bytes reaches stdout raw.
-
-```
-Repro: sqeel --url sqlite::memory: -e "SELECT 1 AS char(27)||']0;hi'||char(27)||'\'"
-       (quoted alias containing ESC), headless table format.
-Expect: no raw ESC byte on stdout (same guarantee the cell path gives,
-        pinned by tests/headless.rs:244).
-Actual: the header row prints the raw ESC bytes; catting the output runs
-        the control sequence.
-```
-
-### Re-verified (already tracked, still open)
-
-- `push_history` stamps `connection: self.active_connection` at completion time
-  (state.rs:3989), called from `apply_exec_outcome` with `conn_slug` in scope
-  (sqeel.rs:1089, 1104) — a query run on connection A that finishes after a
-  switch to B is recorded under B and vanishes from A's per- connection history.
-  Matches the open item under "Work 2026-08-07"; fix unchanged (thread the
-  executor's connection name through).
+depth low). The 3 findings and the re-verified `push_history` item were all
+fixed on 2026-08-11 (see `## Work 2026-08-11`); the Cleared / Hardening /
+Coverage records below remain as written.
 
 ### Cleared
 
@@ -418,79 +357,9 @@ exercised against a real server.
 
 ## Audit 2026-08-10
 
-Security + correctness audit of the whole codebase (clean tree, depth low). No
-code changed. All 5 findings are LOW; 3 of them are the still-open findings from
-`## Review 2026-08-10` / `## Work 2026-08-07`, re-verified against the current
-code. New this pass: the 0644 export writes.
-
-### Findings
-
-#### 1. Headless `-e` table/CSV headers bypass `sanitize_cell` — raw ESC bytes reach stdout
-
-`apps/sqeel/src/bin/sqeel.rs:721` (table header `fmt_row(&r.columns)`) and
-`:744-750` (CSV header `esc(c)`). The function's own contract (`sqeel.rs:19-22`)
-says it is "applied to table and CSV cell output", and the row paths honour it
-(`sqeel.rs:732`, `:756`, pinned by `tests/headless.rs:243-270`) — the header
-rows run through only plain formatting / CSV quoting. A column name
-(server-controlled alias, e.g. a hostile view definition) carrying C0/C1 bytes
-reaches stdout raw. Same defect as Review 2026-08-10 finding 3 — re-verified
-still open, nothing changed since.
-
-```
-Repro: sqeel --url sqlite::memory: -e "SELECT 1 AS char(27)||']0;hi'||char(27)||'\'"
-Expect: no raw ESC byte on stdout (the guarantee the cell path gives).
-Actual: the header row prints the raw ESC bytes; catting the output runs
-        the control sequence (title spoof, OSC 52 clipboard write, …).
-```
-
-#### 2. `:export csv|json` and `:w <path>` write exported data with default 0644 permissions
-
-`crates/sqeel-tui/src/ex.rs:340` (`std::fs::write(&path, &content)`) and
-`crates/sqeel-tui/src/lib.rs:2682` (same for `:w <path>`). Every other state
-file — connection TOML, session.toml, result JSON, queries — goes through
-`write_private` 0600 (`persistence.rs:63-85`); the plain `:w` save path also
-lands in `save_query` → `write_private` (`state.rs:114-117`). The two
-explicit-export paths use bare `std::fs::write`, so exported query results
-(potentially sensitive) and buffer dumps land 0644 & ~umask — world-readable
-under the common 022 umask, in the same `~/.local/share/sqeel/results/` tree
-where the equivalent JSON is 0600.
-
-```
-Repro: run a query with sensitive rows, then :export csv (no path — lands
-       in ~/.local/share/sqeel/results/<conn>/<ts>.csv).
-Expect: 0600, matching the .json result files beside it.
-Actual: 0644 — any local user can read the exported rows.
-```
-
-#### 3. Concurrent runs alias result-tab index 0 — last issuer isn't last shown
-
-Re-verified still open (Review 2026-08-10 finding 1). `dispatch_pending_run`
-calls `s.dismiss_results()` (`exec.rs:52`), which clears every result tab
-(`state.rs:904-908`), then `push_loading_tab` re-creates a tab at index 0
-(`state.rs:832-847`); the executor spawns each `Single` in its own task and
-awaits the next `recv()` (`sqeel.rs:990-1010`), so two runs genuinely overlap
-and whichever finishes last writes tab 0. `Ctrl+Enter` A (slow) then
-`Ctrl+Enter` B (fast) can end with A's rows labelled under B's last action.
-Correctness, not security — but it misleads on which statement's data is on
-screen.
-
-#### 4. LSP diagnostic underline treats UTF-16 columns as byte offsets
-
-Re-verified still open (Review 2026-08-10 finding 2). `translate_event` copies
-the server's `range.start.character` verbatim (`lsp.rs:322-325`);
-`apply_diagnostic_underline` uses `d.col` as a byte index into the line
-(`syntax.rs:199-224`). LSP positions are UTF-16 code units; on any line with
-multi-byte characters before the diagnostic the underline lands left of the true
-position, often inside a character.
-
-#### 5. `push_history` stamps the active connection, not the one that ran
-
-Re-verified still open (`Work 2026-08-07`). `push_history` records
-`connection: self.active_connection.clone()` at completion time
-(`state.rs:3989`), called from `apply_exec_outcome` which has the executor's
-`conn_slug` in scope (`sqeel.rs:1089`, `:1104`). A query run on A that finishes
-after a switch to B is recorded under B and vanishes from A's per-connection
-history (Ctrl-P/N + picker). Fix unchanged: thread the connection name through.
+Security + correctness audit of the whole codebase (clean tree, depth low). All
+5 findings were fixed on 2026-08-11 (see `## Work 2026-08-11`); the Cleared /
+Hardening / Coverage records below remain as written.
 
 ### Cleared
 
@@ -780,8 +649,8 @@ changed). Second perf pass: every finding from `## Perf 2026-08-06` was
 re-verified against the current tree — all 9 numbered + 3 minor are STILL OPEN,
 line numbers refreshed below. New this pass: findings 1 and 3. Frame-rate
 context unchanged from the 06-06 pass: one redraw runs per event (keystroke,
-mouse, resize), per content change, per LSP event, and up to 20 Hz while a
-hover loads; each redraw runs `draw` while holding the global `state` mutex
+mouse, resize), per content change, per LSP event, and up to 20 Hz while a hover
+loads; each redraw runs `draw` while holding the global `state` mutex
 (lib.rs:1567-1568). Every cost below is traced to a named caller + frequency.
 
 ### Findings
@@ -794,8 +663,8 @@ hover loads; each redraw runs `draw` while holding the global `state` mutex
 `write_private` + a full `read_dir` eviction walk (persistence.rs:182-196,
 218-236), plus `compute_col_widths` O(rows×cols) (state.rs:270-285, called at
 sqeel.rs:1090) — all synchronous, on the tokio worker, while the render loop
-blocks on the same lock for every frame (lib.rs:1568). Frequency: once per
-query completion; size: the full result set (no per-cell cap per the audit; the
+blocks on the same lock for every frame (lib.rs:1568). Frequency: once per query
+completion; size: the full result set (no per-cell cap per the audit; the
 default 100-row auto-LIMIT bounds plain SELECTs, but an explicit `LIMIT n` or a
 raised `default_row_limit` bypasses it, and the whole thing is a string-build +
 disk write). Fix: serialize + write + evict off the lock — the `QueryResult` and
@@ -820,19 +689,18 @@ cache `(source identity, dialect) → spans` in the TLS highlighter.
 #### 3. Completion pool rebuilt + re-filtered on every content publish (NEW)
 
 lib.rs:1164-1171 calls `completions_for_context(&ctx, "")` per publish (~75 ms
-trailing debounce while typing): `Any` context clones the whole identifier
-cache (state.rs:2195), `Table`/`Column` build a fresh Vec of `to_owned` names
-plus a dedup HashSet plus `out.sort()` (state.rs:2115-2204), then `Arc::new`
-wraps the fresh clone and the completion thread re-filters it with a
-`to_lowercase()` alloc + clone per identifier (completion_thread.rs:38-44).
-2-3 full passes over the schema's identifier list per keystroke-burst —
-thousands of String allocs per keystroke on a large schema (hundreds of tables
-× dozens of columns). `lazy_load_for_context` (lib.rs:1166) also walks the db
-list each publish. Fix: memoize the per-context pool as an
-`Arc<Vec<String>>` keyed on the schema-cache generation (the identifier cache
-is replaced wholesale via `apply_schema_cache_rebuild`, state.rs:756-766, so
-its Arc identity is a ready key), submit without cloning, and filter against
-pre-lowered data on the thread.
+trailing debounce while typing): `Any` context clones the whole identifier cache
+(state.rs:2195), `Table`/`Column` build a fresh Vec of `to_owned` names plus a
+dedup HashSet plus `out.sort()` (state.rs:2115-2204), then `Arc::new` wraps the
+fresh clone and the completion thread re-filters it with a `to_lowercase()`
+alloc + clone per identifier (completion_thread.rs:38-44). 2-3 full passes over
+the schema's identifier list per keystroke-burst — thousands of String allocs
+per keystroke on a large schema (hundreds of tables × dozens of columns).
+`lazy_load_for_context` (lib.rs:1166) also walks the db list each publish. Fix:
+memoize the per-context pool as an `Arc<Vec<String>>` keyed on the schema-cache
+generation (the identifier cache is replaced wholesale via
+`apply_schema_cache_rebuild`, state.rs:756-766, so its Arc identity is a ready
+key), submit without cloning, and filter against pre-lowered data on the thread.
 
 #### 4. Highlight pass walks the ENTIRE retained tree + runs two full newline scans
 
@@ -864,27 +732,27 @@ steady-state frames skip the scan.
 cold parse (:155), `first_syntax_error` over the whole buffer (:167). The
 `Highlighter` already maintains an incremental tree of this exact buffer
 (lib.rs:965-1037). Fix: route statement-finding and syntax-error detection
-through the retained tree; rope-walk the cursor row instead of materializing
-all lines (`buffer_lines` at syntax.rs:359-364 has the same shape at lib.rs:1140
-per publish, lib.rs:3997 per `K`, lib.rs:4072 per `gd`, render.rs:202 per
+through the retained tree; rope-walk the cursor row instead of materializing all
+lines (`buffer_lines` at syntax.rs:359-364 has the same shape at lib.rs:1140 per
+publish, lib.rs:3997 per `K`, lib.rs:4072 per `gd`, render.rs:202 per
 visual-mode run).
 
 #### 7. K-hover does two linear schema scans with a per-name lowercase alloc
 
 lib.rs:3997-4022 (`K` in Normal): `buffer_lines` + `word_at_cursor`, then
 `hover_table_from_cache` (state.rs:1327-1409) and, on miss, `find_table`
-(state.rs:1296-1320) — each loops every db × table with a `to_lowercase()`
-alloc per name. Fix: lowercase-name → table map built in `rebuild_schema_cache`
-(off the render loop).
+(state.rs:1296-1320) — each loops every db × table with a `to_lowercase()` alloc
+per name. Fix: lowercase-name → table map built in `rebuild_schema_cache` (off
+the render loop).
 
 #### 8. Every LSP event forces a full frame redraw
 
 lib.rs:1397 sets `needs_redraw` for every drained event BEFORE the match —
 including diagnostics-only publishes (sqls re-publishes diagnostics after each
-didChange, i.e. per keystroke while typing) and stale-id hover/definition
-events that are then dropped. Each redraw re-runs every per-frame cost
-(findings 2, 4, 5, 10). Fix: redraw only when the event changes visible state
-(e.g. diagnostics differ from what's painted).
+didChange, i.e. per keystroke while typing) and stale-id hover/definition events
+that are then dropped. Each redraw re-runs every per-frame cost (findings 2, 4,
+5, 10). Fix: redraw only when the event changes visible state (e.g. diagnostics
+differ from what's painted).
 
 #### 9. Frame-global lock serializes all per-frame work
 
@@ -914,18 +782,18 @@ results grid + query-line highlight, status bar), highlight resubmit path
 (keystroke / scroll past half-margin / dialect flip), completion publish path
 (~75 ms debounce: buffer_lines + parse_context + pool build + thread filter),
 run path (Ctrl+Enter / Ctrl+Shift+Enter), hover path (K), LSP event drain (per
-message), executor task (per query: decode off-lock, persist + col-widths
-under lock), schema refresh (per load + 1 s stale sweep), db.rs
-execute/decode (per query, row-bounded; DuckDB uses spawn_blocking, sqlx paths
-async). Verified NOT hot: ddl/safety (per run), completion_ctx (statement scan
-capped at 64 KB), persistence load paths (per tab load), sqeel-config
-(startup), picker/host/ex (user-initiated or delegated to hjkl crates),
-splash (startup only). GAPS: hjkl-engine/buffer/tui internals (buffer render,
-wrap segments, search regex, `content_arc` — read the editor.rs API surface,
-not the buffer render path); tree-sitter parse costs (could not settle without
-profiling which of parse vs. block-ranges walk vs. newline scans dominates on
-large buffers — same gap as the 06-06 pass); the operative assumption that sqls
-publishes a diagnostics message per didChange (standard LSP behaviour, not
-exercised against a live server); mouse-move event rates (would inflate every
-per-frame cost). Test suite NOT run per task instruction (11 PTY e2e tests fail
-environmentally in this sandbox; CI runs them).
+message), executor task (per query: decode off-lock, persist + col-widths under
+lock), schema refresh (per load + 1 s stale sweep), db.rs execute/decode (per
+query, row-bounded; DuckDB uses spawn_blocking, sqlx paths async). Verified NOT
+hot: ddl/safety (per run), completion_ctx (statement scan capped at 64 KB),
+persistence load paths (per tab load), sqeel-config (startup), picker/host/ex
+(user-initiated or delegated to hjkl crates), splash (startup only). GAPS:
+hjkl-engine/buffer/tui internals (buffer render, wrap segments, search regex,
+`content_arc` — read the editor.rs API surface, not the buffer render path);
+tree-sitter parse costs (could not settle without profiling which of parse vs.
+block-ranges walk vs. newline scans dominates on large buffers — same gap as the
+06-06 pass); the operative assumption that sqls publishes a diagnostics message
+per didChange (standard LSP behaviour, not exercised against a live server);
+mouse-move event rates (would inflate every per-frame cost). Test suite NOT run
+per task instruction (11 PTY e2e tests fail environmentally in this sandbox; CI
+runs them).

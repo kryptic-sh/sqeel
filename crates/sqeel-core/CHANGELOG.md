@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `AppState::push_history` now takes the connection the query ran on:
+  `push_history(&mut self, query: &str, connection: Option<String>)`. A query
+  that completes after a connection switch is filed under the connection that
+  ran it instead of the one active at completion time.
+
 ## [0.6.0] - 2026-08-06
 
 ### Changed
