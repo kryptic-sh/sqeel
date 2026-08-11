@@ -538,10 +538,6 @@ frames. Fix after 1-8: snapshot render inputs outside the lock.
 ### Minor
 
 - `tmux_navigate` spawns a `tmux` process per nav keystroke (exec.rs:192-198).
-- `merge_db_list` sorts by `position()` — O(D²) per db-list load
-  (state.rs:2704-2709).
-- `results_find`/`hover_find` allocate `to_lowercase()` per cell over the whole
-  grid per `/` keystroke (state.rs:1838, 1880) — user-initiated.
 
 ### Coverage
 
