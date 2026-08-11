@@ -152,6 +152,14 @@ pub fn config_dir() -> Option<PathBuf> {
     hjkl_config::config_dir(MainConfig::APPLICATION).ok()
 }
 
+/// Resolve the directory holding per-connection TOML records,
+/// `<config_dir>/conns`.
+fn conns_dir() -> anyhow::Result<PathBuf> {
+    Ok(config_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?
+        .join("conns"))
+}
+
 /// Load + validate `MainConfig`.
 ///
 /// Defaults are bundled into the binary via [`DEFAULTS_TOML`]; the user
@@ -304,9 +312,7 @@ fn splice_password_into_url(url: &str, password: &str) -> String {
 /// before returning. Failures (no keyring daemon, no entry) leave the URL
 /// as-is.
 pub fn load_connections() -> anyhow::Result<Vec<ConnectionConfig>> {
-    let conns_dir = config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?
-        .join("conns");
+    let conns_dir = conns_dir()?;
 
     if !conns_dir.exists() {
         return Ok(vec![]);
@@ -411,9 +417,7 @@ pub fn save_connection(
         url_to_write.to_string()
     };
 
-    let conns_dir = config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?
-        .join("conns");
+    let conns_dir = conns_dir()?;
     std::fs::create_dir_all(&conns_dir)?;
     let conn = ConnectionConfig {
         url: final_url,
@@ -463,10 +467,7 @@ fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
 /// Returns [`MigrationResult`] to indicate what happened. The connection file
 /// is never modified unless the keyring write succeeds.
 pub fn migrate_connection_to_keyring(name: &str) -> anyhow::Result<MigrationResult> {
-    let path = config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?
-        .join("conns")
-        .join(format!("{name}.toml"));
+    let path = conns_dir()?.join(format!("{name}.toml"));
     let content = std::fs::read_to_string(&path)?;
     let conn: ConnectionConfig = toml::from_str(&content)?;
     let (url_no_pw, pw) = split_url_password(&conn.url);
@@ -509,10 +510,7 @@ pub fn delete_keyring_entry(name: &str) {
 /// Remove `<config_dir>/conns/<name>.toml` if it exists.
 /// Also cleans up any keyring entry for `name`.
 pub fn delete_connection(name: &str) -> anyhow::Result<()> {
-    let path = config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?
-        .join("conns")
-        .join(format!("{name}.toml"));
+    let path = conns_dir()?.join(format!("{name}.toml"));
     if path.exists() {
         std::fs::remove_file(path)?;
     }
