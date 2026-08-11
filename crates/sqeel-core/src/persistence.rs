@@ -64,35 +64,11 @@ fn results_dir_or_err(conn_slug: &str) -> anyhow::Result<PathBuf> {
     results_dir_for(conn_slug).ok_or_else(|| anyhow::anyhow!("cannot determine data dir"))
 }
 
-/// Write `content` to `path` owner-only (0600). State files can hold
-/// query text, row data and (in the keyring-fallback case) passwords;
-/// `std::fs::write` defaults to 0644 under the 0755 config/data dirs.
-/// On Unix the mode is applied at creation, so there is no window where a
-/// fresh file is world-readable; a pre-existing (legacy 0644) file is
-/// chmodded down after writing. Non-Unix keeps the default (Windows ACLs).
-pub fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(content)?;
-        // Covers a pre-existing file that was created 0644 before this
-        // hardening landed (OpenOptions::mode only applies at creation).
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-}
+/// Owner-only (0600) file write, defined once in sqeel-config (which
+/// sqeel-core depends on) and re-exported here so
+/// `sqeel_core::persistence::write_private` keeps resolving for callers.
+/// See the definition for the security rationale.
+pub use sqeel_config::write_private;
 
 /// Returns next available `scratch_NNN.sql` name in the global
 /// queries dir. Scratch buffers are connection-agnostic.

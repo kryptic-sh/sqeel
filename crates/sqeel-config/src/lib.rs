@@ -434,7 +434,11 @@ pub fn save_connection(
 /// `std::fs::write` defaults to 0644 under the 0755 config dir. The mode
 /// is applied at creation on Unix so a fresh file is never world-readable;
 /// a pre-existing (legacy 0644) file is chmodded down after writing.
-fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
+///
+/// Shared with sqeel-core: re-exported there as
+/// `sqeel_core::persistence::write_private` and used for state files
+/// (queries, results) that can also hold sensitive data.
+pub fn write_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
