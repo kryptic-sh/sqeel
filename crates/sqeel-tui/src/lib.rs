@@ -475,6 +475,23 @@ async fn async_run(state: Arc<Mutex<AppState>>, show_splash: bool) -> anyhow::Re
     result
 }
 
+/// Append one line to the `SQEEL_DEBUG_HL_DUMP` file when that env var is set
+/// (its value is the dump path). A no-op when unset; I/O errors are swallowed —
+/// this is a debug aid and must never affect the app.
+fn lsp_debug_dump(msg: &str) {
+    let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") else {
+        return;
+    };
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: Arc<Mutex<AppState>>,
@@ -549,22 +566,11 @@ async fn run_loop(
         // Binary not on PATH — don't attempt to start yet.
         Err(anyhow::anyhow!("sqls not found on $PATH"))
     };
-    if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            match &lsp_start_result {
-                Ok(_) => {
-                    let _ = writeln!(f, "### lsp started: binary={lsp_binary}");
-                }
-                Err(e) => {
-                    let _ = writeln!(f, "### lsp FAILED to start: binary={lsp_binary} err={e}");
-                }
-            }
-        }
+    match &lsp_start_result {
+        Ok(_) => lsp_debug_dump(&format!("### lsp started: binary={lsp_binary}")),
+        Err(e) => lsp_debug_dump(&format!(
+            "### lsp FAILED to start: binary={lsp_binary} err={e}"
+        )),
     }
     let mut lsp: Option<LspClient> = lsp_start_result.ok();
     if let Some(ref mut client) = lsp {
@@ -894,23 +900,14 @@ async fn run_loop(
                     let writer = client.writer();
                     let uri = active_lsp_uri.clone();
                     let text = std::sync::Arc::new(content.clone());
-                    let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
                     tokio::spawn(async move {
                         let _ = writer.change_document(uri, &text).await;
-                        if let Some(path) = debug_path {
-                            use std::io::Write;
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&path)
-                            {
-                                let preview: String = text.chars().take(80).collect();
-                                let _ = writeln!(
-                                    f,
-                                    "### lsp didChange (tab-load) bytes={} preview={preview:?}",
-                                    text.len()
-                                );
-                            }
+                        if std::env::var("SQEEL_DEBUG_HL_DUMP").is_ok() {
+                            let preview: String = text.chars().take(80).collect();
+                            lsp_debug_dump(&format!(
+                                "### lsp didChange (tab-load) bytes={} preview={preview:?}",
+                                text.len()
+                            ));
                         }
                     });
                     lsp_suspended = false;
@@ -1259,23 +1256,14 @@ async fn run_loop(
                         let writer = client.writer();
                         let uri = active_lsp_uri.clone();
                         let text = Arc::clone(content);
-                        let debug_path = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
                         tokio::spawn(async move {
                             let _ = writer.change_document(uri, &text).await;
-                            if let Some(path) = debug_path {
-                                use std::io::Write;
-                                if let Ok(mut f) = std::fs::OpenOptions::new()
-                                    .create(true)
-                                    .append(true)
-                                    .open(&path)
-                                {
-                                    let preview: String = text.chars().take(80).collect();
-                                    let _ = writeln!(
-                                        f,
-                                        "### lsp didChange bytes={} preview={preview:?}",
-                                        text.len()
-                                    );
-                                }
+                            if std::env::var("SQEEL_DEBUG_HL_DUMP").is_ok() {
+                                let preview: String = text.chars().take(80).collect();
+                                lsp_debug_dump(&format!(
+                                    "### lsp didChange bytes={} preview={preview:?}",
+                                    text.len()
+                                ));
                             }
                         });
                         // Fire the completion request off the render
@@ -1351,26 +1339,13 @@ async fn run_loop(
                 lsp_restart_in_flight = true;
                 tokio::spawn(async move {
                     let result = LspClient::start(&binary, None, &args).await;
-                    if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
-                        use std::io::Write;
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&path)
-                        {
-                            match &result {
-                                Ok(_) => {
-                                    let _ =
-                                        writeln!(f, "### lsp restarted with config={cfg_path:?}");
-                                }
-                                Err(e) => {
-                                    let _ = writeln!(
-                                        f,
-                                        "### lsp restart FAILED config={cfg_path:?} err={e}"
-                                    );
-                                }
-                            }
+                    match &result {
+                        Ok(_) => {
+                            lsp_debug_dump(&format!("### lsp restarted with config={cfg_path:?}"))
                         }
+                        Err(e) => lsp_debug_dump(&format!(
+                            "### lsp restart FAILED config={cfg_path:?} err={e}"
+                        )),
                     }
                     let _ = tx.send(result);
                 });
@@ -1465,26 +1440,18 @@ async fn run_loop(
                         if diag_uri != active_lsp_uri.to_string() {
                             continue;
                         }
-                        if let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") {
-                            use std::io::Write;
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&path)
-                            {
-                                let _ = writeln!(
-                                    f,
-                                    "### lsp diagnostics received ({} items)",
-                                    diags.len()
+                        if std::env::var("SQEEL_DEBUG_HL_DUMP").is_ok() {
+                            let mut dump =
+                                format!("### lsp diagnostics received ({} items)", diags.len());
+                            use std::fmt::Write as _;
+                            for d in &diags {
+                                let _ = write!(
+                                    dump,
+                                    "\n  {}:{} .. {}:{} [{:?}] {}",
+                                    d.line, d.col, d.end_line, d.end_col, d.severity, d.message
                                 );
-                                for d in &diags {
-                                    let _ = writeln!(
-                                        f,
-                                        "  {}:{} .. {}:{} [{:?}] {}",
-                                        d.line, d.col, d.end_line, d.end_col, d.severity, d.message
-                                    );
-                                }
                             }
+                            lsp_debug_dump(&dump);
                         }
                         state.lock().unwrap().set_diagnostics(diags);
                     }

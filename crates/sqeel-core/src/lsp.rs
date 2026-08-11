@@ -335,8 +335,24 @@ fn translate_event(evt: HjklLspEvent) -> Option<LspEvent> {
     }
 }
 
+/// Append one line to the `SQEEL_DEBUG_HL_DUMP` file when that env var is set
+/// (its value is the dump path). A no-op when unset; I/O errors are swallowed —
+/// this is a debug aid and must never affect the app.
+fn lsp_debug_dump(msg: &str) {
+    let Ok(path) = std::env::var("SQEEL_DEBUG_HL_DUMP") else {
+        return;
+    };
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 fn translate_response(id: i64, result: Value) -> Option<LspEvent> {
-    let debug = std::env::var("SQEEL_DEBUG_HL_DUMP").ok();
     if let Ok(def) = serde_json::from_value::<GotoDefinitionResponse>(result.clone()) {
         let loc = match def {
             GotoDefinitionResponse::Scalar(l) => Some((l.uri, l.range.start)),
@@ -355,16 +371,7 @@ fn translate_response(id: i64, result: Value) -> Option<LspEvent> {
         }
     }
     if let Ok(hover) = serde_json::from_value::<Hover>(result.clone()) {
-        if let Some(path) = &debug {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(f, "### lsp hover response id={id}");
-            }
-        }
+        lsp_debug_dump(&format!("### lsp hover response id={id}"));
         return hover_text_from_contents(&hover.contents).map(|t| LspEvent::Hover(id, t));
     }
     if let Ok(sig) = serde_json::from_value::<SignatureHelp>(result.clone())
@@ -379,16 +386,7 @@ fn translate_response(id: i64, result: Value) -> Option<LspEvent> {
         };
         return Some(LspEvent::Completion(id, items));
     }
-    if let Some(path) = &debug {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            let _ = writeln!(f, "### lsp unroutable response id={id}");
-        }
-    }
+    lsp_debug_dump(&format!("### lsp unroutable response id={id}"));
     None
 }
 
