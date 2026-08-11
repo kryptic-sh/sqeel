@@ -688,6 +688,12 @@ pub(crate) fn draw<H: Host>(
     areas
 }
 
+/// Char offset into the full-width row string, derived from a column scroll.
+/// Each rendered column is padded to `col_widths[i]`, separated by `│`.
+fn col_scroll_char_offset(col_widths: &[u16], skip: usize) -> usize {
+    col_widths.iter().take(skip).map(|&w| w as usize + 1).sum()
+}
+
 pub(crate) fn extract_results_left_click(
     x: u16,
     y: u16,
@@ -731,12 +737,8 @@ pub(crate) fn extract_results_left_click(
             if y < header_y || y == header_y + 1 {
                 return None;
             }
-            let char_offset: usize = r
-                .col_widths
-                .iter()
-                .take(state.results_col_scroll())
-                .map(|&w| w as usize + 1)
-                .sum();
+            let char_offset: usize =
+                col_scroll_char_offset(&r.col_widths, state.results_col_scroll());
             let rel = (x.saturating_sub(body_x) as usize).saturating_add(char_offset);
             let mut cursor_x = 0usize;
             let mut col_idx: Option<usize> = None;
@@ -1610,14 +1612,7 @@ pub(crate) fn draw_results(
                 .fg(ui().results_header_active)
                 .add_modifier(Modifier::BOLD);
 
-            // Char offset into the full-width row string, derived from col_scroll.
-            // Each rendered column is padded to col_widths[i], separated by `│`.
-            let char_offset: u16 = r
-                .col_widths
-                .iter()
-                .take(col_start)
-                .map(|&w| w as u32 + 1)
-                .sum::<u32>() as u16;
+            let char_offset: u16 = col_scroll_char_offset(&r.col_widths, col_start) as u16;
 
             let cursor = state.active_result().map(|t| t.cursor);
             let col_bg = results_cursor_bg(focused);
@@ -2309,12 +2304,7 @@ pub(crate) fn draw_hover_table(
         selection_style,
     );
 
-    let char_offset: u16 = table
-        .col_widths
-        .iter()
-        .take(state.hover_col_scroll)
-        .map(|&w| w as u32 + 1)
-        .sum::<u32>() as u16;
+    let char_offset: u16 = col_scroll_char_offset(&table.col_widths, state.hover_col_scroll) as u16;
 
     f.render_widget(
         Paragraph::new(header_line)
