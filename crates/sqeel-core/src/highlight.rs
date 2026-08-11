@@ -391,6 +391,15 @@ pub struct Highlighter {
     inner: Option<hjkl_bonsai::Highlighter>,
     last_errors: Vec<ParseError>,
     last_block_ranges: Vec<(usize, usize)>,
+    /// Bumped by every tree-mutating wrapper call
+    /// (`edit`/`parse_initial`/`parse_incremental`/`reset`).
+    tree_gen: u64,
+    /// Generation `last_block_ranges` were computed for, if any. Only
+    /// `highlight_range` consults/caches this: `highlight_shared` resets and
+    /// reparses the inner bonsai tree without going through the wrappers, so a
+    /// gen-keyed cache there would serve stale ranges (and its render
+    /// span-cache already makes that path cold).
+    block_ranges_gen: Option<u64>,
 }
 
 impl Highlighter {
@@ -406,6 +415,8 @@ impl Highlighter {
             inner: Some(inner),
             last_errors: Vec::new(),
             last_block_ranges: Vec::new(),
+            tree_gen: 0,
+            block_ranges_gen: None,
         })
     }
 
@@ -422,6 +433,8 @@ impl Highlighter {
             inner,
             last_errors: Vec::new(),
             last_block_ranges: Vec::new(),
+            tree_gen: 0,
+            block_ranges_gen: None,
         }
     }
 
@@ -446,6 +459,7 @@ impl Highlighter {
     /// Apply an `InputEdit` to the retained tree. Delegates to
     /// `hjkl_bonsai::Highlighter::edit`.
     pub fn edit(&mut self, edit: &tree_sitter::InputEdit) {
+        self.tree_gen += 1;
         if let Some(inner) = self.inner.as_mut() {
             inner.edit(edit);
         }
@@ -453,6 +467,7 @@ impl Highlighter {
 
     /// Cold parse `source` from scratch into the retained tree.
     pub fn parse_initial(&mut self, source: &str) {
+        self.tree_gen += 1;
         if let Some(inner) = self.inner.as_mut() {
             inner.parse_initial(source.as_bytes());
         }
@@ -463,6 +478,7 @@ impl Highlighter {
     /// highlight pass for this frame). Returns `true` when grammar is not
     /// yet available (no tree to invalidate — callers may proceed normally).
     pub fn parse_incremental(&mut self, source: &str) -> bool {
+        self.tree_gen += 1;
         self.inner
             .as_mut()
             .map(|inner| inner.parse_incremental(source.as_bytes()))
@@ -471,6 +487,7 @@ impl Highlighter {
 
     /// Drop the retained tree.
     pub fn reset(&mut self) {
+        self.tree_gen += 1;
         if let Some(inner) = self.inner.as_mut() {
             inner.reset();
         }
@@ -532,20 +549,29 @@ impl Highlighter {
             source,
             dialect,
             byte_range.clone(),
+            &nl_offsets,
             &mut spans,
         );
 
         let inner_errors = inner.parse_errors_range(bytes, byte_range);
         self.last_errors = harvest_parse_errors(source, dialect, &nl_offsets, inner_errors);
 
-        if let Some(tree) = self.inner.as_ref().and_then(|i| i.tree()) {
-            let mut block_ranges = Vec::new();
-            collect_block_ranges(tree.root_node(), &mut block_ranges);
-            block_ranges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
-            block_ranges.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-            self.last_block_ranges = block_ranges;
-        } else {
-            self.last_block_ranges.clear();
+        // Block ranges only change when the retained tree does; the wrappers
+        // bump `tree_gen` on every mutation, so skip the full-tree walk when
+        // the generation matches the cached one. (`highlight_shared` does not
+        // use this cache — it resets+reparses the inner tree internally,
+        // bypassing the wrappers, so a gen-keyed cache there would go stale.)
+        if self.block_ranges_gen != Some(self.tree_gen) {
+            if let Some(tree) = self.inner.as_ref().and_then(|i| i.tree()) {
+                let mut block_ranges = Vec::new();
+                collect_block_ranges(tree.root_node(), &mut block_ranges);
+                block_ranges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+                block_ranges.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+                self.last_block_ranges = block_ranges;
+            } else {
+                self.last_block_ranges.clear();
+            }
+            self.block_ranges_gen = Some(self.tree_gen);
         }
 
         spans
@@ -646,7 +672,7 @@ impl Highlighter {
             .collect();
 
         // Post-pass: promote dialect-specific keywords in uncovered regions.
-        promote_uncovered_dialect_keywords(source, dialect, &mut spans);
+        promote_uncovered_dialect_keywords(source, dialect, &nl_offsets, &mut spans);
 
         // Harvest parse errors.
         let inner_errors: Vec<InnerError> = inner.parse_errors(bytes);
@@ -756,6 +782,7 @@ fn promote_uncovered_dialect_keywords_in_range(
     source: &str,
     dialect: Dialect,
     byte_range: Range<usize>,
+    nl_offsets: &[usize],
     spans: &mut Vec<HighlightSpan>,
 ) {
     if matches!(dialect, Dialect::Generic) {
@@ -773,7 +800,15 @@ fn promote_uncovered_dialect_keywords_in_range(
         .filter(|s| s.start_byte < range_end && s.end_byte > range_start)
         .map(|s| (s.start_byte.max(range_start), s.end_byte.min(range_end)))
         .collect();
-    scan_gaps(source, dialect, covered, range_start, range_end, spans);
+    scan_gaps(
+        source,
+        dialect,
+        covered,
+        range_start,
+        range_end,
+        nl_offsets,
+        spans,
+    );
 }
 
 /// Find identifier-shaped words in regions that tree-sitter didn't
@@ -782,6 +817,7 @@ fn promote_uncovered_dialect_keywords_in_range(
 fn promote_uncovered_dialect_keywords(
     source: &str,
     dialect: Dialect,
+    nl_offsets: &[usize],
     spans: &mut Vec<HighlightSpan>,
 ) {
     if matches!(dialect, Dialect::Generic) {
@@ -794,18 +830,20 @@ fn promote_uncovered_dialect_keywords(
 
     // Build sorted list of covered byte ranges.
     let covered: Vec<(usize, usize)> = spans.iter().map(|s| (s.start_byte, s.end_byte)).collect();
-    scan_gaps(source, dialect, covered, 0, total, spans);
+    scan_gaps(source, dialect, covered, 0, total, nl_offsets, spans);
 }
 
 /// Shared gap-walk for [`promote_uncovered_dialect_keywords`] and its
 /// range-scoped variant: merge `covered` ranges, then scan each uncovered
 /// gap in `start..end` for keywords, appending the results to `spans`.
+/// `nl_offsets` is the precomputed newline-offset table from the caller.
 fn scan_gaps(
     source: &str,
     dialect: Dialect,
     mut covered: Vec<(usize, usize)>,
     start: usize,
     end: usize,
+    nl_offsets: &[usize],
     spans: &mut Vec<HighlightSpan>,
 ) {
     covered.sort_by_key(|&(s, _)| s);
@@ -823,7 +861,6 @@ fn scan_gaps(
     }
 
     let bytes = source.as_bytes();
-    let nl_offsets = compute_newline_offsets(source);
     let mut cursor = start;
     let mut gap_iter = merged.iter().peekable();
     let mut additions: Vec<HighlightSpan> = Vec::new();
@@ -841,7 +878,7 @@ fn scan_gaps(
                     cursor,
                     stop,
                     dialect,
-                    &nl_offsets,
+                    nl_offsets,
                     &mut additions,
                 );
                 cursor = stop;
@@ -853,7 +890,7 @@ fn scan_gaps(
                     cursor,
                     end,
                     dialect,
-                    &nl_offsets,
+                    nl_offsets,
                     &mut additions,
                 );
                 cursor = end;
@@ -1736,6 +1773,60 @@ mod tests {
             assert_eq!(a.end_byte, b.end_byte);
             assert_eq!(a.capture, b.capture);
         }
+    }
+
+    #[test]
+    fn block_ranges_recompute_after_tree_change() {
+        let mut h = Highlighter::new().unwrap();
+        let initial = "CREATE TABLE t (a INT);";
+        h.parse_initial(initial);
+        h.highlight_range(initial, Dialect::MySql, 0..initial.len());
+        assert!(
+            h.block_ranges().is_empty(),
+            "single-line statement should produce no block ranges; got {:?}",
+            h.block_ranges()
+        );
+
+        // Insert a multi-line column list after "CREATE TABLE t (".
+        let new_source = "CREATE TABLE t (\n  a INT\n);";
+        let insert_at = "CREATE TABLE t (".len();
+        let insertion = "\n  a INT\n";
+        let edit = tree_sitter::InputEdit {
+            start_byte: insert_at,
+            old_end_byte: insert_at,
+            new_end_byte: insert_at + insertion.len(),
+            start_position: tree_sitter::Point {
+                row: 0,
+                column: insert_at,
+            },
+            old_end_position: tree_sitter::Point {
+                row: 0,
+                column: insert_at,
+            },
+            new_end_position: tree_sitter::Point { row: 2, column: 0 },
+        };
+        h.edit(&edit);
+        assert!(h.parse_incremental(new_source));
+        h.highlight_range(new_source, Dialect::MySql, 0..new_source.len());
+        assert!(
+            !h.block_ranges().is_empty(),
+            "block ranges must be recomputed after the tree edit (a stale cache would stay empty); got {:?}",
+            h.block_ranges()
+        );
+        assert!(
+            h.block_ranges().contains(&(0, 2)),
+            "expected the multi-row CREATE to span rows 0..2; got {:?}",
+            h.block_ranges()
+        );
+
+        // Cache-hit path: same source, no edit, identical ranges.
+        let first = h.block_ranges().to_vec();
+        h.highlight_range(new_source, Dialect::MySql, 0..new_source.len());
+        assert_eq!(
+            h.block_ranges(),
+            &first[..],
+            "block ranges must be stable across highlight_range calls without a tree change"
+        );
     }
 
     #[test]
