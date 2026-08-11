@@ -7,7 +7,7 @@ use sqeel_core::{
     config::{load_connections, load_main_config, load_session_data, save_session},
     db::DbConnection,
     ddl::parse_ddl,
-    persistence::{evict_old_results, load_result_for, sanitize_conn_slug},
+    persistence::{load_result_for, sanitize_conn_slug},
     schema::SchemaNode,
     state::cell_display,
     state::{QueryRequest, ResultsPane, ResultsTab, SchemaLoadRequest, mask_db_url_password},
@@ -927,6 +927,24 @@ async fn connect_and_spawn(
     }
 }
 
+/// Persist a result off the global state lock: snapshot the data, then
+/// serialize + write + evict on the blocking pool so a big result set
+/// never stalls the render loop's frame lock. Returns the saved filename
+/// (or None on failure), matching `persist_result`'s contract.
+async fn persist_result_off_lock(
+    conn_slug: &str,
+    query: &str,
+    r: &sqeel_core::state::QueryResult,
+) -> Option<String> {
+    let slug = conn_slug.to_string();
+    let q = query.to_string();
+    let snapshot = r.clone();
+    tokio::task::spawn_blocking(move || sqeel_core::persistence::save_result(&slug, &q, &snapshot))
+        .await
+        .ok()
+        .and_then(|res| res.ok())
+}
+
 fn spawn_executor(
     state: Arc<std::sync::Mutex<AppState>>,
     conn: DbConnection,
@@ -996,10 +1014,6 @@ fn spawn_executor(
             // query doesn't abort before it starts.
             let cancel = state.lock().unwrap().cancel_control.clone();
             cancel.reset();
-            let cleanup_slug = conn_slug.clone();
-            tokio::spawn(async move {
-                evict_old_results(&cleanup_slug);
-            });
             match req {
                 QueryRequest::Single(query, tab_idx) => {
                     let row_limit = state.lock().unwrap().default_row_limit;
@@ -1007,10 +1021,16 @@ fn spawn_executor(
                         r = conn.execute_with_limit(&query, row_limit) => Some(r),
                         _ = cancel.cancelled() => None,
                     };
+                    let filename = match &outcome {
+                        Some(Ok(sqeel_core::db::ExecOutcome::Rows(r))) => {
+                            persist_result_off_lock(&conn_slug, &query, r).await
+                        }
+                        _ => None,
+                    };
                     let mut s = state.lock().unwrap();
                     s.batch_in_progress = false;
                     let _ = apply_exec_outcome(
-                        &mut s, tab_idx, &query, &conn_slug, &conn_name, outcome,
+                        &mut s, tab_idx, &query, &conn_slug, &conn_name, outcome, filename,
                     );
                 }
                 QueryRequest::Batch(queries, start_idx) => {
@@ -1028,10 +1048,16 @@ fn spawn_executor(
                             r = conn.execute_with_limit(&query, row_limit) => Some(r),
                             _ = cancel.cancelled() => None,
                         };
+                        let filename = match &outcome {
+                            Some(Ok(sqeel_core::db::ExecOutcome::Rows(r))) => {
+                                persist_result_off_lock(&conn_slug, &query, r).await
+                            }
+                            _ => None,
+                        };
                         let stop = {
                             let mut s = state.lock().unwrap();
                             match apply_exec_outcome(
-                                &mut s, tab_idx, &query, &conn_slug, &conn_name, outcome,
+                                &mut s, tab_idx, &query, &conn_slug, &conn_name, outcome, filename,
                             ) {
                                 ExecDisposition::Ok => false,
                                 ExecDisposition::Err => stop_on_error,
@@ -1075,20 +1101,21 @@ enum ExecDisposition {
 
 /// Apply one statement's execution outcome to the results tab at
 /// `tab_idx`. Shared by the Single and Batch executor arms so the two
-/// can't drift (persist + history + widths + DDL invalidation + the
-/// Cancelled marker all live here). `None` = the select! lost to the
+/// can't drift (history + widths + DDL invalidation + the Cancelled
+/// marker all live here; the caller persists the result off-lock and
+/// hands the saved filename in). `None` = the select! lost to the
 /// cancel token.
 fn apply_exec_outcome(
     s: &mut AppState,
     tab_idx: usize,
     query: &str,
-    conn_slug: &str,
+    _conn_slug: &str,
     conn_name: &str,
     outcome: Option<anyhow::Result<sqeel_core::db::ExecOutcome>>,
+    filename: Option<String>,
 ) -> ExecDisposition {
     let disposition = match outcome {
         Some(Ok(sqeel_core::db::ExecOutcome::Rows(mut r))) => {
-            let filename = s.persist_result(query, &r, conn_slug);
             s.push_history(query, Some(conn_name.to_string()));
             r.compute_col_widths();
             s.finish_result_tab(tab_idx, ResultsPane::Results(r));
@@ -1469,5 +1496,31 @@ mod cli_tests {
         let url = "not a url at all !!!";
         let masked = mask_db_url_password(url);
         assert_eq!(masked, url);
+    }
+
+    #[test]
+    fn persist_result_off_lock_writes_result_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: single test in this process sets XDG_DATA_HOME.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+        }
+        let result = sqeel_core::state::QueryResult {
+            columns: vec!["col".into()],
+            rows: vec![vec![Some("val".into())]],
+            col_widths: vec![],
+            limited: false,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("rt");
+        let filename = rt
+            .block_on(persist_result_off_lock("ran_on_conn", "SELECT 1", &result))
+            .expect("persist should succeed");
+        let results = dir.path().join("sqeel").join("results");
+        assert!(
+            results.join("ran_on_conn").join(&filename).exists(),
+            "result must be filed under the connection it ran on"
+        );
     }
 }
