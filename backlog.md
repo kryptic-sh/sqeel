@@ -134,11 +134,6 @@ below remain open.
 
 ### Duplicated logic (drift risk — fix in one place)
 
-- `crates/sqeel-core/src/state.rs` — mouse-hit column walk duplicated at
-  `results_click_to_cell` 1600-1611 vs `hover_click_to_cell` 1677-1688; drag
-  edge-stepping at `results_drag_to_cell` 1560-1571 vs `hover_drag_to_cell`
-  1638-1649. Extract `col_at_x(col_widths, col_scroll, rel_x, col_count)` + a
-  step helper.
 - `crates/sqeel-tui/src/render.rs` — `highlight_sql_lines` (2113-2129) and
   `highlight_query_line` (2183-2202) duplicate the TLS highlighter bootstrap;
   extract one `highlight_spans(source, dialect)`.
@@ -492,13 +487,6 @@ with current line numbers (nothing landed since). New this pass: items 2, 11–2
 
 ### Duplicated logic (extract a helper — drift risk)
 
-- `crates/sqeel-core/src/state.rs` — mouse-hit column walk duplicated at
-  `results_click_to_cell` 1605-1616 vs `hover_click_to_cell` 1682-1693
-  (prefix-sum through `col_widths` + 1 separator). Extract
-  `col_at_x(col_widths, col_scroll, rel_x)`. Drag edge-stepping at
-  `results_drag_to_cell` 1567-1576 vs `hover_drag_to_cell` 1645-1654 (step
-  row/col one cell toward the crossed edge) is a second identical pair — extract
-  one step helper.
 - `crates/sqeel-tui/src/render.rs` — `highlight_sql_lines` (2081-2098) and
   `highlight_query_line` (2150-2171) duplicate the TLS `Highlighter` bootstrap
   (thread_local + borrow_mut + `new_async` + `try_upgrade` + `highlight`).
