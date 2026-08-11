@@ -91,6 +91,55 @@ fn refresh_schema_with_toast(state: &Arc<Mutex<AppState>>, toasts: &mut Vec<Toas
     }
 }
 
+/// The `ToolSpec` anvil installs for the sqls language server.
+fn sqls_tool_spec() -> hjkl_anvil::ToolSpec {
+    hjkl_anvil::ToolSpec {
+        category: hjkl_anvil::ToolCategory::Lsp,
+        description: "SQL language server".to_string(),
+        version: "latest".to_string(),
+        bin: "sqls".to_string(),
+        method: hjkl_anvil::InstallMethod::GoInstall(hjkl_anvil::GoMethod {
+            module: "github.com/sqls-server/sqls".to_string(),
+        }),
+    }
+}
+
+/// Queue the "unknown tool" error toast for a non-sqls anvil tool name.
+fn unknown_tool_toast(toasts: &mut Vec<Toast>, name: &str) {
+    toast(
+        toasts,
+        ToastKind::Error,
+        format!("Anvil: unknown tool {name:?} (only 'sqls' supported)"),
+    );
+}
+
+/// Kick off an anvil install/update for sqls, or surface the
+/// "already in progress" toast when one is running. `verb` leads the
+/// progress toast ("installing" / "updating").
+fn kick_off_install(
+    install_pool: &hjkl_anvil::InstallPool,
+    active_install: &mut Option<hjkl_anvil::InstallHandle>,
+    toasts: &mut Vec<Toast>,
+    verb: &str,
+) {
+    if active_install.is_some() {
+        toast(
+            toasts,
+            ToastKind::Info,
+            "Anvil: install already in progress".to_string(),
+        );
+        return;
+    }
+    let spec = sqls_tool_spec();
+    let handle = install_pool.install("sqls".to_string(), spec);
+    *active_install = Some(handle);
+    toast(
+        toasts,
+        ToastKind::Info,
+        format!("Anvil: {verb} sqls via go install…"),
+    );
+}
+
 /// Result of a synchronous tree-sitter highlight pass over a viewport
 /// window. Mirrors the shape of the old `highlight_thread::HighlightResult`
 /// — `start_row` + `row_count` define the absolute window inside the
@@ -720,15 +769,7 @@ async fn run_loop(
         if sqls_install_pending {
             sqls_install_pending = false;
             if active_install.is_none() {
-                let spec = hjkl_anvil::ToolSpec {
-                    category: hjkl_anvil::ToolCategory::Lsp,
-                    description: "SQL language server".to_string(),
-                    version: "latest".to_string(),
-                    bin: "sqls".to_string(),
-                    method: hjkl_anvil::InstallMethod::GoInstall(hjkl_anvil::GoMethod {
-                        module: "github.com/sqls-server/sqls".to_string(),
-                    }),
-                };
+                let spec = sqls_tool_spec();
                 let handle = install_pool.install("sqls".to_string(), spec);
                 active_install = Some(handle);
                 install_installing_announced = false;
@@ -2366,38 +2407,13 @@ async fn run_loop(
                                 }
                                 AnvilCmd::Install(name) => {
                                     if name != "sqls" {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Error,
-                                            format!(
-                                                "Anvil: unknown tool {name:?} (only 'sqls' supported)"
-                                            ),
-                                        );
-                                    } else if active_install.is_some() {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Info,
-                                            "Anvil: install already in progress".to_string(),
-                                        );
+                                        unknown_tool_toast(&mut toasts, name);
                                     } else {
-                                        let spec = hjkl_anvil::ToolSpec {
-                                            category: hjkl_anvil::ToolCategory::Lsp,
-                                            description: "SQL language server".to_string(),
-                                            version: "latest".to_string(),
-                                            bin: "sqls".to_string(),
-                                            method: hjkl_anvil::InstallMethod::GoInstall(
-                                                hjkl_anvil::GoMethod {
-                                                    module: "github.com/sqls-server/sqls"
-                                                        .to_string(),
-                                                },
-                                            ),
-                                        };
-                                        let handle = install_pool.install("sqls".to_string(), spec);
-                                        active_install = Some(handle);
-                                        toast(
+                                        kick_off_install(
+                                            &install_pool,
+                                            &mut active_install,
                                             &mut toasts,
-                                            ToastKind::Info,
-                                            "Anvil: installing sqls via go install…".to_string(),
+                                            "installing",
                                         );
                                     }
                                 }
@@ -2405,50 +2421,19 @@ async fn run_loop(
                                     // Re-install at latest; only sqls supported for now.
                                     let name = name_opt.unwrap_or("sqls");
                                     if name != "sqls" {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Error,
-                                            format!(
-                                                "Anvil: unknown tool {name:?} (only 'sqls' supported)"
-                                            ),
-                                        );
-                                    } else if active_install.is_some() {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Info,
-                                            "Anvil: install already in progress".to_string(),
-                                        );
+                                        unknown_tool_toast(&mut toasts, name);
                                     } else {
-                                        let spec = hjkl_anvil::ToolSpec {
-                                            category: hjkl_anvil::ToolCategory::Lsp,
-                                            description: "SQL language server".to_string(),
-                                            version: "latest".to_string(),
-                                            bin: "sqls".to_string(),
-                                            method: hjkl_anvil::InstallMethod::GoInstall(
-                                                hjkl_anvil::GoMethod {
-                                                    module: "github.com/sqls-server/sqls"
-                                                        .to_string(),
-                                                },
-                                            ),
-                                        };
-                                        let handle = install_pool.install("sqls".to_string(), spec);
-                                        active_install = Some(handle);
-                                        toast(
+                                        kick_off_install(
+                                            &install_pool,
+                                            &mut active_install,
                                             &mut toasts,
-                                            ToastKind::Info,
-                                            "Anvil: updating sqls via go install…".to_string(),
+                                            "updating",
                                         );
                                     }
                                 }
                                 AnvilCmd::Uninstall(name) => {
                                     if name != "sqls" {
-                                        toast(
-                                            &mut toasts,
-                                            ToastKind::Error,
-                                            format!(
-                                                "Anvil: unknown tool {name:?} (only 'sqls' supported)"
-                                            ),
-                                        );
+                                        unknown_tool_toast(&mut toasts, name);
                                     } else {
                                         // Remove the anvil-managed store dir for sqls.
                                         match hjkl_anvil::store::package_dir("sqls") {
