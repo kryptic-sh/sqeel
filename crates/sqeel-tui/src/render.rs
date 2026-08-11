@@ -118,16 +118,17 @@ pub(crate) fn editor_cell_to_doc<H: Host>(
     }
 }
 
-/// Status-bar block showing `/<pat> <i>/<n>` when an editor search is active.
-/// `i` is the 1-based index of the match at-or-after the cursor; 0 means no
-/// match has been navigated to yet (cursor is past the last match).
-pub(crate) fn search_label<H: Host>(
-    editor: &Editor<hjkl_buffer::View, H>,
-) -> Option<Span<'static>> {
-    let re = editor.search_state().pattern.as_ref()?;
-    let pat = re.as_str();
-    let lines = buffer_lines(editor.buffer());
-    let (cur_row, cur_col) = editor.cursor();
+/// `(total, current)` for `search_label`: `total` is the match count across
+/// all lines, `current` the 1-based index of the first match at-or-after the
+/// cursor (0 = cursor past the last match). Per-line scan, matching
+/// `search_label`'s existing semantics exactly (a pattern spanning lines is
+/// not matched — each line is scanned independently).
+fn search_label_counts(
+    lines: &[String],
+    re: &regex::Regex,
+    cur_row: usize,
+    cur_col: usize,
+) -> (usize, usize) {
     let mut total = 0usize;
     let mut current = 0usize;
     for (row, line) in lines.iter().enumerate() {
@@ -142,6 +143,43 @@ pub(crate) fn search_label<H: Host>(
             }
         }
     }
+    (total, current)
+}
+
+/// Status-bar block showing `/<pat> <i>/<n>` when an editor search is active.
+/// `i` is the 1-based index of the match at-or-after the cursor; 0 means no
+/// match has been navigated to yet (cursor is past the last match).
+pub(crate) fn search_label<H: Host>(
+    editor: &Editor<hjkl_buffer::View, H>,
+) -> Option<Span<'static>> {
+    let re = editor.search_state().pattern.as_ref()?;
+    let pat = re.as_str();
+    let (cur_row, cur_col) = editor.cursor();
+    let dg = hjkl_engine::Query::dirty_gen(editor.buffer());
+    use std::cell::RefCell;
+    // (buffer dirty_gen, pattern, cursor row, cursor col, total, current)
+    type SearchLabelCache = Option<(u64, String, usize, usize, usize, usize)>;
+    thread_local! {
+        static SEARCH_LABEL_CACHE: RefCell<SearchLabelCache> = const { RefCell::new(None) };
+    }
+    // Steady-state frames (same buffer generation, pattern, and cursor) skip
+    // the per-line scan entirely; only a dirty buffer, a new pattern, or a
+    // cursor move re-runs it.
+    let (total, mut current) = SEARCH_LABEL_CACHE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some((dg_c, pat_c, row_c, col_c, total, current)) = slot.as_ref()
+            && *dg_c == dg
+            && pat_c == pat
+            && *row_c == cur_row
+            && *col_c == cur_col
+        {
+            return (*total, *current);
+        }
+        let lines = buffer_lines(editor.buffer());
+        let (total, current) = search_label_counts(&lines, re, cur_row, cur_col);
+        *slot = Some((dg, pat.to_string(), cur_row, cur_col, total, current));
+        (total, current)
+    });
     if total == 0 {
         return Some(Span::raw(format!(" /{pat} 0/0 ")));
     }
@@ -3824,5 +3862,30 @@ mod highlight_spans_tests {
             !spans_equal(&generic, &mysql),
             "the two dialects must differ for {src:?} so the key matters"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_label_tests {
+    use super::*;
+
+    #[test]
+    fn search_label_counts_reports_total_and_current() {
+        let lines = vec![
+            "SELECT 1".to_string(),
+            "SELECT 2".to_string(),
+            "FROM t".to_string(),
+        ];
+        let re = regex::Regex::new("SELECT").unwrap();
+        assert_eq!(search_label_counts(&lines, &re, 0, 0), (2, 1));
+        assert_eq!(search_label_counts(&lines, &re, 1, 0), (2, 2));
+        assert_eq!(search_label_counts(&lines, &re, 1, 6), (2, 0));
+        // Cursor inside the first match but before its start column: the
+        // match's start (col 0) is before the cursor, so the first match
+        // at-or-after the cursor is row 1's — current stays the 2nd match.
+        assert_eq!(search_label_counts(&lines, &re, 0, 3), (2, 2));
+        // Case-sensitive by default: lowercase pattern matches nothing.
+        let re_lower = regex::Regex::new("select").unwrap();
+        assert_eq!(search_label_counts(&lines, &re_lower, 0, 0), (0, 0));
     }
 }
