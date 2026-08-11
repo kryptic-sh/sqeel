@@ -514,26 +514,6 @@ loads; each redraw runs `draw` while holding the global `state` mutex
 
 ### Findings
 
-#### 1. Result persistence + col-width scan + eviction run under the global state mutex on the executor task (NEW)
-
-`apps/sqeel/src/bin/sqeel.rs:1008-1010` takes `state.lock()` and holds it across
-`apply_exec_outcome`, which calls `persist_result` (state.rs:3969-3977) →
-`save_result`: `serde_json::to_string_pretty` of the WHOLE result set +
-`write_private` + a full `read_dir` eviction walk (persistence.rs:182-196,
-218-236), plus `compute_col_widths` O(rows×cols) (state.rs:270-285, called at
-sqeel.rs:1090) — all synchronous, on the tokio worker, while the render loop
-blocks on the same lock for every frame (lib.rs:1568). Frequency: once per query
-completion; size: the full result set (no per-cell cap per the audit; the
-default 100-row auto-LIMIT bounds plain SELECTs, but an explicit `LIMIT n` or a
-raised `default_row_limit` bypasses it, and the whole thing is a string-build +
-disk write). Fix: serialize + write + evict off the lock — the `QueryResult` and
-query are in scope in `apply_exec_outcome` before `finish_result_tab` installs
-the tab, so hand the data to a `spawn_blocking` closure (or at minimum drop the
-lock around `persist_result`). Related: the executor ALSO spawns
-`evict_old_results` per query (sqeel.rs:999-1002, 1013-1016), repeating the
-`read_dir` walk `save_result` just did — dedupe, one eviction per query is
-enough.
-
 #### 2. Per-frame cold tree-sitter parse of the query line / SHOW CREATE DDL
 
 `draw_results` calls `highlight_query_line` on every frame with a Results tab
