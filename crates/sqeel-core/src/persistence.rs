@@ -1,7 +1,7 @@
 use crate::config::MainConfig;
 use crate::state::QueryResult;
 use hjkl_config::AppConfig;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 /// Process-wide override for the data dir, set by `--sandbox` so
 /// dev-mode runs don't touch the user's real `~/.local/share/sqeel/`.
@@ -183,6 +183,16 @@ pub fn save_result(conn_slug: &str, query: &str, result: &QueryResult) -> anyhow
 /// Load a saved result by filename from a specific connection's results subdir.
 pub fn load_result_for(conn_slug: &str, name: &str) -> anyhow::Result<QueryResult> {
     let dir = results_dir_or_err(conn_slug)?;
+    // The name is sourced from session files, so refuse anything but a
+    // plain filename — a `..` or absolute reference must not read outside
+    // this connection's results dir (Audit 2026-08-06 hardening).
+    let mut components = Path::new(name).components();
+    if !matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(_)), None)
+    ) {
+        anyhow::bail!("invalid result filename: {name:?}");
+    }
     let content = std::fs::read_to_string(dir.join(name))?;
     let mut result: QueryResult = serde_json::from_str(&content)?;
     result.compute_col_widths();
@@ -441,5 +451,43 @@ mod tests {
         let loaded: QueryResult = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.columns, result.columns);
         assert_eq!(loaded.rows, result.rows);
+    }
+
+    #[test]
+    fn load_result_for_rejects_path_components() {
+        // Redirect the data dir so save/load don't touch the real one.
+        // (Nextest runs each test in its own process, so this process's
+        // OnceLock is only ever set here.)
+        let tmp = temp_data_dir();
+        set_data_dir_override(tmp.path().to_path_buf());
+
+        let result = QueryResult {
+            columns: vec!["x".into()],
+            rows: vec![vec![Some("1".into())]],
+            col_widths: vec![],
+            limited: false,
+        };
+        save_result("alpha", "SELECT 1", &result).unwrap();
+        let alpha_file = save_result("alpha", "SELECT 2", &result).unwrap();
+        let filename = save_result("beta", "SELECT 1", &result).unwrap();
+
+        // A plain generated filename still loads.
+        assert!(load_result_for("beta", &filename).is_ok());
+
+        // A session file pointing at another connection's result via `..`
+        // must be refused — the old code read it happily (the file exists
+        // under `results/alpha/`).
+        assert!(load_result_for("beta", &format!("../alpha/{alpha_file}")).is_err());
+
+        // Absolute paths, bare parent-dir / cur-dir references and
+        // multi-component names are refused up front too.
+        let absolute = tmp.path().join("results/beta").join(&filename);
+        assert!(
+            load_result_for("beta", &absolute.to_string_lossy()).is_err(),
+            "absolute paths must not read outside the results dir"
+        );
+        assert!(load_result_for("beta", "..").is_err());
+        assert!(load_result_for("beta", "sub/result.json").is_err());
+        assert!(load_result_for("beta", "").is_err());
     }
 }
