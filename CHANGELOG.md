@@ -39,6 +39,9 @@ patch bumps.
   the umbrella's version pins resolved stale 0.33-era builds from crates.io that
   no longer compile. They now publish at 0.4.0 / 0.6.0 / 0.6.0 with the `hjkl-*`
   stack pinned `=0.41.0` (hjkl 0.41.1 dropped the API surface these crates use).
+- Result reload refuses anything but a plain filename — a session file naming a
+  saved result with `..`, an absolute path or a directory component is rejected
+  instead of reading outside the connection's results dir.
 
 ## [0.6.1] - 2026-08-06
 

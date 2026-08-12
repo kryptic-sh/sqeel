@@ -3,6 +3,21 @@
 Open work items, findings and deferred decisions. Finished items are deleted
 (see `git log` for the record).
 
+## Work 2026-08-12
+
+Worked from the backlog: the one decision-made hardening item landed (commit
+`cff22fb`, verified by the full gate plus a test that goes red on the old code):
+
+- `load_result_for` now refuses anything but a plain filename — a session file
+  naming a saved result with `..`, an absolute path or a directory component is
+  rejected instead of reading outside the connection's results dir (Audit
+  2026-08-06 / Audit 2026-08-10 hardening, "add the check anyway").
+
+Still open: the Review/Audit "Hardening" blocks below (deliberate fragility —
+each needs a decision before touching), the two Tidy items needing decisions
+(tilde-expansion unify, `TextInput` hoist), the lsp.rs allocation nit, and the
+deferred Perf finding 9 / `tmux_navigate` minor.
+
 ## Work 2026-08-11
 
 Worked from the backlog: all five open correctness/security findings from the
@@ -134,9 +149,6 @@ Open items below are deliberate fragility, not defects.
 
 ### Hardening (correct today, fragile)
 
-- `load_result_for` (`persistence.rs:178`) joins `session.toml`-sourced names
-  into the results dir without a `components()` check — self-inflicted content
-  only; add the check anyway.
 - No size limits on session.toml / result JSON reads — unbounded allocation on
   planted huge files (same-user DoS).
 - `duckdb:///abs/path` resolves to a _relative_ path (leading slashes all
@@ -439,9 +451,6 @@ Hardening / Coverage records below remain as written.
   into a URL the user edited to point at a different host.
 - `duckdb:///abs/path` resolves to a _relative_ path — leading slashes all
   trimmed (`db.rs:241-242`).
-- `load_result_for` joins a session.toml-sourced filename without a
-  `components()` check (`persistence.rs:199-206`) — self-inflicted content only;
-  read fails (JSON parse) before anything loads.
 - TUI connection path ignores the saved connection's TLS block —
   `DbConnection::connect(url, None)` (`sqeel.rs:847`) skips CA/mTLS/verify in
   the TUI; they apply in `-e`.
