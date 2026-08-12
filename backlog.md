@@ -80,22 +80,6 @@ Deferred (left in place, still actionable):
   viable fix (select-pane is inherently a subprocess; the DCS passthrough covers
   terminal escapes, not tmux commands).
 
-## Release pipeline 2026-08-06 (v0.6.1)
-
-Cut v0.6.1; GitHub release + homebrew published. Three tag-run jobs failed.
-Fixed after the cut (see `git log`):
-
-- **crates.io publish** — the `sqeel-config`/`sqeel-core`/`sqeel-tui` crates
-  were absorbed into this monorepo (432b055) but never re-published; crates.io
-  still held stale 0.33-era builds that no longer compiled, and the publish job
-  only shipped the umbrella. Fixed: crates bumped to 0.4.0 / 0.6.0 / 0.6.0,
-  `hjkl-*` pinned `=0.41.0`, and `publish-crates` now ships all four in
-  dependency order.
-- **Alpine apk** — abuild rejected the uncompressed man page; the APKBUILD now
-  gzips `sqeel.1` before install.
-- **AUR sqeel-bin** — failed on "The AUR is down due to maintenance" (external,
-  transient; v0.6.0's AUR publish succeeded).
-
 ## Review 2026-08-06
 
 Correctness review of the whole codebase (4 crates + app + tests). All 10
