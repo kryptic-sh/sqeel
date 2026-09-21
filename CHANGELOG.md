@@ -8,6 +8,8 @@ patch bumps.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-21
+
 ### Added
 
 - Windows installs through Scoop: `scoop install kryptic-sh/sqeel` after
@@ -715,7 +717,8 @@ ratatui TUI + iced GUI from a shared `sqeel-core`.
 - Publish metadata added; `pre-hjkl-extraction` retained as a historical
   reference tag for the pre-split monorepo state.
 
-[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/kryptic-sh/sqeel/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.7.1
 [0.7.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.7.0
 [0.6.1]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.6.1
 [0.6.0]: https://github.com/kryptic-sh/sqeel/releases/tag/v0.6.0
