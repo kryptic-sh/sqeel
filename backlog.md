@@ -3,6 +3,17 @@
 Open work items, findings and deferred decisions. Finished items are deleted
 (see `git log` for the record).
 
+## Work 2026-09-21: Scoop publishing, not yet run
+
+The `scoop-bucket` CI job and `pkg/scoop/sqeel.json.in` were added after 0.7.0,
+so the first tag after that is the first run. Checked by hand: the template
+rendered with v0.7.0's real Windows zip sidecar parses, its hash matches the
+zip, `sqeel.exe` sits at the zip's root and runs, and the `autoupdate` URL
+resolves to the same zip. Not checked: whether the org secret `SCOOP_SSH_KEY` is
+granted to this repo (it is selected-repository scoped, and listing it needs
+`admin:org`). If the job fails at "Push manifest", add sqeel to the secret's
+repositories.
+
 ## Work 2026-08-12
 
 Worked from the backlog: the one decision-made hardening item landed (commit

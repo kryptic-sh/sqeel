@@ -8,6 +8,13 @@ patch bumps.
 
 ## [Unreleased]
 
+### Added
+
+- Windows installs through Scoop: `scoop install kryptic-sh/sqeel` after
+  `scoop bucket add kryptic-sh https://github.com/kryptic-sh/scoop-bucket`. A
+  release now also publishes `pkg/scoop/sqeel.json.in`, rendered with the
+  Windows zip's checksum, to that bucket (the new `scoop-bucket` CI job).
+
 ## [0.7.0] - 2026-08-12
 
 ### Changed

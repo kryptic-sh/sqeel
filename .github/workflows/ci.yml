@@ -581,6 +581,97 @@ jobs:
           git commit -m "sqeel ${{ steps.tag.outputs.version }}"
           git push origin HEAD:main
 
+  # Scoop bucket auto-publish for `sqeel`. Pulls the just-uploaded Windows
+  # zip checksum off the release, renders pkg/scoop/sqeel.json.in, and pushes
+  # the manifest to kryptic-sh/scoop-bucket over SSH. Same trigger and
+  # `needs: [build]` cascade as brew-tap, so the Windows sidecar exists by
+  # the time this runs.
+  #
+  # Required org/repo secret:
+  #   SCOOP_SSH_KEY — ed25519 private key whose public half is registered
+  #                   as a deploy key (write access) on
+  #                   kryptic-sh/scoop-bucket. Org-level, shared with the
+  #                   other kryptic-sh repos that publish there; this repo
+  #                   must be in its selected repositories.
+  scoop-bucket:
+    name: Publish sqeel manifest to scoop-bucket
+    needs: [build]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve version
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release tag: $TAG (manifest version=$VERSION)"
+
+      - name: Fetch Windows sha256 sidecar
+        id: sha
+        run: |
+          set -euo pipefail
+          V="${{ steps.tag.outputs.version }}"
+          BASE="https://github.com/kryptic-sh/sqeel/releases/download/v${V}"
+          curl -fsSL "$BASE/sqeel-v${V}-x86_64-pc-windows-msvc.zip.sha256" -o sha.win
+          echo "x86_64=$(awk '{print $1}' sha.win)" >> "$GITHUB_OUTPUT"
+
+      - name: Render manifest
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          sed \
+            -e "s|{VERSION}|${{ steps.tag.outputs.version }}|g" \
+            -e "s|{SHA256_X86_64_WINDOWS}|${{ steps.sha.outputs.x86_64 }}|g" \
+            pkg/scoop/sqeel.json.in > out/sqeel.json
+          echo "--- rendered manifest ---"
+          cat out/sqeel.json
+
+      - name: Configure SSH for scoop-bucket
+        env:
+          SCOOP_SSH_KEY: ${{ secrets.SCOOP_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -dm700 ~/.ssh
+          printf '%s\n' "$SCOOP_SSH_KEY" > ~/.ssh/scoop
+          chmod 600 ~/.ssh/scoop
+          # Pinned host keys. Source: https://api.github.com/meta (.ssh_keys).
+          cat > ~/.ssh/known_hosts <<'KNOWN_HOSTS_EOF'
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          KNOWN_HOSTS_EOF
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Push manifest to scoop-bucket
+        run: |
+          # Assigned HERE, not in an `env:` block: a `~` inside an env value is
+          # never expanded. git runs this via `sh -c`, tilde expansion does not
+          # apply to the result of a parameter expansion, and ssh does not expand
+          # `~` in a `-o` value either -- so the pin below would go unread and
+          # StrictHostKeyChecking=yes would fail with "No ED25519 host key is
+          # known". That is exactly how buffr's v0.14.7 AUR publish broke.
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/scoop -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          set -euo pipefail
+          git config --global user.name  "sqeel-ci"
+          git config --global user.email "ci@kryptic.sh"
+          git clone git@github.com:kryptic-sh/scoop-bucket.git bucket
+          mkdir -p bucket/bucket
+          cp out/sqeel.json bucket/bucket/sqeel.json
+          cd bucket
+          git add bucket/sqeel.json
+          if git diff --cached --quiet; then
+            echo "no changes vs current bucket head; nothing to push"
+            exit 0
+          fi
+          git commit -m "sqeel ${{ steps.tag.outputs.version }}"
+          git push origin HEAD:main
+
   publish-crates:
     name: Publish to crates.io
     needs: [build]

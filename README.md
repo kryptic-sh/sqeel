@@ -31,6 +31,7 @@ Each release publishes binary artifacts for:
 | Arch Linux   | x86_64, aarch64 | AUR (`paru`) |
 | macOS        | arm64, x86_64   | `.tar.gz`    |
 | Windows      | x86_64          | `.zip`       |
+| Windows      | x86_64          | Scoop        |
 
 ## Features
 
@@ -104,6 +105,13 @@ brew install kryptic-sh/tap/sqeel
 
 ```sh
 paru -S sqeel-bin
+```
+
+**Windows (Scoop)**
+
+```powershell
+scoop bucket add kryptic-sh https://github.com/kryptic-sh/scoop-bucket
+scoop install kryptic-sh/sqeel
 ```
 
 **Alpine Linux**
