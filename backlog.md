@@ -13,6 +13,34 @@ resolves to the same zip. The org secret `SCOOP_SSH_KEY` is granted to this
 repo: `gh api repos/kryptic-sh/sqeel/actions/organization-secrets` lists it
 (checked 2026-09-21), as it does for krypt, whose scoop job publishes.
 
+## Work 2026-09-21: tests that race under plain `cargo test`
+
+CI runs `cargo nextest run` (one process per test), where these pass. Under
+`cargo test --workspace` (one process per crate, tests on parallel threads) two
+groups fail on Windows, reproduced 2026-09-21:
+
+- `sqeel-config` `connection_filesystem_roundtrip` and
+  `inline_password_roundtrip_percent_decodes` each call
+  `set_config_dir_override` (a first-call-wins `OnceLock`) with their own
+  tempdir and each hold their own `static LOCK`, so they share whichever dir won
+  and are not serialized: one fails with a missing `conns` dir, the other counts
+  the other test's connections. A fix was written and verified (10/10 runs pass;
+  dropping its cleanup fails 3 of 8) but held back as out of scope for a
+  lockfile fix: one module-level lock plus a process-lived shared tempdir, as
+  `lock_config_dir` in `sqeel-core` `state.rs` already does, with the
+  percent-decode test calling `delete_connection` on its own entries at the end.
+- `sqeel-core` `persist_result_filed_under_query_connection_not_active` fails
+  every run. `isolated_data_dir` sets the process-wide `XDG_DATA_HOME` per test
+  with no lock (its SAFETY comment calls the setter idempotent; `set_var` is
+  not), and `persistence` test `load_result_for_rejects_path_components` sets
+  `DATA_DIR_OVERRIDE`, after which `data_dir` ignores `XDG_DATA_HOME` entirely,
+  so results land somewhere the assertion does not look. Not fixed: needs one
+  lock and one data dir shared by every data-dir test in the crate, across both
+  modules.
+
+Decision: fix both, or declare nextest the only supported runner (and say so in
+the README's contributing notes).
+
 ## Work 2026-08-12
 
 Worked from the backlog: the one decision-made hardening item landed (commit

@@ -15,6 +15,13 @@ patch bumps.
   release now also publishes `pkg/scoop/sqeel.json.in`, rendered with the
   Windows zip's checksum, to that bucket (the new `scoop-bucket` CI job).
 
+### Fixed
+
+- Security: `rustls` 0.23.43 → 0.23.45 for RUSTSEC-2026-0285 (TLS 1.3 handshake
+  messages accepted across encryption-level boundaries), reached through `sqlx`
+  database connections and `reqwest` in `hjkl-anvil`. `chacha20` 0.10.1, which
+  was yanked, moves to 0.10.2.
+
 ## [0.7.0] - 2026-08-12
 
 ### Changed
