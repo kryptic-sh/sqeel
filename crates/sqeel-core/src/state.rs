@@ -5674,22 +5674,6 @@ trailing prose ignored";
         );
     }
 
-    /// Redirect the data dir to a fresh tempdir so tests exercising
-    /// `save_active_tab` don't write to the user's real
-    /// `~/.local/share/sqeel`. Returns the dir for the caller to keep
-    /// alive for the duration of the test.
-    fn isolated_data_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: tests are single-threaded per process unless marked
-        // `#[test]` with parallel execution — these two tests touch
-        // the same env var, so they share one tempdir via this setter
-        // being idempotent per process.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", dir.path());
-        }
-        dir
-    }
-
     /// Regression: above the heavy-pipeline gate (buffers > 2 MB) the
     /// TUI used to leave `editor_content_synced = false`, so a `:w`
     /// would write the stale cached `tab.content` instead of the
@@ -5699,7 +5683,7 @@ trailing prose ignored";
     #[test]
     fn save_active_tab_uses_editor_content_when_synced() {
         use std::sync::Arc;
-        let _dir = isolated_data_dir();
+        let _data = crate::persistence::lock_test_data_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         s.tabs.push(TabEntry::open(
@@ -5715,7 +5699,7 @@ trailing prose ignored";
 
     #[test]
     fn persist_result_filed_under_query_connection_not_active() {
-        let _dir = isolated_data_dir();
+        let (_guard, data) = crate::persistence::lock_test_data_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         // The user switched connections while the query was in flight.
@@ -5729,8 +5713,7 @@ trailing prose ignored";
         let filename = s
             .persist_result("SELECT 1", &result, "ran_on_conn")
             .expect("persist should succeed");
-        let data = std::env::var_os("XDG_DATA_HOME").expect("isolated_data_dir sets it");
-        let results = std::path::Path::new(&data).join("sqeel").join("results");
+        let results = data.join("results");
         assert!(
             results.join("ran_on_conn").join(&filename).exists(),
             "result must be filed under the connection it ran on"
@@ -5743,7 +5726,7 @@ trailing prose ignored";
 
     #[test]
     fn switch_to_cold_tab_queues_pending_load_and_shows_empty() {
-        let _dir = isolated_data_dir();
+        let _data = crate::persistence::lock_test_data_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         // Two tabs — first warm (has content), second cold.
@@ -5922,7 +5905,7 @@ trailing prose ignored";
     #[test]
     fn prepare_save_active_tab_leaves_dirty_until_marked() {
         use std::sync::Arc;
-        let _dir = isolated_data_dir();
+        let _data = crate::persistence::lock_test_data_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         let mut tab = TabEntry::open("scratch_split".into(), "old".into());
@@ -5949,7 +5932,7 @@ trailing prose ignored";
     #[test]
     fn save_active_tab_falls_back_to_tab_content_when_not_synced() {
         use std::sync::Arc;
-        let _dir = isolated_data_dir();
+        let _data = crate::persistence::lock_test_data_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         s.tabs.push(TabEntry::open(
@@ -6026,7 +6009,10 @@ trailing prose ignored";
 
     #[test]
     fn delete_selected_connection_arms_first_then_commits_second() {
-        let _dir = isolated_data_dir();
+        // The commit deletes the connection file and its keyring entry,
+        // so it must hit the test config dir and the mock keyring.
+        install_mock_keyring();
+        let _guard = lock_config_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         s.available_connections = vec![
@@ -6056,7 +6042,7 @@ trailing prose ignored";
 
     #[test]
     fn moving_selection_disarms_pending_delete() {
-        let _dir = isolated_data_dir();
+        let _data = crate::persistence::lock_test_data_dir();
         let state = AppState::new();
         let mut s = state.lock().unwrap();
         s.available_connections = vec![

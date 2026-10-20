@@ -530,8 +530,16 @@ mod tests {
         assert!(super::sqls_driver_and_dsn("other://x").is_err());
     }
 
+    /// `write_sqls_config` names its file after the process id, and
+    /// `write_sqls_config_skips_preplanted_name` plants, then deletes, the
+    /// first of those names. Under `cargo test` every test shares one pid,
+    /// so the tests that write a config hold this lock to keep that one
+    /// off a file another test is still reading.
+    static SQLS_CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn write_sqls_config_writes_file() {
+        let _guard = SQLS_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let path = write_sqls_config("mysql://u:p@host/db").unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("driver: mysql"));
@@ -550,6 +558,7 @@ mod tests {
         // A local attacker (or a recycled PID) holding the first candidate
         // name must not get the credentials written through their file or
         // symlink — the writer moves on to the next name.
+        let _guard = SQLS_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let first =
             std::env::temp_dir().join(format!("sqeel-sqls-config-{}-0.yml", std::process::id()));
         std::fs::write(&first, "planted").unwrap();

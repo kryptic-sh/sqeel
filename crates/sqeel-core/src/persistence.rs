@@ -22,6 +22,34 @@ pub fn data_dir() -> Option<PathBuf> {
     hjkl_config::data_dir(MainConfig::APPLICATION).ok()
 }
 
+/// Serialize the tests that write through the data dir, and point it at
+/// one tempdir shared by the whole test process. Hold the guard for the
+/// test's duration.
+///
+/// [`set_data_dir_override`] is first-call-wins, so these tests cannot
+/// each bring their own tempdir: under `cargo test` they share one
+/// process, and every test but the first would write into the first
+/// one's dir, deleted once it returns.
+#[cfg(test)]
+pub(crate) fn lock_test_data_dir() -> (std::sync::MutexGuard<'static, ()>, &'static Path) {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = DIR
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().expect("data tempdir");
+            set_data_dir_override(dir.path().to_path_buf());
+            dir
+        })
+        .path();
+    assert_eq!(
+        data_dir().as_deref(),
+        Some(dir),
+        "data dir override was set elsewhere first"
+    );
+    (guard, dir)
+}
+
 /// Scratch queries are connection-agnostic — `queries/` lives directly
 /// under the data dir so a buffer the user opened against one
 /// connection can be re-run against any other. Results stay
@@ -455,11 +483,7 @@ mod tests {
 
     #[test]
     fn load_result_for_rejects_path_components() {
-        // Redirect the data dir so save/load don't touch the real one.
-        // (Nextest runs each test in its own process, so this process's
-        // OnceLock is only ever set here.)
-        let tmp = temp_data_dir();
-        set_data_dir_override(tmp.path().to_path_buf());
+        let (_guard, dir) = lock_test_data_dir();
 
         let result = QueryResult {
             columns: vec!["x".into()],
@@ -481,7 +505,7 @@ mod tests {
 
         // Absolute paths, bare parent-dir / cur-dir references and
         // multi-component names are refused up front too.
-        let absolute = tmp.path().join("results/beta").join(&filename);
+        let absolute = dir.join("results/beta").join(&filename);
         assert!(
             load_result_for("beta", &absolute.to_string_lossy()).is_err(),
             "absolute paths must not read outside the results dir"

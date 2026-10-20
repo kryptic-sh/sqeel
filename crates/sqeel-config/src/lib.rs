@@ -686,29 +686,49 @@ name = "local"
         assert_eq!(conn.url, "mysql://user:pass@localhost/mydb");
     }
 
-    /// Test save/load/delete round-trip for connection files.
+    /// Serialize the tests that read and write connection files, and hand
+    /// each one the shared config dir with an empty `conns/`.
     ///
-    /// All filesystem-touching connection tests run here in sequence so they
-    /// share a single `set_config_dir_override` call — the underlying
-    /// `OnceLock` is first-call-wins and cannot be reset between parallel tests.
-    ///
-    /// Keyring tests are included here because they also need `config_dir`
-    /// to point at the same shared tempdir.
+    /// `set_config_dir_override` is first-call-wins for the whole process,
+    /// so these tests cannot each bring their own tempdir: under
+    /// `cargo test` they share one process, and every test but the first
+    /// would write into the first one's dir, deleted once it returns.
+    fn lock_conns_dir() -> (std::sync::MutexGuard<'static, ()>, &'static std::path::Path) {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = DIR
+            .get_or_init(|| {
+                let dir = tempfile::tempdir().expect("config tempdir");
+                set_config_dir_override(dir.path().to_path_buf());
+                dir
+            })
+            .path();
+        assert_eq!(
+            config_dir().as_deref(),
+            Some(dir),
+            "config dir override was set elsewhere first"
+        );
+        let conns = dir.join("conns");
+        if conns.exists() {
+            std::fs::remove_dir_all(&conns).expect("reset conns dir");
+        }
+        (guard, dir)
+    }
+
+    /// Test save/load/delete round-trip for connection files, keyring
+    /// included.
     #[test]
     fn connection_filesystem_roundtrip() {
         install_mock_keyring();
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        set_config_dir_override(dir.path().to_path_buf());
+        let (_guard, dir) = lock_conns_dir();
 
         // --- basic save + load roundtrip (no password) ---
         save_connection("test_db", "postgres://localhost/test", None, None).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(dir.path().join("conns").join("test_db.toml"))
+            let mode = std::fs::metadata(dir.join("conns").join("test_db.toml"))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -735,8 +755,7 @@ name = "local"
         )
         .unwrap();
         // TOML must not contain the password.
-        let toml_content =
-            std::fs::read_to_string(dir.path().join("conns").join("kr_test.toml")).unwrap();
+        let toml_content = std::fs::read_to_string(dir.join("conns").join("kr_test.toml")).unwrap();
         assert!(
             !toml_content.contains("s3cret"),
             "TOML should not contain plaintext password; got: {toml_content}"
@@ -757,7 +776,7 @@ name = "local"
         assert_eq!(conn.url, "sqlite::memory:");
 
         // --- load splices keyring password for manually-created file ---
-        let conns_dir = dir.path().join("conns");
+        let conns_dir = dir.join("conns");
         std::fs::write(
             conns_dir.join("splice_test.toml"),
             "url = \"mysql://user@dbhost/db\"\n",
@@ -817,11 +836,7 @@ name = "local"
     #[test]
     fn inline_password_roundtrip_percent_decodes() {
         install_mock_keyring();
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        set_config_dir_override(dir.path().to_path_buf());
+        let (_guard, dir) = lock_conns_dir();
 
         // Password needing URL-encoding (`@`) supplied inline in the URL.
         // The keyring must hold the DECODED form, or the load-time splice
@@ -851,7 +866,7 @@ name = "local"
 
         // Migration path decodes the inline password too.
         std::fs::write(
-            dir.path().join("conns").join("migrate_pct.toml"),
+            dir.join("conns").join("migrate_pct.toml"),
             "url = \"postgres://bob:p%40ss@dbhost/db\"\n",
         )
         .unwrap();
