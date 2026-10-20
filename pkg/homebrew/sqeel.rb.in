@@ -8,15 +8,18 @@ class Sqeel < Formula
   version "{VERSION}"
   license "MIT"
 
-  on_macos do
-    on_arm do
-      url "https://github.com/kryptic-sh/sqeel/releases/download/v{VERSION}/sqeel-v{VERSION}-aarch64-apple-darwin.tar.gz"
-      sha256 "{SHA256_AARCH64_DARWIN}"
-    end
-    on_intel do
-      url "https://github.com/kryptic-sh/sqeel/releases/download/v{VERSION}/sqeel-v{VERSION}-x86_64-apple-darwin.tar.gz"
-      sha256 "{SHA256_X86_64_DARWIN}"
-    end
+  # Homebrew loads each formula for every OS and architecture when it taps
+  # the tap, and refuses the whole tap if one has no URL there, so the URLs
+  # stay outside `on_macos`; `depends_on :macos` keeps it macOS-only.
+  depends_on :macos
+
+  on_arm do
+    url "https://github.com/kryptic-sh/sqeel/releases/download/v{VERSION}/sqeel-v{VERSION}-aarch64-apple-darwin.tar.gz"
+    sha256 "{SHA256_AARCH64_DARWIN}"
+  end
+  on_intel do
+    url "https://github.com/kryptic-sh/sqeel/releases/download/v{VERSION}/sqeel-v{VERSION}-x86_64-apple-darwin.tar.gz"
+    sha256 "{SHA256_X86_64_DARWIN}"
   end
 
   def install
