@@ -381,8 +381,8 @@ impl RawThemeNew {
 
         let mut groups = HashMap::new();
         for (name, raw) in &self.hl {
-            let fg = raw.fg.as_deref().map(&resolve_color).transpose()?;
-            let bg = raw.bg.as_deref().map(&resolve_color).transpose()?;
+            let fg = raw.fg.as_deref().map(resolve_color).transpose()?;
+            let bg = raw.bg.as_deref().map(resolve_color).transpose()?;
             let attrs = parse_attrs(&raw.attrs);
             groups.insert(name.clone(), HlGroup { fg, bg, attrs });
         }
