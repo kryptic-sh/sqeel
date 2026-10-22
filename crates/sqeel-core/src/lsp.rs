@@ -142,8 +142,12 @@ impl Inner {
         let id = self
             .next_doc
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst) as BufferId;
-        self.manager
-            .attach_buffer(id, &uri_to_path(uri), "sql", initial_text);
+        self.manager.attach_buffer(
+            id,
+            &uri_to_path(uri),
+            "sql",
+            Arc::new(initial_text.to_string()),
+        );
         docs.insert(uri.as_str().to_string(), id);
         id
     }

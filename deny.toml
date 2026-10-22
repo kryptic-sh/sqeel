@@ -12,17 +12,7 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # zip 8 extraction bugs (SUID bits kept, symlinks escaping the
-    # destination, permissions applied through symlinks). All three are in
-    # `ZipArchive::extract` / `ZipStreamReader::extract`. zip 8 comes only
-    # from hjkl-anvil, which never calls either: it reads entries one by one
-    # through `safe_join` and writes them as plain files. Drop these once
-    # sqeel moves to an hjkl release built on zip 9.
-    { id = "RUSTSEC-2026-0367", reason = "hjkl-anvil never calls zip's extract()" },
-    { id = "RUSTSEC-2026-0368", reason = "hjkl-anvil never calls zip's extract()" },
-    { id = "RUSTSEC-2026-0369", reason = "hjkl-anvil never calls zip's extract()" },
-]
+ignore = []
 
 [licenses]
 version = 2

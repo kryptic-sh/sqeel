@@ -8,8 +8,32 @@ patch bumps.
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the complete `hjkl-*` dependency stack from 0.41.0 to 0.43.4, still
+  pinned exactly, which brings hjkl's vim-compatibility fixes from 0.41.1
+  through 0.43.4 to the query editor (operators, motions, text objects and
+  folds; hjkl's changelog lists them). With it, `tree-sitter` 0.26 → 0.27
+  (`hjkl-bonsai` links it, and only one copy can be in the binary) and the SQL
+  grammar `tree-sitter-sequel` 0.3.2 → 0.3.11, the first release whose `cc`
+  build dependency can resolve beside `hjkl-bonsai`'s.
+
 ### Fixed
 
+- **A possible heap corruption in tree-sitter is gone.** `hjkl-bonsai` 0.41
+  switched tree-sitter's C allocator to mimalloc the first time a highlighter
+  was built, so a tree-sitter object sqeel had already created with libc's
+  allocator would later be freed through mimalloc. Since hjkl 0.42 the switch
+  only happens when the app asks for it, and sqeel does not, so tree-sitter uses
+  libc's allocator throughout.
+- Security: `zip` 8 → 9 in `hjkl-anvil`, so `deny.toml` no longer ignores
+  RUSTSEC-2026-0367, -0368 and -0369 (`hjkl-anvil` never called the affected
+  `extract` functions).
+- Security: `rustls-webpki` 0.103.15 → 0.103.16 for RUSTSEC-2026-0382 and
+  `webpki-roots` 1.0.9 → 1.0.10 for RUSTSEC-2026-0381, which stop trusting
+  certificate paths through distrusted emSign intermediates and drop the emSign
+  ECC Root CA - G3. `webpki-roots` is `sqlx`'s root store for database TLS
+  connections.
 - **The Homebrew formula loads on Homebrew 7.** Homebrew now loads every formula
   in a tap for each OS and architecture when it taps it, and this one only had
   its URLs under `on_macos`, so `brew tap kryptic-sh/tap` failed with "invalid

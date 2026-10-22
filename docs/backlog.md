@@ -2,13 +2,22 @@
 
 ## Dependencies
 
-- **`deny.toml` ignores RUSTSEC-2026-0367, -0368 and -0369 for `zip` 8.** All
-  three are bugs in `ZipArchive::extract` and `ZipStreamReader::extract` (SUID
-  bits kept, symlinks escaping the destination, permissions applied through
-  symlinks), fixed in `zip` 9. sqeel gets `zip` 8 only from `hjkl-anvil`, whose
-  `installer` module and `sync_anvil` binary read entries one at a time with
-  `ZipArchive::by_index`, check each path with `safe_join` and write plain files
-  with a fixed mode, so neither extract function is reached (checked in the
-  hjkl-anvil 0.41.0 source). hjkl 0.43.1, the latest release, still requires
-  `zip = "8"`. To drop the ignores: move `hjkl-anvil` to `zip` 9 in hjkl,
-  release it, then move sqeel's `=0.41.0` hjkl pins to that release.
+- **`tree-sitter-sequel` and `hjkl-bonsai` have to agree on one `cc`.** Cargo
+  resolves a single 1.x `cc` for every target in the graph.
+  `tree-sitter-sequel` pins it as a build dependency (`~1.2.1` in 0.3.11,
+  `~1.0.90` before 0.3.7), and `hjkl-bonsai` needs it on MSVC targets for its
+  grammar compiler. hjkl 0.41.7 through 0.43.3 required `cc 1.4.6`, so no
+  `tree-sitter-sequel` release could resolve beside them; hjkl 0.43.4 lowered
+  the floor to `1.2.1`. If either side moves its requirement again, the
+  workspace stops resolving with "failed to select a version for `cc`".
+  `cargo tree -i cc --target all` shows both requirements.
+
+## Considered and declined
+
+- **Calling `hjkl_bonsai::install_mimalloc_allocator`.** hjkl's own `main` calls
+  it first thing to route tree-sitter's C allocations through mimalloc; hjkl
+  measured about 8% off a cold parse of a 100 KB file. sqeel does not call it,
+  so tree-sitter uses libc's allocator, which is safe. Opting in means calling
+  it before any tree-sitter use and before any thread starts, i.e. as the first
+  statement of `main`; it was left out of the hjkl 0.43.4 upgrade because the
+  gain is unmeasured for sqeel's small SQL buffers.
