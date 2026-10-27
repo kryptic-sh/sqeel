@@ -26,6 +26,11 @@ patch bumps.
   allocator would later be freed through mimalloc. Since hjkl 0.42 the switch
   only happens when the app asks for it, and sqeel does not, so tree-sitter uses
   libc's allocator throughout.
+- Security: `tokio` 1.53.1 → 1.54.1 for RUSTSEC-2026-0386 (`AsyncFd::new` and
+  related constructors could violate I/O safety) and `ctutils` 0.4.2 → 0.4.6 for
+  RUSTSEC-2026-0385 (constant-time mask generation and `u128` comparisons that
+  could branch on secret values). `ctutils` comes in through `digest`, under
+  `sqlx-postgres`.
 - Security: `zip` 8 → 9 in `hjkl-anvil`, so `deny.toml` no longer ignores
   RUSTSEC-2026-0367, -0368 and -0369 (`hjkl-anvil` never called the affected
   `extract` functions).
@@ -39,13 +44,12 @@ patch bumps.
   its URLs under `on_macos`, so `brew tap kryptic-sh/tap` failed with "invalid
   syntax in tap" and no kryptic-sh tool could be installed. The URLs moved out
   of `on_macos` and `depends_on :macos` keeps the formula macOS-only.
-- Security: `rustls` 0.23.45 → 0.23.46 for RUSTSEC-2026-0346 (`Debug` output
-  of client session values exposes TLS secrets), -0347 (buffered data sent to
-  the outer server after an ECH rejection), -0348 (brotli certificate
-  decompression allocates up to 1 GiB before authentication) and -0349 (an
-  unauthenticated ServerHello downgrades later connections to classical key
-  exchange), reached through `sqlx` database connections and `reqwest` in
-  `hjkl-anvil`.
+- Security: `rustls` 0.23.45 → 0.23.46 for RUSTSEC-2026-0346 (`Debug` output of
+  client session values exposes TLS secrets), -0347 (buffered data sent to the
+  outer server after an ECH rejection), -0348 (brotli certificate decompression
+  allocates up to 1 GiB before authentication) and -0349 (an unauthenticated
+  ServerHello downgrades later connections to classical key exchange), reached
+  through `sqlx` database connections and `reqwest` in `hjkl-anvil`.
 - Security: `duckdb` 1.10505.0 → 1.10506.1, whose build script moves from `zip`
   6 to `zip` 9, out of the `ZipArchive::extract` bugs in RUSTSEC-2026-0367,
   -0368 and -0369 (SUID bits kept, symlinks escaping the destination,
