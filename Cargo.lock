@@ -964,15 +964,6 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
-dependencies = [
- "dirs-sys",
-]
-
-[[package]]
-name = "dirs"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
@@ -1069,7 +1060,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1729,7 +1720,7 @@ version = "0.43.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d61c4fc32be92e1a29f018108df5041787248607dd15febc21a43a24a87575a"
 dependencies = [
- "dirs 7.0.0",
+ "dirs",
  "thiserror 2.0.19",
 ]
 
@@ -2880,7 +2871,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3200,7 +3191,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3259,7 +3250,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3594,7 +3585,7 @@ name = "sqeel-config"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "dirs 6.0.0",
+ "dirs",
  "hjkl-config",
  "hjkl-engine",
  "keyring-core",
@@ -3613,7 +3604,7 @@ dependencies = [
  "anyhow",
  "bigdecimal",
  "chrono",
- "dirs 6.0.0",
+ "dirs",
  "duckdb",
  "hjkl-bonsai",
  "hjkl-config",
@@ -3643,7 +3634,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "crossterm 0.29.0",
- "dirs 6.0.0",
+ "dirs",
  "hjkl-anvil",
  "hjkl-bonsai",
  "hjkl-buffer",
@@ -4021,7 +4012,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4836,7 +4827,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
