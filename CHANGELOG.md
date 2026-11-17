@@ -20,6 +20,9 @@ patch bumps.
 
 ### Fixed
 
+- Security: `pulldown-cmark` 0.13.5 → 0.13.6 for RUSTSEC-2026-0433 (quadratic
+  parsing of nested image wikilinks under `ENABLE_WIKILINKS`). sqeel renders LSP
+  hover markdown with it.
 - **A possible heap corruption in tree-sitter is gone.** `hjkl-bonsai` 0.41
   switched tree-sitter's C allocator to mimalloc the first time a highlighter
   was built, so a tree-sitter object sqeel had already created with libc's
