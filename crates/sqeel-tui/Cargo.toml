@@ -18,7 +18,7 @@ sqeel-core = { version = "0.6", path = "../sqeel-core" }
 hjkl-splash = "=0.43.4"
 hjkl-engine = "=0.43.4"
 hjkl-engine-tui = "=0.43.4"
-hjkl-vim = "=0.43.4"
+hjkl-vim = "=0.46.0"
 hjkl-editor-tui = "=0.43.4"
 hjkl-ex = "=0.43.4"
 hjkl-buffer = "=0.43.4"
