@@ -14,6 +14,24 @@
 
 ## Dependencies
 
+- **Replace chrono with jiff.** (2026-11-28.) **Needs the owner's final decision
+  and discussion; nothing is changed until then.** RUSTSEC-2026-0543
+  (2026-09-14) marks every chrono version unmaintained, with no patched release.
+  Its maintainer soft-deprecated chrono and chrono-tz in chronotope/chrono#1768
+  and recommends jiff (1.0 since; the advisory waited for it); the advisory also
+  lists `time`. kryptic-sh/lyr is moving to jiff on the owner's call
+  (2026-11-28); kryptic-sh/infr dropped chrono for the C library's `strftime`
+  instead, since it used one function. Here chrono is used two ways. sqeel-tui
+  stamps a file name with `chrono::Utc::now().format(..)` (`ex.rs`), which jiff
+  covers. sqeel-core decodes date and time columns through sqlx's `chrono`
+  feature (`db.rs`,
+  `try_get::<chrono::NaiveDate | NaiveTime | NaiveDateTime | DateTime<Utc>>`),
+  and sqlx 0.9 has no jiff support, only `chrono` and `time`. So dropping chrono
+  here means sqlx's `time` feature for the decoding (or decoding those columns
+  as text), plus jiff or `time` for the stamp; jiff alone cannot do it. The
+  question is which, or whether to keep chrono with an ignore until sqlx
+  supports jiff.
+
 - **`tree-sitter-sequel` and `hjkl-bonsai` have to agree on one `cc`.** Cargo
   resolves a single 1.x `cc` for every target in the graph. `tree-sitter-sequel`
   pins it as a build dependency (`~1.2.1` in 0.3.11, `~1.0.90` before 0.3.7),
